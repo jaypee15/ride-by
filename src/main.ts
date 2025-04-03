@@ -8,6 +8,7 @@ import { HttpExceptionFilter } from './core/filters';
 import { LoggerInterceptor, TransformInterceptor } from './core/interceptors';
 import { MongooseModule } from '@nestjs/mongoose';
 import { RedisIoAdapter } from './core/adpater';
+import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule, {
@@ -43,6 +44,16 @@ async function bootstrap() {
 
   app.setGlobalPrefix('api');
   app.useWebSocketAdapter(new RedisIoAdapter(app));
+
+  // Setup Swagger
+  const config = new DocumentBuilder()
+    .setTitle('Ride-By API')
+    .setDescription('The Ride-By API documentation')
+    .setVersion('1.0')
+    .addBearerAuth()
+    .build();
+  const document = SwaggerModule.createDocument(app, config);
+  SwaggerModule.setup('api/docs', app, document);
 
   await app.listen(PORT);
 }

@@ -5,7 +5,9 @@ import {
   MongooseHealthIndicator,
 } from '@nestjs/terminus';
 import { Response } from 'express';
+import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
 
+@ApiTags('Health')
 @Controller('/health-check')
 export class HealthController {
   constructor(
@@ -15,6 +17,27 @@ export class HealthController {
 
   @Get()
   @HealthCheck()
+  @ApiOperation({ summary: 'Check API health status' })
+  @ApiResponse({ 
+    status: 200, 
+    description: 'API is healthy',
+    schema: {
+      type: 'object',
+      properties: {
+        status: { type: 'number', example: 200 },
+        healthInfo: {
+          type: 'object',
+          properties: {
+            status: { type: 'string', example: 'ok' },
+            info: { type: 'object' },
+            error: { type: 'object' },
+            details: { type: 'object' }
+          }
+        }
+      }
+    }
+  })
+  @ApiResponse({ status: 503, description: 'API is not healthy' })
   async check(@Res() res: Response) {
     try {
       const healthInfo = await this.health.check([
