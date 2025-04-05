@@ -18,8 +18,8 @@ export class HealthController {
   @Get()
   @HealthCheck()
   @ApiOperation({ summary: 'Check API health status' })
-  @ApiResponse({ 
-    status: 200, 
+  @ApiResponse({
+    status: 200,
     description: 'API is healthy',
     schema: {
       type: 'object',
@@ -31,11 +31,11 @@ export class HealthController {
             status: { type: 'string', example: 'ok' },
             info: { type: 'object' },
             error: { type: 'object' },
-            details: { type: 'object' }
-          }
-        }
-      }
-    }
+            details: { type: 'object' },
+          },
+        },
+      },
+    },
   })
   @ApiResponse({ status: 503, description: 'API is not healthy' })
   async check(@Res() res: Response) {

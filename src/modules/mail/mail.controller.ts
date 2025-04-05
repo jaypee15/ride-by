@@ -42,6 +42,4 @@ export class MailController {
       this.logger.error(error);
     }
   }
-
-  
 }

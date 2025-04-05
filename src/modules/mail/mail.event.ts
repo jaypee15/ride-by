@@ -6,7 +6,6 @@ import { Queue } from 'bull';
 import { InjectQueue } from '@nestjs/bull';
 import { UserService } from '../user/user.service';
 
-
 @Injectable()
 export class MailEvent {
   private logger = new Logger(MailEvent.name);
@@ -34,8 +33,6 @@ export class MailEvent {
   }
 
   async sendResetPassword(user, token: string, callbackURL?: string) {
-  
-
     const url = new URL(callbackURL);
     url.searchParams.append('code', token);
     this.logger.log('url', url);
@@ -69,6 +66,4 @@ export class MailEvent {
 
     await this.mailController.sendMail(sendMailDto);
   }
-
- 
 }

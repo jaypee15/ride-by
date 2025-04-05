@@ -14,34 +14,34 @@ export class MailService {
 
   private confirmationTemplate = fs.readFileSync(
     __dirname + '/templates/confirmation.ejs',
-    { encoding: 'utf-8' }
+    { encoding: 'utf-8' },
   );
 
   private resetpasswordTemplate = fs.readFileSync(
     __dirname + '/templates/resetpassword.ejs',
-    { encoding: 'utf-8' }
+    { encoding: 'utf-8' },
   );
   private credentialsTemplate = fs.readFileSync(
     __dirname + '/templates/credentials.ejs',
-    { encoding: 'utf-8' }
+    { encoding: 'utf-8' },
   );
 
   private inAppEmaillTemplate = fs.readFileSync(
     __dirname + '/templates/marketing.ejs',
-    { encoding: 'utf-8' }
+    { encoding: 'utf-8' },
   );
 
   constructor(
     @InjectModel(Email.name)
     private emailRepo: Model<Email>,
-    private mailerService: MailerService
+    private mailerService: MailerService,
   ) {}
 
   async sendUserConfirmation(data: SendMailDto) {
     const renderedEmail = ejs.render(this.confirmationTemplate, {
       name: data.data['firstName'],
       email: data.data['email'],
-      code: data.data['code']
+      code: data.data['code'],
     });
 
     return this.mailerService.sendMail({
@@ -52,20 +52,20 @@ export class MailService {
       context: {
         name: data.data['firstName'],
         email: data.data['email'],
-        code: data.data['code']
+        code: data.data['code'],
       },
       headers: {
-        'X-Category': data.type
+        'X-Category': data.type,
       },
       html: renderedEmail,
-      text: renderedEmail
+      text: renderedEmail,
     });
   }
 
   async sendResetPassword(data: SendMailDto) {
     const renderedEmail = ejs.render(this.resetpasswordTemplate, {
       name: data.data['firstName'],
-      url: data.data['url']
+      url: data.data['url'],
     });
 
     return this.mailerService.sendMail({
@@ -77,11 +77,11 @@ export class MailService {
       text: renderedEmail,
       context: {
         name: data.data['firstName'],
-        url: data.data['url']
+        url: data.data['url'],
       },
       headers: {
-        'X-Category': data.type
-      }
+        'X-Category': data.type,
+      },
     });
   }
 
@@ -89,7 +89,7 @@ export class MailService {
     const renderedEmail = ejs.render(this.credentialsTemplate, {
       name: data.data['firstName'],
       email: data.data['email'],
-      password: data.data['password']
+      password: data.data['password'],
     });
 
     return this.mailerService.sendMail({
@@ -100,13 +100,13 @@ export class MailService {
       context: {
         name: data.data['firstName'],
         email: data.data['email'],
-        password: data.data['password']
+        password: data.data['password'],
       },
       headers: {
-        'X-Category': data.type
+        'X-Category': data.type,
       },
       html: renderedEmail,
-      text: renderedEmail
+      text: renderedEmail,
     });
   }
 
@@ -114,7 +114,7 @@ export class MailService {
     const renderedEmail = ejs.render(this.inAppEmaillTemplate, {
       name: data.data['firstName'],
       email: data.data['email'],
-      body: data.data['body']
+      body: data.data['body'],
     });
 
     return this.mailerService.sendMail({
@@ -125,13 +125,13 @@ export class MailService {
       context: {
         name: data.data['firstName'],
         email: data.data['email'],
-        body: data.data['body']
+        body: data.data['body'],
       },
       headers: {
-        'X-Category': data.type
+        'X-Category': data.type,
       },
       html: renderedEmail,
-      text: renderedEmail
+      text: renderedEmail,
     });
   }
 }

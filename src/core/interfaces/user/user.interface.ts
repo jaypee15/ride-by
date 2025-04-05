@@ -1,7 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { StatusEnum } from ".";
-import { UserGender} from "./role.interface";
-
+import { StatusEnum } from '.';
+import { UserGender } from './role.interface';
 
 export interface IUser {
   _id?: string;
@@ -19,9 +18,8 @@ export interface IUser {
   status?: StatusEnum;
 }
 
-
 export interface IUser {
-    _id?: string;
+  _id?: string;
   email: string;
   firstName: string;
   lastName: string;
@@ -37,7 +35,7 @@ export interface IUser {
 }
 
 export interface IDriver {
-    _id?: string;
+  _id?: string;
   email: string;
   firstName: string;
   lastName: string;
@@ -69,30 +67,29 @@ export interface IPassenger {
 }
 
 export interface IAdmin {
-    _id?: string;
-    email: string;
-    firstName: string;
-    lastName: string;
-    avatar?: string;
-    about?: string;
-    country?: string;
-    gender?: UserGender;
-    phoneNumber?: string;
-    emailConfirm: boolean;
-    createdAt?: Date;
-    lastSeen?: Date;
-    status?: StatusEnum;
-  }
+  _id?: string;
+  email: string;
+  firstName: string;
+  lastName: string;
+  avatar?: string;
+  about?: string;
+  country?: string;
+  gender?: UserGender;
+  phoneNumber?: string;
+  emailConfirm: boolean;
+  createdAt?: Date;
+  lastSeen?: Date;
+  status?: StatusEnum;
+}
 
 export interface IUserMail {
   email: string;
   firstName: string;
 }
 
-
 export enum UserLoginStrategy {
   LOCAL = 'local',
   GOOGLE = 'google',
   FACEBOOK = 'facebook',
-  APPLE = 'apple'
+  APPLE = 'apple',
 }

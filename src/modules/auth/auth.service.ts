@@ -6,7 +6,6 @@ import {
   INVALID_EMAIL_OR_PASSWORD,
   INVALID_USER,
   PORTAL_TYPE_ERROR,
-  USER_DOESNT_EXIST
 } from 'src/core/constants/messages.constant';
 import { EncryptHelper, ErrorHelper } from 'src/core/helpers';
 import {
@@ -14,14 +13,13 @@ import {
   IDriver,
   IPassenger,
   StatusEnum,
-  RoleNameEnum,
 } from 'src/core/interfaces';
-import { MentorRegistrationDto } from '../mentors/dto/mentor.dto';
-import { XternRegistrationDto } from '../xtern/dto/xtern.dto';
-import { UserService } from '../user/user.service';
+import { PassengerRegistrationDto } from '../passenger/dto/passenger.dto';
+import { DriverRegistrationDto } from '../driver/dto/driver-regidtration.dto';
+import { UserService } from '../users/user.service';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
-import { Token } from '../user/schemas/token.entity';
+import { Token } from '../users/schemas/token.schema';
 import { MailEvent } from '../mail/mail.event';
 import { UserSessionService } from 'src/global/user-session/service';
 import { TokenHelper } from 'src/global/utils/token.utils';
@@ -29,9 +27,7 @@ import { LoginDto } from './dto/auth.dto.ts';
 import { Country } from '../seed/schemas';
 import { PortalType } from 'src/core/enums/auth.enum';
 import { Role } from '../admin/entities/role.entity';
-import {
-  UpdateUserDto
-} from './dto/update-user.dto';
+import { UpdateUserDto } from './dto/update-user.dto';
 import { AwsS3Service } from '../aws-s3-bucket';
 import { User } from './entities/schemas';
 import { UserInfoResponse } from 'src/core/interfaces/auth/auth.interfaces';
@@ -53,23 +49,21 @@ export class AuthService {
     private awsS3Service: AwsS3Service,
   ) {}
 
-
-
   async createPortalUser(
-    payload: MentorRegistrationDto | XternRegistrationDto,
-    portalType: PortalType
+    payload: DriverRegistrationDto | PassengerRegistrationDto,
+    portalType: PortalType,
   ): Promise<any> {
     try {
       const user = await this.createUser(payload, {
         strategy: UserLoginStrategy.LOCAL,
-        portalType
+        portalType,
       });
 
       const tokenInfo = await this.generateUserSession(user);
 
       return {
         token: tokenInfo,
-        user: user
+        user: user,
       };
     } catch (error) {
       ErrorHelper.ConflictException('Email Already Exist');
@@ -77,40 +71,42 @@ export class AuthService {
     }
   }
 
-  private async generateUserSession(user: IDriver | IPassenger, rememberMe = true) {
+  private async generateUserSession(
+    user: IDriver | IPassenger,
+    rememberMe = true,
+  ) {
     const tokenInfo = this.tokenHelper.generate(user);
 
     await this.userSessionService.create(user, {
       sessionId: tokenInfo.sessionId,
-      rememberMe
+      rememberMe,
     });
 
     return tokenInfo;
   }
 
   async createUser(
-    payload: MentorRegistrationDto | XternRegistrationDto,
+    payload: DriverRegistrationDto | PassengerRegistrationDto,
     options: {
       strategy: UserLoginStrategy;
       portalType: PortalType;
       adminCreated?: boolean;
     },
-    roleNames?: RoleNameEnum[]
   ): Promise<IPassenger | IDriver> {
     const { email } = payload;
-    const { strategy, portalType, adminCreated } = options;
+    const { strategy, portalType } = options;
 
     const emailQuery = {
-      email: email.toLowerCase()
+      email: email.toLowerCase(),
     };
-
-    let emailExist, user;
 
     if (!portalType) {
       ErrorHelper.BadRequestException(PORTAL_TYPE_ERROR);
     }
 
-    emailExist = await this.userRepo.findOne(emailQuery, { getDeleted: true });
+    const emailExist = await this.userRepo.findOne(emailQuery, {
+      getDeleted: true,
+    });
 
     if (emailExist) {
       ErrorHelper.BadRequestException(EMAIL_ALREADY_EXISTS);
@@ -118,7 +114,7 @@ export class AuthService {
 
     const roleData = await this.roleRepo.findOne({ name: portalType });
 
-    user = await this.userRepo.create({
+    const user = await this.userRepo.create({
       email: payload.email.toLowerCase(),
       password: await this.encryptHelper.hash(payload.password),
       firstName: payload.firstName,
@@ -128,7 +124,7 @@ export class AuthService {
       hasChangedPassword: strategy === UserLoginStrategy.LOCAL,
       emailConfirm: strategy === UserLoginStrategy.LOCAL ? false : true,
       portalType: portalType,
-      roles: [roleData]
+      roles: [roleData],
     });
 
     return user.toObject();
@@ -144,12 +140,12 @@ export class AuthService {
 
       await this.userRepo.updateOne(
         { _id: user._id },
-        { lastSeen: new Date() }
+        { lastSeen: new Date() },
       );
 
       return {
         token: tokenInfo,
-        user
+        user,
       };
     } catch (error) {
       ErrorHelper.BadRequestException(error);
@@ -159,10 +155,10 @@ export class AuthService {
   async validateUser(
     email: string,
     password: string,
-    portalType?: PortalType
+    portalType?: PortalType,
   ): Promise<IDriver | IPassenger> {
     const emailQuery = {
-      email: email.toLowerCase()
+      email: email.toLowerCase(),
     };
 
     const user = await this.userRepo
@@ -175,7 +171,7 @@ export class AuthService {
 
     const passwordMatch = await this.encryptHelper.compare(
       password,
-      user.password
+      user.password,
     );
     if (!passwordMatch) {
       ErrorHelper.BadRequestException(INVALID_EMAIL_OR_PASSWORD);
@@ -189,7 +185,7 @@ export class AuthService {
 
     if (!roleNames.includes(portalType as any)) {
       ErrorHelper.ForbiddenException(
-        'Forbidden: You does not have the required role to access this route.'
+        'Forbidden: You does not have the required role to access this route.',
       );
     }
 
@@ -208,7 +204,7 @@ export class AuthService {
     }
 
     const confirmationCode = await this.userService.generateOtpCode(
-      user.toObject()
+      user.toObject(),
     );
 
     await this.mailEvent.sendUserConfirmation(user, confirmationCode);
@@ -218,7 +214,7 @@ export class AuthService {
 
   async forgotPassword(email: string, callbackURL: string) {
     const emailQuery = {
-      email: email.toLowerCase()
+      email: email.toLowerCase(),
     };
 
     if (!callbackURL) {
@@ -235,14 +231,14 @@ export class AuthService {
       user.toObject(),
       {
         numberOnly: false,
-        length: 21
-      }
+        length: 21,
+      },
     );
 
     await this.mailEvent.sendResetPassword(user, confirmationCode, callbackURL);
 
     return {
-      success: true
+      success: true,
     };
   }
 
@@ -262,11 +258,11 @@ export class AuthService {
     // Ensure new password is not the same as the old password
     const passwordMatch = await this.encryptHelper.compare(
       password,
-      user.password
+      user.password,
     );
     if (passwordMatch) {
       ErrorHelper.BadRequestException(
-        'New password cannot be the same as the previous password'
+        'New password cannot be the same as the previous password',
       );
     }
 
@@ -276,11 +272,11 @@ export class AuthService {
 
     await this.userRepo.findByIdAndUpdate(user._id, {
       password: hashedPassword,
-      hasChangedPassword: true // Mark password as changed
+      hasChangedPassword: true, // Mark password as changed
     });
 
     return {
-      success: true
+      success: true,
     };
   }
 
@@ -298,7 +294,7 @@ export class AuthService {
     const updatedUser = await this.userRepo.findByIdAndUpdate(
       user._id,
       { emailConfirm: true },
-      { new: true }
+      { new: true },
     );
 
     return updatedUser;
@@ -311,7 +307,6 @@ export class AuthService {
   async syncUsers() {
     return await this.userService.syncUsers();
   }
-
 
   async tCodeLogin(code: string) {
     const token = await this.tokenRepo.findOne({ code });
@@ -333,7 +328,7 @@ export class AuthService {
 
     return {
       token: tokenInfo,
-      user: user.toObject()
+      user: user.toObject(),
     };
   }
 
@@ -353,12 +348,12 @@ export class AuthService {
 
   async updateUserInfo(
     userId: string,
-    updateUserDto: UpdateUserDto
+    updateUserDto: UpdateUserDto,
   ): Promise<IDriver | IPassenger> {
     const updatedUser = await this.userRepo.findByIdAndUpdate(
       userId,
       { $set: updateUserDto },
-      { new: true, runValidators: true }
+      { new: true, runValidators: true },
     );
 
     if (!updatedUser) {
@@ -382,14 +377,14 @@ export class AuthService {
     const allowedMimeTypes = ['image/jpeg', 'image/png', 'image/gif'];
     if (!allowedMimeTypes.includes(file.mimetype)) {
       ErrorHelper.BadRequestException(
-        'Unsupported file type. Please upload a JPEG, PNG, or GIF image.'
+        'Unsupported file type. Please upload a JPEG, PNG, or GIF image.',
       );
     }
 
     const maxSizeInBytes = 5 * 1024 * 1024; // 5 MB
     if (file.size > maxSizeInBytes) {
       ErrorHelper.BadRequestException(
-        'File size exceeds the maximum limit of 5 MB.'
+        'File size exceeds the maximum limit of 5 MB.',
       );
     }
 
@@ -402,19 +397,19 @@ export class AuthService {
 
   async changePasswordConfirmation(
     user: IPassenger | IDriver,
-    oldPassword: string
+    oldPassword: string,
   ) {
     const _user = await this.userRepo.findById(user._id);
 
     if (_user.strategy !== UserLoginStrategy.LOCAL && !_user.password) {
       ErrorHelper.ForbiddenException(
-        'You can not change your password since you do not have one, please use the forgot password to get a password'
+        'You can not change your password since you do not have one, please use the forgot password to get a password',
       );
     }
 
     const passwordMatch = await this.encryptHelper.compare(
       oldPassword,
-      _user.password
+      _user.password,
     );
 
     if (!passwordMatch) {
@@ -425,21 +420,24 @@ export class AuthService {
 
     await this.mailEvent.sendUserConfirmation(
       user as IDriver | IPassenger,
-      confirmationCode
+      confirmationCode,
     );
 
     return {
-      success: true
+      success: true,
     };
   }
 
-  async verifychangePasswordConfirmation(user: IDriver | IPassenger, code: string) {
+  async verifychangePasswordConfirmation(
+    user: IDriver | IPassenger,
+    code: string,
+  ) {
     const errorMessage = 'OTP has expired’';
 
     await this.userService.verifyOtpCode(user, code, errorMessage);
 
     return {
-      success: true
+      success: true,
     };
   }
 
@@ -451,12 +449,12 @@ export class AuthService {
 
     await this.userRepo.updateOne(
       {
-        _id: user._id
+        _id: user._id,
       },
       {
         password: hashedPassword,
-        hasChangedPassword: true
-      }
+        hasChangedPassword: true,
+      },
     );
   }
 
@@ -467,7 +465,6 @@ export class AuthService {
   async getAllUserRoles() {
     return await this.userRepo.find().populate('roles');
   }
-
 
   async sessionExists(params: LoginDto): Promise<{
     exists: boolean;
@@ -481,7 +478,7 @@ export class AuthService {
 
     return {
       exists: !!session,
-      user
+      user,
     };
   }
 }

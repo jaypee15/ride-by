@@ -14,7 +14,7 @@ export class PaginationResultDto<T> {
 
   @ApiProperty({
     type: PaginationMetadataDto,
-    description: 'Pagination metadata'
+    description: 'Pagination metadata',
   })
   readonly meta: PaginationMetadataDto;
 

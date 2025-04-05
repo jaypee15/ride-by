@@ -11,7 +11,7 @@ export class PaginationDto {
     enum: Order,
     default: Order.DESC,
     required: false,
-    description: 'Order direction (ASC or DESC)'
+    description: 'Order direction (ASC or DESC)',
   })
   @IsEnum(Order)
   @IsOptional()
@@ -21,7 +21,7 @@ export class PaginationDto {
     type: Number,
     default: 1,
     required: false,
-    description: 'Page number (starts from 1)'
+    description: 'Page number (starts from 1)',
   })
   @Type(() => Number)
   @IsInt()
@@ -33,7 +33,7 @@ export class PaginationDto {
     type: Number,
     default: 10,
     required: false,
-    description: 'Number of items per page'
+    description: 'Number of items per page',
   })
   @Type(() => Number)
   @IsInt()

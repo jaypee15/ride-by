@@ -13,4 +13,4 @@ export const STORY_UPDATED = 'A story assigned to you was updated';
 export const SUBTASK_ASSIGNED = 'A subtask have been assigned to you.';
 export const WELCOME_MESSAGE = 'Welcome to Xtern.ai';
 export const SLA_BREACH = 'SLA Breach';
-export const SLA_WARNING = "SLA Warning";
+export const SLA_WARNING = 'SLA Warning';

@@ -3,7 +3,7 @@ import { ConfigModule } from '@nestjs/config';
 import { DatabaseModule } from './modules/database/database.module';
 import { RidesModule } from './modules/rides/rides.module';
 import { GeolocationModule } from './modules/geolocation/geolocation.module';
-import { RidersModule } from './modules/riders/riders.module';
+import { RidersModule } from './modules/driver/riders.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { UsersModule } from './modules/users/users.module';
 import { MongooseModule } from '@nestjs/mongoose';

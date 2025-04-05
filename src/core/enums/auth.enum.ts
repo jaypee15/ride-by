@@ -1,6 +1,5 @@
 export enum PortalType {
-    DRIVER = 'DRIVER',
-    PASSENGER = 'PASSENGER',
-    ADMIN = 'ADMIN'
-  }
-  
+  DRIVER = 'DRIVER',
+  PASSENGER = 'PASSENGER',
+  ADMIN = 'ADMIN',
+}
