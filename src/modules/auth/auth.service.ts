@@ -8,29 +8,24 @@ import {
   PORTAL_TYPE_ERROR,
 } from 'src/core/constants/messages.constant';
 import { EncryptHelper, ErrorHelper } from 'src/core/helpers';
-import {
-  UserLoginStrategy,
-  IDriver,
-  IPassenger,
-  StatusEnum,
-} from 'src/core/interfaces';
+import { UserLoginStrategy, IDriver, IPassenger } from 'src/core/interfaces';
 import { PassengerRegistrationDto } from '../passenger/dto/passenger.dto';
 import { DriverRegistrationDto } from '../driver/dto/driver-regidtration.dto';
-import { UserService } from '../users/user.service';
+import { UserService } from '../user/user.service';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
-import { Token } from '../users/schemas/token.schema';
+import { Token } from '../user/schemas/token.schema';
 import { MailEvent } from '../mail/mail.event';
 import { UserSessionService } from 'src/global/user-session/service';
 import { TokenHelper } from 'src/global/utils/token.utils';
-import { LoginDto } from './dto/auth.dto.ts';
-import { Country } from '../seed/schemas';
 import { PortalType } from 'src/core/enums/auth.enum';
-import { Role } from '../admin/entities/role.entity';
 import { UpdateUserDto } from './dto/update-user.dto';
-import { AwsS3Service } from '../aws-s3-bucket';
-import { User } from './entities/schemas';
-import { UserInfoResponse } from 'src/core/interfaces/auth/auth.interfaces';
+import { AwsS3Service } from '../storage';
+import { Role } from '../user/schemas/role.schema';
+import { User } from '../user/schemas/user.schema';
+import { IUser } from 'src/core/interfaces';
+import { LoginDto } from './dto/auth.dto';
+import { UserStatus } from 'src/core/enums/user.em';
 
 @Injectable()
 export class AuthService {
@@ -40,7 +35,6 @@ export class AuthService {
     @InjectModel(Token.name) private tokenRepo: Model<Token>,
     @InjectModel(Role.name) private roleRepo: Model<Role>,
     @InjectModel(User.name) private userRepo: Model<User>,
-    @InjectModel(Country.name)
     private userService: UserService,
     private mailEvent: MailEvent,
     private encryptHelper: EncryptHelper,
@@ -121,13 +115,12 @@ export class AuthService {
       lastName: payload.lastName,
       country: payload.country,
       strategy,
-      hasChangedPassword: strategy === UserLoginStrategy.LOCAL,
       emailConfirm: strategy === UserLoginStrategy.LOCAL ? false : true,
       portalType: portalType,
       roles: [roleData],
     });
 
-    return user.toObject();
+    return { ...user.toObject(), _id: user._id.toString() };
   }
 
   async login(params: LoginDto) {
@@ -177,7 +170,7 @@ export class AuthService {
       ErrorHelper.BadRequestException(INVALID_EMAIL_OR_PASSWORD);
     }
 
-    if (user.status === StatusEnum.INACTIVE) {
+    if (user.status === UserStatus.INACTIVE) {
       ErrorHelper.BadRequestException('Your account is inactive');
     }
 
@@ -304,10 +297,6 @@ export class AuthService {
     return await this.userService.logout(userId);
   }
 
-  async syncUsers() {
-    return await this.userService.syncUsers();
-  }
-
   async tCodeLogin(code: string) {
     const token = await this.tokenRepo.findOne({ code });
 
@@ -336,7 +325,7 @@ export class AuthService {
     return await this.userRepo.find({});
   }
 
-  async getUserInfo(email: string): Promise<UserInfoResponse> {
+  async getUserInfo(email: string): Promise<IUser> {
     const user = await this.userRepo.findOne({ email });
 
     if (!user) {

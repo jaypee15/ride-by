@@ -1,6 +1,6 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import mongoose, { Document } from 'mongoose';
-import { User } from '../../users/schemas/user.schema'; // Adjust path
+import { User } from '../../user/schemas/user.schema'; // Adjust path
 import { VehicleVerificationStatus } from 'src/core/enums/vehicle.enum';
 
 export type VehicleDocument = Vehicle & Document;

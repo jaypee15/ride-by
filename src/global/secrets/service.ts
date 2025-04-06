@@ -52,4 +52,16 @@ export class SecretsService extends ConfigService {
       REDIS_PORT: this.get('REDIS_PORT'),
     };
   }
+
+  get authAwsSecret() {
+    return {
+      AWS_REGION: this.get('AWS_REGION', 'eu-west-2'),
+      AWS_ACCESS_KEY_ID: this.get('AWS_ACCESS_KEY_ID', 'AKIA36G3JG4TMYVGM6G2'),
+      AWS_SECRET_ACCESS_KEY: this.get(
+        'AWS_SECRET_ACCESS_KEY',
+        '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',
+      ),
+      AWS_S3_BUCKET_NAME: this.get('AWS_S3_BUCKET_NAME', 'traveazi-prod-sess'),
+    };
+  }
 }

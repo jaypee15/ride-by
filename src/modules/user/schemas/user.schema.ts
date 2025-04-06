@@ -1,6 +1,6 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import mongoose, { Document } from 'mongoose';
-import { RoleNameEnum } from 'src/core/interfaces';
+import { Role } from './role.schema';
 import {
   UserGender,
   UserStatus,
@@ -71,7 +71,7 @@ export class User {
     type: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Roles' }],
     required: true,
   })
-  roles: RoleNameEnum[];
+  roles: Role[];
 
   @Prop({ type: Date })
   lastSeen?: Date;

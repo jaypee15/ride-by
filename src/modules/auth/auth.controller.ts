@@ -123,18 +123,6 @@ export class AuthController {
     };
   }
 
-  // delicate
-  @HttpCode(HttpStatus.OK)
-  @Get('/sync-users')
-  async syncUsers() {
-    const data = await this.authService.syncUsers();
-
-    return {
-      data,
-      message: 'Users Synced successfully',
-    };
-  }
-
   @HttpCode(HttpStatus.OK)
   @Post('/tcode-auth')
   async tCodeAuth(@Body() body: TCodeLoginDto) {
