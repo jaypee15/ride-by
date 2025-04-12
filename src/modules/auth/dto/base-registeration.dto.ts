@@ -11,7 +11,7 @@ import {
   IsPhoneNumber, // Import if you have a specific validator package or use IsMatchPattern
 } from 'class-validator';
 import { PASSWORD_PATTERN } from '../../../core/constants/base.constant';
-import { UserGender } from 'src/core/enums/user.em';
+import { UserGender } from 'src/core/enums/user.enum';
 import { IsMatchPattern } from '../../../core/validators/IsMatchPattern.validator';
 
 export class BaseRegistrationDto {

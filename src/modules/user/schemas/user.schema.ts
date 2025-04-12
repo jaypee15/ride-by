@@ -5,7 +5,7 @@ import {
   UserGender,
   UserStatus,
   DriverVerificationStatus,
-} from 'src/core/enums/user.em.js';
+} from 'src/core/enums/user.enum';
 import { UserLoginStrategy } from 'src/core/interfaces';
 import { Vehicle } from '../../driver/schemas/vehicle.schema';
 

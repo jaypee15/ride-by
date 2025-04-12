@@ -25,7 +25,7 @@ import { Role } from '../user/schemas/role.schema';
 import { User } from '../user/schemas/user.schema';
 import { IUser } from 'src/core/interfaces';
 import { LoginDto } from './dto/auth.dto';
-import { UserStatus } from 'src/core/enums/user.em';
+import { UserStatus } from 'src/core/enums/user.enum';
 
 @Injectable()
 export class AuthService {
@@ -182,7 +182,7 @@ export class AuthService {
       );
     }
 
-    return user.toObject();
+    return { ...user.toObject(), _id: user._id.toString() };
   }
 
   async resendVerificationEmail(userId: string) {
@@ -196,9 +196,10 @@ export class AuthService {
       ErrorHelper.BadRequestException('Email already confirmed');
     }
 
-    const confirmationCode = await this.userService.generateOtpCode(
-      user.toObject(),
-    );
+    const confirmationCode = await this.userService.generateOtpCode({
+      ...user.toObject(),
+      _id: user._id.toString(),
+    });
 
     await this.mailEvent.sendUserConfirmation(user, confirmationCode);
 
@@ -221,7 +222,7 @@ export class AuthService {
     }
 
     const confirmationCode = await this.userService.generateOtpCode(
-      user.toObject(),
+      { ...user.toObject(), _id: user._id.toString() },
       {
         numberOnly: false,
         length: 21,
@@ -259,7 +260,10 @@ export class AuthService {
       );
     }
 
-    await this.userService.verifyOtpCode(user.toObject(), code);
+    await this.userService.verifyOtpCode(
+      { ...user.toObject(), _id: user._id.toString() },
+      code,
+    );
 
     const hashedPassword = await this.encryptHelper.hash(password);
 
@@ -282,7 +286,11 @@ export class AuthService {
       ErrorHelper.BadRequestException('User not found');
     }
 
-    await this.userService.verifyOtpCode(user.toObject(), code, errorMessage);
+    await this.userService.verifyOtpCode(
+      { ...user.toObject(), _id: user._id.toString() },
+      code,
+      errorMessage,
+    );
 
     const updatedUser = await this.userRepo.findByIdAndUpdate(
       user._id,
@@ -332,7 +340,7 @@ export class AuthService {
       ErrorHelper.NotFoundException('No User Found.');
     }
 
-    return { ...user.toJSON() };
+    return { ...user.toJSON(), _id: user._id.toString() };
   }
 
   async updateUserInfo(
@@ -349,7 +357,7 @@ export class AuthService {
       ErrorHelper.NotFoundException(INVALID_USER);
     }
 
-    return updatedUser.toObject();
+    return { ...updatedUser.toObject(), _id: updatedUser._id.toString() };
   }
 
   async uploadAvatar(userId: string, file: Express.Multer.File) {

@@ -9,7 +9,7 @@ export class RedisIoAdapter extends IoAdapter {
   protected redisAdapter;
 
   constructor(app: INestApplication) {
-    super(app);
+    super();
     const configService = app.get(SecretsService);
 
     const pubClient = createClient({
@@ -34,5 +34,9 @@ export class RedisIoAdapter extends IoAdapter {
     server.adapter(this.redisAdapter);
 
     return server;
+  }
+
+  bindClientConnect(server: any, callback: (socket: any) => void): void {
+    server.on('connection', (socket: any) => callback(socket));
   }
 }

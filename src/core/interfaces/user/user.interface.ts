@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { StatusEnum } from '.';
-import { UserGender } from './role.interface';
+import { UserGender } from 'src/core/enums/user.enum';
+import { UserStatus } from 'src/core/enums/user.enum';
 
 export interface IUser {
   _id?: string;
@@ -15,7 +15,7 @@ export interface IUser {
   emailConfirm: boolean;
   createdAt?: Date;
   lastSeen?: Date;
-  status?: StatusEnum;
+  status?: UserStatus;
 }
 
 export interface IUser {
@@ -31,7 +31,7 @@ export interface IUser {
   emailConfirm: boolean;
   createdAt?: Date;
   lastSeen?: Date;
-  status?: StatusEnum;
+  status?: UserStatus;
 }
 
 export interface IDriver {
@@ -47,7 +47,7 @@ export interface IDriver {
   emailConfirm: boolean;
   createdAt?: Date;
   lastSeen?: Date;
-  status?: StatusEnum;
+  status?: UserStatus;
 }
 
 export interface IPassenger {
@@ -63,7 +63,7 @@ export interface IPassenger {
   emailConfirm: boolean;
   createdAt?: Date;
   lastSeen?: Date;
-  status?: StatusEnum;
+  status?: UserStatus;
 }
 
 export interface IAdmin {
@@ -79,7 +79,7 @@ export interface IAdmin {
   emailConfirm: boolean;
   createdAt?: Date;
   lastSeen?: Date;
-  status?: StatusEnum;
+  status?: UserStatus;
 }
 
 export interface IUserMail {

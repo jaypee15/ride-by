@@ -5,7 +5,7 @@ import { RidesModule } from './modules/rides/rides.module';
 import { GeolocationModule } from './modules/geolocation/geolocation.module';
 import { RidersModule } from './modules/driver/riders.module';
 import { AuthModule } from './modules/auth/auth.module';
-import { UsersModule } from './modules/user/user.module';
+import { UserModule } from './modules/user/user.module';
 import { MongooseModule } from '@nestjs/mongoose';
 import { SecretsModule } from './global/secrets/module';
 import { SecretsService } from './global/secrets/service';
@@ -14,7 +14,7 @@ import { SecretsService } from './global/secrets/service';
     DatabaseModule,
     ConfigModule,
     AuthModule,
-    UsersModule,
+    UserModule,
     RidesModule,
     RidersModule,
     GeolocationModule,

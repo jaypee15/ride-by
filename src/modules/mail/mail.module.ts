@@ -11,12 +11,10 @@ import { MongooseModule } from '@nestjs/mongoose';
 import { Email, EmailSchema } from './schema/email.schema';
 import { UserModule } from '../user/user.module';
 import { MailEvent } from './mail.event';
-import { Token, TokenSchema } from '../user/schemas/token.entity';
-import { UserSchema, User } from '../auth/entities/schemas';
-import { Role, roleSchema } from '../admin/entities/role.entity';
-import { Rider, RiderSchema } from '../rider/entities/rider.entity';
-import { Rides, Rideschema } from '../rider/entities/rides.entity';
 import { EmailProcessor } from './cron-job/email.processor';
+import { TokenSchema, Token } from '../user/schemas/token.schema';
+import { UserSchema, User } from '../user/schemas/user.schema';
+import { roleSchema, Role } from '../user/schemas/role.schema';
 
 @Module({
   imports: [
@@ -77,8 +75,6 @@ import { EmailProcessor } from './cron-job/email.processor';
       { name: Token.name, schema: TokenSchema },
       { name: User.name, schema: UserSchema },
       { name: Role.name, schema: roleSchema },
-      { name: Rider.name, schema: RiderSchema },
-      { name: Rides.name, schema: Rideschema },
     ]),
   ],
   controllers: [MailController],

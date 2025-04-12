@@ -1,4 +1,4 @@
-import { Body, Controller, Logger, Post } from '@nestjs/common';
+import { Controller, Logger, Post } from '@nestjs/common';
 import { SendMailDto } from './dto/mail.dto';
 import { MailService } from './mail.service';
 import { MailType } from './enums';

@@ -38,9 +38,6 @@ export class ForgotPasswordDto {
   email: string;
 }
 
-
-
-
 export class LoginDto {
   @IsString()
   @IsEmail()
