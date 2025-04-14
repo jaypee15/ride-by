@@ -12,11 +12,13 @@ import { UserModule } from '../user/user.module';
 import { roleSchema, Role } from '../user/schemas/role.schema';
 import { AwsS3Module } from '../storage';
 import { UserSchema, User } from '../user/schemas/user.schema';
+import { TwilioModule } from '../twilio/twiio.module';
 
 @Module({
   imports: [
     MailModule,
     UserModule,
+    TwilioModule,
     MongooseModule.forFeature([
       { name: Token.name, schema: TokenSchema },
       { name: Role.name, schema: roleSchema },

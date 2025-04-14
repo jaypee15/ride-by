@@ -26,6 +26,8 @@ import { User } from '../user/schemas/user.schema';
 import { IUser } from 'src/core/interfaces';
 import { LoginDto } from './dto/auth.dto';
 import { UserStatus } from 'src/core/enums/user.enum';
+import { TwilioService } from '../twilio/twilio.service';
+import { SendPhoneOtpDto, VerifyPhoneOtpDto } from './dto/send-phone-otp.dto';
 
 @Injectable()
 export class AuthService {
@@ -41,7 +43,81 @@ export class AuthService {
     private tokenHelper: TokenHelper,
     private userSessionService: UserSessionService,
     private awsS3Service: AwsS3Service,
+    private twilioService: TwilioService,
   ) {}
+
+  async sendPhoneVerificationOtp(
+    dto: SendPhoneOtpDto,
+  ): Promise<{ message: string }> {
+    const { phoneNumber } = dto;
+
+    // 1. Check if phone number is already registered and verified (optional but recommended)
+    const existingUser = await this.userRepo.findOne({
+      phoneNumber,
+      phoneVerified: true,
+    });
+    if (existingUser) {
+      ErrorHelper.ConflictException(
+        'This phone number is already associated with a verified account.',
+      );
+    }
+
+    // 2. Send verification via Twilio Verify
+    try {
+      const sent = await this.twilioService.sendVerificationToken(
+        phoneNumber,
+        'sms',
+      );
+      if (sent) {
+        return { message: 'Verification code sent successfully via SMS.' };
+      } else {
+        // Should not happen if sendVerificationToken throws on failure, but as fallback
+        ErrorHelper.InternalServerErrorException(
+          'Could not send verification code.',
+        );
+      }
+    } catch (error) {
+      // Error is already logged in TwilioService, rethrow specific message
+      ErrorHelper.InternalServerErrorException(
+        error.message || 'Could not send verification code.',
+      );
+    }
+  }
+
+  async verifyPhoneNumberOtp(
+    dto: VerifyPhoneOtpDto,
+  ): Promise<{ verified: boolean; message: string }> {
+    const { phoneNumber, otp } = dto;
+
+    // 1. Check verification using Twilio Verify
+    try {
+      const isApproved = await this.twilioService.checkVerificationToken(
+        phoneNumber,
+        otp,
+      );
+
+      if (isApproved) {
+        // Optionally: If you want to mark the number as pre-verified for registration,
+        // you could store a temporary flag in Redis associated with the phone number.
+        // Example: await this.redisClient.set(`preverified:${phoneNumber}`, 'true', 'EX', 600); // 10 min expiry
+
+        return {
+          verified: true,
+          message: 'Phone number verified successfully.',
+        };
+      } else {
+        // checkVerificationToken returned false (invalid/expired code)
+        ErrorHelper.BadRequestException(
+          'Invalid or expired verification code.',
+        );
+      }
+    } catch (error) {
+      // Error is already logged in TwilioService, rethrow specific message
+      ErrorHelper.InternalServerErrorException(
+        error.message || 'Could not verify code.',
+      );
+    }
+  }
 
   async createPortalUser(
     payload: DriverRegistrationDto | PassengerRegistrationDto,
@@ -87,7 +163,7 @@ export class AuthService {
       adminCreated?: boolean;
     },
   ): Promise<IPassenger | IDriver> {
-    const { email } = payload;
+    const { email, phoneNumber } = payload;
     const { strategy, portalType } = options;
 
     const emailQuery = {
@@ -104,6 +180,18 @@ export class AuthService {
 
     if (emailExist) {
       ErrorHelper.BadRequestException(EMAIL_ALREADY_EXISTS);
+    }
+
+    //  let phoneVerifiedStatus = false;
+    if (phoneNumber) {
+      const phoneExist = await this.userRepo.findOne({
+        phoneNumber: phoneNumber,
+      });
+      if (phoneExist?.phoneVerified) {
+        ErrorHelper.ConflictException(
+          'Phone number already linked to a verified account.',
+        );
+      }
     }
 
     const roleData = await this.roleRepo.findOne({ name: portalType });

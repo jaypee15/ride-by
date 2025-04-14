@@ -64,4 +64,13 @@ export class SecretsService extends ConfigService {
       AWS_S3_BUCKET_NAME: this.get('AWS_S3_BUCKET_NAME', 'traveazi-prod-sess'),
     };
   }
+
+  get twilio() {
+    return {
+      TWILIO_ACCOUNT_SID: this.get('TWILIO_ACCOUNT_SID'),
+      TWILIO_AUTH_TOKEN: this.get('TWILIO_AUTH_TOKEN'),
+      TWILIO_PHONE_NUMBER: this.get('TWILIO_PHONE_NUMBER'),
+      TWILIO_VERIFY_SERVICE_SID: this.get('TWILIO_VERIFY_SERVICE_SID'),
+    };
+  }
 }
