@@ -1,6 +1,6 @@
 import { NestFactory } from '@nestjs/core';
 import * as express from 'express';
-import { AppModule } from './app.module';
+import { MainModule } from './modules/main.module';
 import { SecretsService } from './global/secrets/service';
 import * as cookieParser from 'cookie-parser';
 import { ValidationPipe } from '@nestjs/common';
@@ -11,7 +11,7 @@ import { RedisIoAdapter } from './core/adpater';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule, {
+  const app = await NestFactory.create(MainModule, {
     bufferLogs: true,
     cors: true,
   });

@@ -54,13 +54,17 @@ src/
       pagination.dto.ts
     enums/
       auth.enum.ts
+      user.enum.ts
+      vehicle.enum.ts
     filters/
       http-exception.filter.ts
       index.ts
     guards/
       authenticate.guard.ts
       index.ts
+      ws.guard.ts
     helpers/
+      date.helper.ts
       ecrypt.helper.ts
       error.utils.ts
       index.ts
@@ -78,6 +82,7 @@ src/
         user.interface.ts
       index.ts
     redis/
+      redis-lock.service.ts
       redis.module.ts
     validators/
       index.ts
@@ -97,6 +102,7 @@ src/
     auth/
       dto/
         auth.dto.ts
+        base-registeration.dto.ts
         index.ts
         update-user.dto.ts
       auth.controller.ts
@@ -107,6 +113,10 @@ src/
     database/
       database.module.ts
     driver/
+      dto/
+        driver-regidtration.dto.ts
+      schemas/
+        vehicle.schema.ts
       riders.module.ts
     geolocation/
       geolocation.module.ts
@@ -114,24 +124,53 @@ src/
       health.controller.ts
       health.module.ts
     mail/
+      cron-job/
+        email.processor.ts
+      dto/
+        index.ts
+        mail.dto.ts
       enums/
         index.ts
         mail.enum.ts
       schema/
         email.schema.ts
       templates/
-        email/
-          emailnotification.ejs
         confrimation.ejs
+        emailnotification.ejs
+        marketing.ejs
       mail.controller.ts
       mail.event.ts
       mail.module.ts
       mail.service.ts
+    passenger/
+      dto/
+        passenger.dto.ts
     rides/
       rides.module.ts
-    users/
-      users.module.ts
-  app.module.ts
+    storage/
+      constants/
+        index.ts
+        secret-key.ts
+      decorators/
+        index.ts
+        inject-secret.ts
+      interfaces/
+        index.ts
+        secret-key.interfaces.ts
+      index.ts
+      s3-bucket.module.ts
+      s3-bucket.service.ts
+    user/
+      schemas/
+        action.schema.ts
+        role.schema.ts
+        token.schema.ts
+        user.schema.ts
+      user.module.ts
+      user.service.ts
+    app.gateway.ts
+    app.module.ts
+    main.module.ts
   main.ts
 test/
   app.e2e-spec.ts
@@ -139,6 +178,7 @@ test/
 .eslintrc.js
 .gitignore
 .prettierrc
+instructions.md
 nest-cli.json
 package.json
 README.md
@@ -148,92 +188,651 @@ tsconfig.json
 
 # Files
 
-## File: src/core/helpers/ecrypt.helper.ts
+## File: src/core/guards/ws.guard.ts
 ````typescript
-import { Injectable } from '@nestjs/common';
-import * as bcrypt from 'bcryptjs';
+import { CanActivate, ExecutionContext, Injectable } from '@nestjs/common';
+import { WsException } from '@nestjs/websockets';
+import { Socket } from 'socket.io';
+
+import { AuthGuard } from './authenticate.guard';
 
 @Injectable()
-export class EncryptHelper {
-  async hash(str: string, saltRounds = 10): Promise<string> {
-    return await bcrypt.hash(str, saltRounds);
+export class WsGuard implements CanActivate {
+  constructor(private authGuard: AuthGuard) {}
+
+  async canActivate(context: ExecutionContext): Promise<boolean> {
+    const client: Socket = context.switchToWs().getClient();
+
+    const authorization =
+      client.handshake.auth.token || client.handshake.headers.authorization;
+
+    if (!authorization) {
+      throw new WsException('Authorization header is missing');
+    }
+
+    try {
+      const user = await this.verifyAccessToken(authorization);
+
+      client.data.user = user;
+
+      return true;
+    } catch (error) {
+      throw new WsException(error.message);
+    }
   }
 
-  async compare(str: string, hash: string): Promise<boolean> {
-    return bcrypt.compare(str, hash);
-  }
-
-  compareSync(str: string, hash: string): boolean {
-    return bcrypt.compareSync(str, hash);
-  }
-
-  hashSync(str: string, saltRounds = 10): string {
-    return bcrypt.hashSync(str, saltRounds);
+  async verifyAccessToken(authorization: string) {
+    return this.authGuard.verifyAccessToken(authorization);
   }
 }
 ````
 
-## File: src/modules/driver/riders.module.ts
+## File: src/core/redis/redis-lock.service.ts
+````typescript
+import { Injectable } from '@nestjs/common';
+import { InjectRedis } from '@nestjs-modules/ioredis';
+import { Redis } from 'ioredis';
+
+@Injectable()
+export class RedisLock {
+  constructor(@InjectRedis() private redis: Redis) {}
+
+  async acquire(key: string, value: string, ttl = 30 * 60 * 1000) {
+    const result = await this.redis.set(key, value, 'PX', ttl, 'NX');
+
+    return result === 'OK';
+  }
+
+  async release(key: string, value: string) {
+    const script = `
+                if redis.call("get", KEYS[1]) == ARGV[1] then
+                    return redis.call("del", KEYS[1])
+                else
+                    return 0
+                end
+            `;
+
+    const result = await this.redis.eval(script, 1, key, value);
+
+    return result === 1;
+  }
+}
+````
+
+## File: src/modules/mail/templates/emailnotification.ejs
+````
+<!doctype html>
+<html>
+  <meta charset="utf-8" />
+  <title><%= locals.subject %></title>
+
+  <head>
+    <link
+      href="https://fonts.googleapis.com/css2?family=DM+Sans&family=Inter:wght@100;200;300;400;600&family=Joan&family=Roboto:ital,wght@0,100;0,300;1,100&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      * {
+        font-family: 'DM Sans', sans-serif;
+        color: #000000;
+        font-weight: 400;
+        font-size: 14px;
+        line-height: 24px;
+        text-align: justify;
+      }
+
+      body {
+        background: #f0f7ff;
+        -webkit-font-smoothing: antialiased;
+        font-size: 14px;
+        line-height: 1.4;
+        margin: 1.5rem;
+        display: flex;
+        justify-content: center;
+        padding: 1rem;
+        -ms-text-size-adjust: 100%;
+        -webkit-text-size-adjust: 100%;
+      }
+
+      .main {
+        padding: 2rem;
+        width: auto;
+        background: white;
+        margin: 1.5rem;
+        border-radius: 8px;
+        box-shadow: 0px 10px 30px rgba(0, 0, 0, 0.01);
+      }
+
+      .container {
+        padding: 24px;
+        max-width: 600px;
+        background: #eef2f5;
+        border-radius: 10px;
+      }
+
+      p {
+        font-size: 14px;
+      }
+
+      a {
+        color: #000;
+        text-decoration: none;
+      }
+
+      footer {
+        margin-top: 2rem;
+      }
+
+      footer div,
+      footer aside {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        width: 100%;
+        text-align: center;
+        gap: 8px;
+      }
+
+      footer div {
+        width: 30%;
+        margin: 16px auto;
+      }
+
+      .main-header {
+        font-style: normal;
+        font-weight: 700;
+        font-size: 20px;
+        margin-bottom: 10px;
+      }
+
+      .user-name {
+        font-style: normal;
+        font-size: 16px;
+      }
+
+      .fw-bold {
+        font-weight: 600;
+        text-decoration: none;
+      }
+
+      .bold {
+        font-style: bold;
+        font-size: 30px;
+      }
+
+      .center-text {
+        width: 100%;
+        margin: auto;
+        text-align: center;
+      }
+
+      .mt-n5 {
+        margin-top: -5px;
+      }
+
+      .my-50 {
+        margin: 15px 0px;
+        text-align: center;
+      }
+
+      main aside {
+        margin-top: 16px;
+        font-size: 14px;
+      }
+
+      .landmark {
+        color: #616161;
+        margin-bottom: 16px;
+        margin: auto;
+        width: 100%;
+        text-align: center;
+      }
+
+      .image {
+        display: block;
+        width: 80px;
+        margin: auto;
+        object-fit: contain;
+        pointer-events: none;
+      }
+
+      .logo {
+        height: 30px;
+        width: 30px;
+        margin: auto;
+      }
+
+      img.g-img + div {
+        display: none;
+      }
+
+      .content {
+        padding: 0 10px;
+      }
+
+      table {
+        margin: 20px 5px;
+      }
+
+      .bg-bg {
+        background: #eef2f5;
+        padding: 20px 10px;
+        width: 30%;
+        margin: 10px auto;
+      }
+
+      .bg-dark {
+        color: #000;
+        font-weight: 700;
+      }
+    </style>
+  </head>
+
+  <body>
+    <div class="container">
+      <a href="#">
+        <img
+          class="image g-img"
+          src=""
+          alt="TravEazi.io logo"
+        />
+      </a>
+      <div class="main">
+        <table role="presentation" cellpadding="2px" class="content">
+          <p class="user-name">Hi <%= locals.name %>,</p>
+          <h5>
+            <%- locals.body %>
+          </h5>
+          <p>Best regards,</p>
+              <!-- <a href="">
+              <img
+                class="image"
+                src=<%= locals.image %>
+                alt=""
+              />
+            </a> -->
+
+          <p>
+            <a class="bg-dark" href="https://www.traveazi.com"
+              >TravEzi Support Team</a
+            >
+          </p>
+        </table>
+      </div>
+      <footer>
+ 
+        <aside>
+          <small class="landmark"
+            >Copyright &copy; <%= new Date().getFullYear() %>
+          </small>
+        </aside>
+        <p class="center-text fw-bold">TravEazi</p>
+      </footer>
+    </div>
+  </body>
+</html>
+````
+
+## File: src/modules/mail/templates/marketing.ejs
+````
+<!doctype html>
+<html>
+  <meta charset="utf-8" />
+  <title><%= locals.subject %></title>
+
+  <head>
+    <link
+      href="https://fonts.googleapis.com/css2?family=DM+Sans&family=Inter:wght@100;200;300;400;600&family=Joan&family=Roboto:ital,wght@0,100;0,300;1,100&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      * {
+        font-family: 'DM Sans', sans-serif;
+        color: #000000;
+        font-weight: 400;
+        font-size: 14px;
+        line-height: 24px;
+        text-align: justify;
+      }
+
+      body {
+        background: #f0f7ff;
+        -webkit-font-smoothing: antialiased;
+        font-size: 14px;
+        line-height: 1.4;
+        margin: 1.5rem;
+        display: flex;
+        justify-content: center;
+        padding: 1rem;
+        -ms-text-size-adjust: 100%;
+        -webkit-text-size-adjust: 100%;
+      }
+
+      .main {
+        padding: 2rem;
+        width: auto;
+        background: white;
+        margin: 1.5rem;
+        border-radius: 8px;
+        box-shadow: 0px 10px 30px rgba(0, 0, 0, 0.01);
+      }
+
+      .container {
+        padding: 24px;
+        max-width: 600px;
+        background: #eef2f5;
+        border-radius: 10px;
+      }
+
+      p {
+        font-size: 14px;
+      }
+
+      a {
+        color: #000;
+        text-decoration: none;
+      }
+
+      footer {
+        margin-top: 2rem;
+      }
+
+      footer div,
+      footer aside {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        width: 100%;
+        text-align: center;
+        gap: 8px;
+      }
+
+      footer div {
+        width: 30%;
+        margin: 16px auto;
+      }
+
+      .main-header {
+        font-style: normal;
+        font-weight: 700;
+        font-size: 20px;
+        margin-bottom: 10px;
+      }
+
+      .user-name {
+        font-style: normal;
+        font-size: 16px;
+      }
+
+      .fw-bold {
+        font-weight: 600;
+        text-decoration: none;
+      }
+
+      .bold {
+        font-style: bold;
+        font-size: 30px;
+      }
+
+      .center-text {
+        width: 100%;
+        margin: auto;
+        text-align: center;
+      }
+
+      .mt-n5 {
+        margin-top: -5px;
+      }
+
+      .my-50 {
+        margin: 15px 0px;
+        text-align: center;
+      }
+
+      main aside {
+        margin-top: 16px;
+        font-size: 14px;
+      }
+
+      .landmark {
+        color: #616161;
+        margin-bottom: 16px;
+        margin: auto;
+        width: 100%;
+        text-align: center;
+      }
+
+      .image {
+        display: block;
+        width: 80px;
+        margin: auto;
+        object-fit: contain;
+        pointer-events: none;
+      }
+
+      .logo {
+        height: 30px;
+        width: 30px;
+        margin: auto;
+      }
+
+      img.g-img + div {
+        display: none;
+      }
+
+      .content {
+        padding: 0 10px;
+      }
+
+      table {
+        margin: 20px 5px;
+      }
+
+      .bg-bg {
+        background: #eef2f5;
+        padding: 20px 10px;
+        width: 30%;
+        margin: 10px auto;
+      }
+
+      .bg-dark {
+        color: #000;
+        font-weight: 700;
+      }
+    </style>
+  </head>
+
+  <body>
+    <div class="container">
+      <a href="#">
+        <img
+          class="image g-img"
+          src="https://traveazi-io-nonprod-general-revamp.s3.eu-west-2.amazonaws.com/1726625876998-xtern-logo.png"
+          alt="traveazi.io logo"
+        />
+      </a>
+      <div class="main">
+        <table role="presentation" cellpadding="2px" class="content">
+          <p class="user-name">Hi <%= locals.name %>,</p>
+          <h5>
+            <%= locals.body %>
+          </h5>
+          <p>Best regards,</p>
+              <!-- <a href="">
+              <img
+                class="image"
+                src=<%= locals.image %>
+                alt=""
+              />
+            </a> -->
+
+          <p>
+            <a class="bg-dark" href="https://www.traveazi.ai"
+              >TravEazi Support Team</a
+            >
+          </p>
+        </table>
+      </div>
+      <footer>
+        <div>
+          <span class="center-text">
+            <a href="https://www.facebook.com/official.traveazi.io/">
+              <img
+                class="logo"
+                src="https://traveazi-io-nonprod-general-revamp.s3.eu-west-2.amazonaws.com/1726627249979-facebook.png"
+                alt="facebook logo"
+              />
+            </a>
+          </span>
+          <span class="center-text">
+            <a href="https://www.linkedin.com/company/traveazi-io/">
+              <img
+                class="logo"
+                src="https://traveazi-io-nonprod-general-revamp.s3.eu-west-2.amazonaws.com/1726627386183-linkedln.png"
+                alt="linkedIn logo"
+              />
+            </a>
+          </span>
+          <span class="center-text">
+            <a href="https://twitter.com/traveazi_io">
+              <img
+                class="logo"
+                src="https://traveazi-io-nonprod-general-revamp.s3.eu-west-2.amazonaws.com/1726627422689-twitter.png"
+                alt="twitter logo"
+              />
+            </a>
+          </span>
+          <span class="center-text">
+            <a href="https://www.instagram.com/traveazi.io/">
+              <img
+                class="logo"
+                src="https://traveazi-io-nonprod-general-revamp.s3.eu-west-2.amazonaws.com/1726627463049-instagram.png"
+                alt="instagram logo"
+              />
+            </a>
+          </span>
+        </div>
+        <aside>
+          <small class="landmark"
+            >Copyright &copy; <%= new Date().getFullYear() %>
+          </small>
+        </aside>
+        <p class="center-text fw-bold">TravEazi</p>
+      </footer>
+    </div>
+  </body>
+</html>
+````
+
+## File: src/modules/app.gateway.ts
+````typescript
+import { Logger } from '@nestjs/common';
+import {
+  OnGatewayConnection,
+  OnGatewayDisconnect,
+  WebSocketGateway,
+  WebSocketServer,
+} from '@nestjs/websockets';
+import { Server, Socket } from 'socket.io';
+import { WsGuard } from 'src/core/guards';
+import { ErrorHelper } from 'src/core/helpers';
+
+@WebSocketGateway({
+  cors: {
+    origin: '*',
+  },
+  path: '/api/chat/socket',
+})
+export class AppGateway implements OnGatewayConnection, OnGatewayDisconnect {
+  constructor(private wsGuard: WsGuard) {}
+
+  private logger = new Logger('WebsocketGateway');
+
+  @WebSocketServer()
+  server: Server;
+
+  handleDisconnect(client: Socket) {
+    this.logger.log(`Client disconnected: ${client.id}`);
+  }
+
+  async handleConnection(client: Socket) {
+    try {
+      this.logger.log(`Client handleConnection: ${client.id}`);
+
+      const user = await this.wsGuard.verifyAccessToken(
+        client.handshake.auth.token || client.handshake.headers.authorization,
+      );
+
+      if (!user) {
+        ErrorHelper.UnauthorizedException('User is not authorized');
+      }
+
+      client.data.user = user;
+
+      client.join(user._id.toString());
+
+      this.logger.log(`Client connected: ${client.id}`);
+    } catch (error) {
+      this.logger.log(`has issues: ${client.id}`);
+      client.emit('exception', error.message);
+      client.disconnect();
+    }
+  }
+}
+````
+
+## File: src/modules/app.module.ts
 ````typescript
 import { Module } from '@nestjs/common';
+import { AuthGuard } from 'src/core/guards';
+import { WsGuard } from 'src/core/guards/ws.guard';
+import { AppGateway } from './app.gateway';
 
-@Module({})
-export class RidersModule {}
+@Module({
+  providers: [AppGateway, WsGuard, AuthGuard],
+  imports: [],
+})
+export class AppModule {}
 ````
 
-## File: src/core/adpater/index.ts
+## File: src/modules/main.module.ts
 ````typescript
-export * from './redis.adpater';
-````
-
-## File: src/core/adpater/redis.adpater.ts
-````typescript
-import { INestApplication } from '@nestjs/common';
-import { IoAdapter } from '@nestjs/platform-socket.io';
-import { createAdapter } from '@socket.io/redis-adapter';
-import { createClient } from 'redis';
-import { Server, ServerOptions } from 'socket.io';
-import { SecretsService } from 'src/global/secrets/service';
-
-export class RedisIoAdapter extends IoAdapter {
-  protected redisAdapter;
-
-  constructor(app: INestApplication) {
-    super(app);
-    const configService = app.get(SecretsService);
-
-    const pubClient = createClient({
-      socket: {
-        host: configService.userSessionRedis.REDIS_HOST,
-        port: configService.userSessionRedis.REDIS_PORT,
-      },
-      username: configService.userSessionRedis.REDIS_USER,
-      password: configService.userSessionRedis.REDIS_PASSWORD,
-    });
-    const subClient = pubClient.duplicate();
-
-    pubClient.connect();
-    subClient.connect();
-
-    this.redisAdapter = createAdapter(pubClient, subClient);
-  }
-
-  createIOServer(port: number, options?: ServerOptions) {
-    const server = super.createIOServer(port, options) as Server;
-
-    server.adapter(this.redisAdapter);
-
-    return server;
-  }
-}
-````
-
-## File: src/core/constants/base.constant.ts
-````typescript
-export const PASSWORD_PATTERN = '^(?=.*[a-z])(?=.*[A-Z])(?=.*[0-9])(?=.{8,})';
-export const BASE_COMMISSION = 0.3;
-export const DRIVER_ONBOARDING_STEPS = 8;
-export const PASSENGER_ONBOARDING_STEPS = 5;
+import { Module } from '@nestjs/common';
+import { ConfigModule } from '@nestjs/config';
+import { DatabaseModule } from './database/database.module';
+import { RidesModule } from './rides/rides.module';
+import { GeolocationModule } from './geolocation/geolocation.module';
+import { RidersModule } from './driver/riders.module';
+import { AuthModule } from './auth/auth.module';
+import { UserModule } from './user/user.module';
+import { MongooseModule } from '@nestjs/mongoose';
+import { SecretsModule } from '../global/secrets/module';
+import { SecretsService } from '../global/secrets/service';
+import { AppModule } from './app.module';
+import { GlobalModule } from 'src/global/global.module';
+@Module({
+  imports: [
+    GlobalModule,
+    DatabaseModule,
+    ConfigModule,
+    AuthModule,
+    UserModule,
+    RidesModule,
+    RidersModule,
+    GeolocationModule,
+    AppModule,
+    MongooseModule.forRootAsync({
+      imports: [SecretsModule],
+      inject: [SecretsService],
+      useFactory: (secretsService: SecretsService) => ({
+        uri: secretsService.MONGO_URI,
+      }),
+    }),
+  ],
+  controllers: [],
+  providers: [],
+})
+export class MainModule {}
 ````
 
 ## File: src/core/constants/index.ts
@@ -242,55 +841,37 @@ export * from './base.constant';
 export * from './messages.constant';
 ````
 
-## File: src/core/constants/messages.constant.ts
+## File: src/core/enums/user.enum.ts
 ````typescript
-export const INVALID_EMAIL_OR_PASSWORD = 'Invalid email or password';
-export const INVALID_USER = 'Invalid user';
-export const INVALID_CODE = 'Invalid code or expired';
-export const INVALID_CODE_FORGOT_PASSWORD =
-  "This link has expired. You can't change your password using this link";
-export const INVALID_TOKEN = 'Invalid token';
-export const EMAIL_ALREADY_EXISTS = 'Email already exists';
-export const USER_DOESNT_EXIST = 'User Not Found';
-export const PORTAL_TYPE_ERROR = 'Please specify portal type';
+export enum UserGender {
+  MALE = 'MALE',
+  FEMALE = 'FEMALE',
+}
 
-export const STORY_ASSIGNED = 'A story have been assigned to you.';
-export const STORY_UPDATED = 'A story assigned to you was updated';
-export const SUBTASK_ASSIGNED = 'A subtask have been assigned to you.';
-export const WELCOME_MESSAGE = 'Welcome to Xtern.ai';
-export const SLA_BREACH = 'SLA Breach';
-export const SLA_WARNING = 'SLA Warning';
+export enum UserStatus {
+  ACTIVE = 'ACTIVE', // Verified and active
+  INACTIVE = 'INACTIVE', // Deactivated by user or admin
+  PENDING_EMAIL_VERIFICATION = 'PENDING_EMAIL_VERIFICATION', // Registered but email not verified
+  PENDING_DRIVER_VERIFICATION = 'PENDING_DRIVER_VERIFICATION', // Email verified, driver docs submitted, pending admin approval
+  SUSPENDED = 'SUSPENDED', // Temporarily suspended by admin
+  BANNED = 'BANNED', // Permanently banned by admin
+}
+
+export enum DriverVerificationStatus {
+  NOT_SUBMITTED = 'NOT_SUBMITTED',
+  PENDING = 'PENDING',
+  VERIFIED = 'VERIFIED',
+  REJECTED = 'REJECTED',
+}
 ````
 
-## File: src/core/decorators/index.ts
+## File: src/core/enums/vehicle.enum.ts
 ````typescript
-export * from './user.decorator';
-````
-
-## File: src/core/decorators/user.decorator.ts
-````typescript
-/* eslint-disable @typescript-eslint/no-explicit-any */
-import { createParamDecorator, ExecutionContext } from '@nestjs/common';
-
-import { IUser } from '../../core/interfaces';
-
-export const User = createParamDecorator<any, any>(
-  (data: string, ctx: ExecutionContext): IUser | any => {
-    const request = ctx.switchToHttp().getRequest();
-    const user = request.user;
-
-    // eslint-disable-next-line security/detect-object-injection
-    return data ? user[data] : user;
-  },
-);
-````
-
-## File: src/core/enums/auth.enum.ts
-````typescript
-export enum PortalType {
-  DRIVER = 'DRIVER',
-  PASSENGER = 'PASSENGER',
-  ADMIN = 'ADMIN',
+export enum VehicleVerificationStatus {
+  NOT_SUBMITTED = 'NOT_SUBMITTED',
+  PENDING = 'PENDING',
+  VERIFIED = 'VERIFIED',
+  REJECTED = 'REJECTED',
 }
 ````
 
@@ -353,81 +934,54 @@ export class HttpExceptionFilter implements ExceptionFilter<HttpException> {
 export * from './http-exception.filter';
 ````
 
-## File: src/core/guards/authenticate.guard.ts
+## File: src/core/helpers/date.helper.ts
 ````typescript
-import {
-  CanActivate,
-  ExecutionContext,
-  Injectable,
-  Logger,
-} from '@nestjs/common';
+import { DateTime, DurationLike } from 'luxon';
 
-import { ErrorHelper } from '../../core/helpers';
-import { IUser, RequestHeadersEnum } from '../../core/interfaces';
-import { TokenHelper } from '../../global/utils/token.utils';
-import { UserSessionService } from '../../global/user-session/service';
-
-@Injectable()
-export class AuthGuard implements CanActivate {
-  private logger = new Logger(AuthGuard.name);
-
-  constructor(
-    private tokenHelper: TokenHelper,
-    private userSession: UserSessionService,
-  ) {}
-
-  async canActivate(context: ExecutionContext): Promise<boolean> {
-    const req = context.switchToHttp().getRequest();
-
-    const authorization =
-      req.headers[RequestHeadersEnum.Authorization] ||
-      String(req.cookies.accessToken);
-
-    if (!authorization) {
-      ErrorHelper.ForbiddenException('Authorization header is required');
-    }
-
-    const user = await this.verifyAccessToken(authorization);
-
-    req.user = user;
-
-    return true;
+export class DateHelper {
+  static isAfter(date: Date, dateToCompare: Date): boolean {
+    return (
+      DateTime.fromJSDate(new Date(date)) >
+      DateTime.fromJSDate(new Date(dateToCompare))
+    );
   }
 
-  async verifyAccessToken(authorization: string): Promise<IUser> {
-    const [bearer, accessToken] = authorization.split(' ');
+  static addToCurrent(duration: DurationLike): Date {
+    const dt = DateTime.now();
+    return dt.plus(duration).toJSDate();
+  }
 
-    if (bearer == 'Bearer' && accessToken !== '') {
-      const user = this.tokenHelper.verify<IUser & { sessionId: string }>(
-        accessToken,
-      );
-
-      const session = await this.userSession.get(user._id);
-
-      if (!session) {
-        this.logger.error(`verifyAccessToken: Session not found ${user._id}`);
-        ErrorHelper.UnauthorizedException('Unauthorized!');
-      }
-
-      if (session.sessionId !== user.sessionId) {
-        this.logger.error(
-          `verifyAccessToken: SessionId not match ${session.sessionId} - ${user.sessionId}`,
-        );
-        ErrorHelper.UnauthorizedException('Unauthorized');
-      }
-
-      return user;
-    } else {
-      this.logger.error(`verifyAccessToken: Invalid token ${accessToken}`);
-      ErrorHelper.UnauthorizedException('Unauthorized');
-    }
+  static isAfterCurrent(date: Date): boolean {
+    const d1 = DateTime.fromJSDate(date ?? new Date());
+    const d2 = DateTime.now();
+    return d2 > d1;
   }
 }
 ````
 
-## File: src/core/guards/index.ts
+## File: src/core/helpers/ecrypt.helper.ts
 ````typescript
-export * from './authenticate.guard';
+import { Injectable } from '@nestjs/common';
+import * as bcrypt from 'bcryptjs';
+
+@Injectable()
+export class EncryptHelper {
+  async hash(str: string, saltRounds = 10): Promise<string> {
+    return await bcrypt.hash(str, saltRounds);
+  }
+
+  async compare(str: string, hash: string): Promise<boolean> {
+    return bcrypt.compare(str, hash);
+  }
+
+  compareSync(str: string, hash: string): boolean {
+    return bcrypt.compareSync(str, hash);
+  }
+
+  hashSync(str: string, saltRounds = 10): string {
+    return bcrypt.hashSync(str, saltRounds);
+  }
+}
 ````
 
 ## File: src/core/helpers/error.utils.ts
@@ -454,12 +1008,6 @@ export class ErrorHelper {
     throw new HttpException(msg, HttpStatus.INTERNAL_SERVER_ERROR);
   }
 }
-````
-
-## File: src/core/helpers/index.ts
-````typescript
-export * from './error.utils';
-export * from './ecrypt.helper';
 ````
 
 ## File: src/core/interceptors/index.ts
@@ -576,161 +1124,6 @@ export enum RequestMethodEnum {
 }
 ````
 
-## File: src/core/interfaces/http/index.ts
-````typescript
-export * from './http.interface';
-````
-
-## File: src/core/interfaces/user/index.ts
-````typescript
-export * from './user.interface';
-export * from './role.interface';
-
-export enum StatusEnum {
-  ACTIVE = 'Active',
-  INACTIVE = 'inActive',
-}
-````
-
-## File: src/core/interfaces/user/role.interface.ts
-````typescript
-export enum RoleNameEnum {
-  Admin = 'ADMIN',
-  Driver = 'DRIVER',
-  Passenger = 'PASSENGER',
-}
-
-export enum ActionEnum {
-  Manage = 'manage',
-  Create = 'create',
-  Read = 'read',
-  Update = 'update',
-  Delete = 'delete',
-}
-
-export enum Subject {
-  UserManagement = 'USER_MANAGEMENT',
-  RideManagement = 'RIDE_MANAGEMENT',
-}
-
-export interface IAction {
-  action: ActionEnum;
-  subject: Subject;
-  description: string;
-}
-
-export interface IRole {
-  name: RoleNameEnum;
-  description: string;
-  actions: IAction[];
-}
-
-export enum UserGender {
-  MALE = 'MALE',
-  FEMALE = 'FEMALE',
-  OTHERS = 'OTHERS',
-}
-````
-
-## File: src/core/interfaces/user/user.interface.ts
-````typescript
-/* eslint-disable @typescript-eslint/no-explicit-any */
-import { StatusEnum } from '.';
-import { UserGender } from './role.interface';
-
-export interface IUser {
-  _id?: string;
-  firstName: string;
-  lastName: string;
-  email: string;
-  reasonToJoin?: string;
-  profession?: string;
-  pathway?: string;
-  techStacks?: object;
-  assessmentScore?: string;
-  emailConfirm: boolean;
-  createdAt?: Date;
-  lastSeen?: Date;
-  status?: StatusEnum;
-}
-
-export interface IUser {
-  _id?: string;
-  email: string;
-  firstName: string;
-  lastName: string;
-  avatar?: string;
-  about?: string;
-  country?: string;
-  gender?: UserGender;
-  phoneNumber?: string;
-  emailConfirm: boolean;
-  createdAt?: Date;
-  lastSeen?: Date;
-  status?: StatusEnum;
-}
-
-export interface IDriver {
-  _id?: string;
-  email: string;
-  firstName: string;
-  lastName: string;
-  avatar?: string;
-  about?: string;
-  country?: string;
-  gender?: UserGender;
-  phoneNumber?: string;
-  emailConfirm: boolean;
-  createdAt?: Date;
-  lastSeen?: Date;
-  status?: StatusEnum;
-}
-
-export interface IPassenger {
-  _id?: string;
-  email: string;
-  firstName: string;
-  lastName: string;
-  avatar?: string;
-  about?: string;
-  country?: string;
-  gender?: UserGender;
-  phoneNumber?: string;
-  emailConfirm: boolean;
-  createdAt?: Date;
-  lastSeen?: Date;
-  status?: StatusEnum;
-}
-
-export interface IAdmin {
-  _id?: string;
-  email: string;
-  firstName: string;
-  lastName: string;
-  avatar?: string;
-  about?: string;
-  country?: string;
-  gender?: UserGender;
-  phoneNumber?: string;
-  emailConfirm: boolean;
-  createdAt?: Date;
-  lastSeen?: Date;
-  status?: StatusEnum;
-}
-
-export interface IUserMail {
-  email: string;
-  firstName: string;
-}
-
-export enum UserLoginStrategy {
-  LOCAL = 'local',
-  GOOGLE = 'google',
-  FACEBOOK = 'facebook',
-  APPLE = 'apple',
-}
-````
-
 ## File: src/core/redis/redis.module.ts
 ````typescript
 import {
@@ -823,101 +1216,13 @@ import { SecretsService } from './service';
   imports: [
     ConfigModule.forRoot({
       envFilePath: ['.env'],
+      isGlobal: true,
     }),
   ],
   providers: [SecretsService],
   exports: [SecretsService],
 })
 export class SecretsModule {}
-````
-
-## File: src/global/secrets/service.ts
-````typescript
-import { Injectable } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
-
-@Injectable()
-export class SecretsService extends ConfigService {
-  constructor() {
-    super();
-  }
-
-  NODE_ENV = this.get<string>('NODE_ENV');
-  PORT = this.get('PORT');
-  MONGO_URI = this.get('MONGO_URI');
-
-  get mailSecret() {
-    return {
-      MAIL_USERNAME: this.get('MAIL_USERNAME'),
-      MAIL_PASSWORD: this.get('MAIL_PASSWORD'),
-      MAIL_HOST: this.get('MAIL_HOST'),
-      MAIL_PORT: this.get('MAIL_PORT'),
-      SENDER_EMAIL: this.get<string>('SENDER_EMAIL', ''),
-      NAME: this.get<string>('NAME', ''),
-    };
-  }
-
-  get googleSecret() {
-    return {
-      GOOGLE_CLIENT_ID: this.get('GOOGLE_CLIENT_ID'),
-      GOOGLE_CLIENT_SECRET: this.get('GOOGLE_CLIENT_SECRET'),
-    };
-  }
-
-  get jwtSecret() {
-    return {
-      JWT_SECRET: this.get('APP_SECRET'),
-      JWT_EXPIRES_IN: this.get('ACCESS_TOKEN_EXPIRES', '14d'),
-    };
-  }
-
-  get database() {
-    return {
-      host: this.get('MONGO_HOST'),
-      user: this.get('MONGO_ROOT_USERNAME'),
-      pass: this.get('MONGO_ROOT_PASSWORD'),
-    };
-  }
-
-  get userSessionRedis() {
-    return {
-      REDIS_HOST: this.get('REDIS_HOST'),
-      REDIS_USER: this.get('REDIS_USERNAME'),
-      REDIS_PASSWORD: this.get('REDIS_PASSWORD'),
-      REDIS_PORT: this.get('REDIS_PORT'),
-    };
-  }
-}
-````
-
-## File: src/global/user-session/module.ts
-````typescript
-import { Module } from '@nestjs/common';
-import { RedisModule, RedisModuleOptions } from '@nestjs-modules/ioredis';
-
-import { SecretsService } from '../secrets/service';
-import { UserSessionService } from './service';
-
-@Module({
-  imports: [
-    RedisModule.forRootAsync({
-      useFactory: ({ userSessionRedis }: SecretsService) => {
-        return {
-          config: {
-            host: userSessionRedis.REDIS_HOST,
-            port: userSessionRedis.REDIS_PORT,
-            username: userSessionRedis.REDIS_USER,
-            password: userSessionRedis.REDIS_PASSWORD,
-          },
-        } as unknown as RedisModuleOptions;
-      },
-      inject: [SecretsService],
-    }),
-  ],
-  providers: [UserSessionService],
-  exports: [UserSessionService],
-})
-export class UserSessionModule {}
 ````
 
 ## File: src/global/user-session/service.ts
@@ -1160,905 +1465,6 @@ import { TokenHelper } from './utils/token.utils';
 export class GlobalModule {}
 ````
 
-## File: src/modules/auth/dto/auth.dto.ts
-````typescript
-import {
-  IsBoolean,
-  IsEmail,
-  IsEnum,
-  IsObject,
-  IsOptional,
-  IsString,
-  IsUrl,
-} from 'class-validator';
-import { PASSWORD_PATTERN } from 'src/core/constants';
-import { PortalType } from 'src/core/enums/auth.enum';
-import { IsMatchPattern } from 'src/core/validators';
-
-export class EmailConfirmationDto {
-  @IsString()
-  code: string;
-}
-
-export class TCodeLoginDto {
-  @IsString()
-  tCode: string;
-
-  @IsString()
-  portalType: PortalType;
-}
-
-export class CallbackURLDto {
-  @IsUrl({ require_tld: false })
-  @IsOptional()
-  callbackURL: string;
-}
-
-export class RefreshTokenDto {
-  @IsString()
-  token: string;
-}
-
-export class ForgotPasswordDto {
-  @IsString()
-  @IsEmail()
-  email: string;
-}
-
-export class AuthDto {
-  @IsString()
-  @IsOptional()
-  firstName: string;
-
-  @IsString()
-  @IsOptional()
-  lastName: string;
-
-  @IsString()
-  @IsEmail()
-  email: string;
-
-  @IsString()
-  @IsMatchPattern(PASSWORD_PATTERN)
-  password: string;
-}
-
-export class XternCareerPath {
-  @IsString()
-  email: string;
-
-  @IsOptional()
-  @IsString()
-  reasonToJoin?: string;
-
-  @IsString()
-  @IsOptional()
-  profession?: string;
-
-  @IsString()
-  @IsOptional()
-  pathway?: string;
-
-  @IsObject()
-  @IsOptional()
-  techStacks?: object;
-
-  @IsString()
-  @IsOptional()
-  assessmentScore?: string;
-}
-
-export class LoginDto {
-  @IsString()
-  @IsEmail()
-  email: string;
-
-  @IsString()
-  password: string;
-
-  @IsEnum(PortalType)
-  portalType: PortalType;
-
-  @IsOptional()
-  @IsBoolean()
-  rememberMe = false;
-}
-````
-
-## File: src/modules/auth/dto/index.ts
-````typescript
-export * from './auth.dto';
-export * from './update-user.dto';
-````
-
-## File: src/modules/auth/dto/update-user.dto.ts
-````typescript
-import { IsOptional, IsString, IsObject, IsEnum } from 'class-validator';
-
-export class UpdateUserDto {
-  @IsOptional()
-  @IsString()
-  firstName?: string;
-
-  @IsOptional()
-  @IsString()
-  lastName?: string;
-
-  @IsOptional()
-  @IsString()
-  about?: string;
-
-  @IsOptional()
-  @IsString()
-  email?: string;
-}
-````
-
-## File: src/modules/auth/auth.controller.ts
-````typescript
-import {
-  Body,
-  Controller,
-  Get,
-  HttpCode,
-  HttpStatus,
-  Post,
-  UseGuards,
-  Logger,
-  UseInterceptors,
-  UploadedFile,
-} from '@nestjs/common';
-import { AuthService } from './auth.service';
-import {
-  AuthDto,
-  EmailConfirmationDto,
-  ForgotPasswordDto,
-  LoginDto,
-  TCodeLoginDto,
-} from './dto';
-
-import { IDriver, IPassenger } from 'src/core/interfaces';
-import { User as UserDecorator } from 'src/core/decorators';
-import { AuthGuard } from 'src/core/guards';
-import { SecretsService } from 'src/global/secrets/service';
-import { PortalType } from 'src/core/enums/auth.enum';
-import { FileInterceptor } from '@nestjs/platform-express';
-
-@Controller('auth')
-export class AuthController {
-  private logger = new Logger(AuthController.name);
-  constructor(
-    private authService: AuthService,
-    private secretSecret: SecretsService,
-  ) {}
-
-  @Post('/create-user')
-  async register(
-    @Body() body: AuthDto,
-    @Body('portalType') portalType: PortalType,
-  ) {
-    const data = await this.authService.createPortalUser(body, portalType);
-
-    return {
-      data,
-      message: 'User created successfully',
-    };
-  }
-
-  @Post('login')
-  async login(@Body() loginDto: LoginDto) {
-    const data = await this.authService.login(loginDto);
-
-    return {
-      data,
-      message: 'Login successful',
-    };
-  }
-
-  @UseGuards(AuthGuard)
-  @Post('resend-verification')
-  async resendVerificationEmail(@UserDecorator() user: IDriver | IPassenger) {
-    const data = await this.authService.resendVerificationEmail(user._id);
-
-    return {
-      data,
-      message: 'Verification Code Sent Successfully',
-    };
-  }
-
-  @HttpCode(HttpStatus.OK)
-  @Post('/forgot-password')
-  async forgotPassword(
-    @Body() body: ForgotPasswordDto,
-    @Body('callbackURL') query: string,
-  ): Promise<object> {
-    const data = await this.authService.forgotPassword(body.email, query);
-
-    return {
-      data,
-      message: 'Password reset link has been sent to your email',
-    };
-  }
-
-  @HttpCode(HttpStatus.OK)
-  @Post('/reset-password')
-  async resetPassword(
-    @Body('code') code: string,
-    @Body('password') password: string,
-  ): Promise<object> {
-    const data = await this.authService.resetPassword(code, password);
-
-    return {
-      data,
-      message: 'Password Changed Successfully',
-    };
-  }
-
-  @UseGuards(AuthGuard)
-  @HttpCode(HttpStatus.OK)
-  @Post('/confirmation')
-  async verifyEmail(
-    @UserDecorator() user: IDriver | IPassenger,
-    @Body() body: EmailConfirmationDto,
-  ): Promise<object> {
-    const data = await this.authService.verifyUserEmail(user._id, body.code);
-
-    return {
-      data,
-      message: 'Email verified successfully',
-    };
-  }
-
-  @UseGuards(AuthGuard)
-  @HttpCode(HttpStatus.OK)
-  @Get('/logout')
-  async logout(@UserDecorator() user: IDriver | IPassenger): Promise<object> {
-    const data = await this.authService.logoutUser(user._id);
-
-    return {
-      data,
-      message: 'Logout successfully',
-    };
-  }
-
-  // delicate
-  @HttpCode(HttpStatus.OK)
-  @Get('/sync-users')
-  async syncUsers() {
-    const data = await this.authService.syncUsers();
-
-    return {
-      data,
-      message: 'Users Synced successfully',
-    };
-  }
-
-  @HttpCode(HttpStatus.OK)
-  @Post('/tcode-auth')
-  async tCodeAuth(@Body() body: TCodeLoginDto) {
-    const data = await this.authService.tCodeLogin(body.tCode);
-
-    return {
-      data,
-      message: 'Authenticated successfully',
-    };
-  }
-
-  @HttpCode(HttpStatus.OK)
-  @Post('/tcode_auth')
-  async tCodeAuthU(@Body() body: TCodeLoginDto) {
-    return this.tCodeAuth(body);
-  }
-
-  @HttpCode(HttpStatus.OK)
-  @UseGuards(AuthGuard)
-  @Get('/all-users')
-  async getAllUsers() {
-    const data = await this.authService.getAllUsers();
-
-    return {
-      data,
-      message: 'Users Fetched Successfully',
-    };
-  }
-
-  @HttpCode(HttpStatus.OK)
-  @Get('/user')
-  @UseGuards(AuthGuard)
-  async getUser(@UserDecorator() user: IDriver | IPassenger): Promise<object> {
-    const data = await this.authService.getUserInfo(user.email);
-
-    return {
-      data,
-      message: 'User Info Fetched Successfully',
-    };
-  }
-
-  @UseGuards(AuthGuard)
-  @UseInterceptors(FileInterceptor('avatar'))
-  @Post('/user/upload-avatar')
-  async uploadAvatar(
-    @UserDecorator() user: IDriver | IPassenger,
-    @UploadedFile() file: Express.Multer.File,
-  ) {
-    const data = await this.authService.uploadAvatar(user._id, file);
-
-    return {
-      data,
-      message: 'Avatar uploaded successfully',
-    };
-  }
-
-  @UseGuards(AuthGuard)
-  @HttpCode(HttpStatus.OK)
-  @Post('/change-password-confirmation')
-  async changePasswordConfirmation(
-    @UserDecorator() user: IDriver | IPassenger,
-    @Body('oldPassword') body: string,
-  ): Promise<object> {
-    const data = await this.authService.changePasswordConfirmation(user, body);
-
-    return {
-      data,
-      message: 'Change Password Confirmation Sent Successfully',
-    };
-  }
-
-  @UseGuards(AuthGuard)
-  @HttpCode(HttpStatus.OK)
-  @Post('/verify-password-confirmation')
-  async verifychangePasswordConfirmation(
-    @UserDecorator() user: IDriver | IPassenger,
-    @Body('code') code: string,
-  ): Promise<object> {
-    const data = await this.authService.verifychangePasswordConfirmation(
-      user,
-      code,
-    );
-
-    return {
-      data,
-      message: 'Change Password Confirmation Sent Successfully',
-    };
-  }
-
-  @UseGuards(AuthGuard)
-  @HttpCode(HttpStatus.OK)
-  @Post('/change-password')
-  async updatePassword(
-    @UserDecorator() user: IDriver | IPassenger,
-    @Body('password') password: string,
-  ): Promise<object> {
-    const data = await this.authService.updatePassword(user, password);
-
-    return {
-      data,
-      message: 'Password Changed Successfully',
-    };
-  }
-
-  @HttpCode(HttpStatus.OK)
-  @Get('/roles')
-  async getAllRoles(): Promise<object> {
-    const data = await this.authService.getAllRoles();
-
-    return {
-      data,
-      message: 'All Roles Successfully',
-    };
-  }
-
-  @HttpCode(HttpStatus.OK)
-  @Get('/users')
-  async getAllUsersAndRoles(): Promise<object> {
-    const data = await this.authService.getAllUserRoles();
-
-    return {
-      data,
-      message: 'All Users Successfully',
-    };
-  }
-}
-````
-
-## File: src/modules/auth/auth.module.ts
-````typescript
-import { Module } from '@nestjs/common';
-
-@Module({})
-export class AuthModule {}
-````
-
-## File: src/modules/auth/auth.service.ts
-````typescript
-import { Injectable, Logger } from '@nestjs/common';
-import {
-  EMAIL_ALREADY_EXISTS,
-  INVALID_CODE,
-  INVALID_CODE_FORGOT_PASSWORD,
-  INVALID_EMAIL_OR_PASSWORD,
-  INVALID_USER,
-  PORTAL_TYPE_ERROR,
-} from 'src/core/constants/messages.constant';
-import { EncryptHelper, ErrorHelper } from 'src/core/helpers';
-import {
-  UserLoginStrategy,
-  IDriver,
-  IPassenger,
-  StatusEnum,
-  RoleNameEnum,
-} from 'src/core/interfaces';
-import { DriverRegistrationDto } from '../driver/dto/driver.dto';
-import { PassengerRegistrationDto } from '../passenger/dto/passenger.dto';
-import { UserService } from '../user/user.service';
-import { InjectModel } from '@nestjs/mongoose';
-import { Model } from 'mongoose';
-import { Token } from '../user/schemas/token.entity';
-import { MailEvent } from '../mail/mail.event';
-import { UserSessionService } from 'src/global/user-session/service';
-import { TokenHelper } from 'src/global/utils/token.utils';
-import { LoginDto } from './dto/auth.dto.ts';
-import { Country } from '../seed/schemas';
-import { PortalType } from 'src/core/enums/auth.enum';
-import { Role } from '../admin/entities/role.entity';
-import { UpdateUserDto } from './dto/update-user.dto';
-import { AwsS3Service } from '../aws-s3-bucket';
-import { User } from './entities/schemas';
-import { UserInfoResponse } from 'src/core/interfaces/auth/auth.interfaces';
-
-@Injectable()
-export class AuthService {
-  private logger = new Logger(AuthService.name);
-
-  constructor(
-    @InjectModel(Token.name) private tokenRepo: Model<Token>,
-    @InjectModel(Role.name) private roleRepo: Model<Role>,
-    @InjectModel(User.name) private userRepo: Model<User>,
-    @InjectModel(Country.name)
-    private userService: UserService,
-    private mailEvent: MailEvent,
-    private encryptHelper: EncryptHelper,
-    private tokenHelper: TokenHelper,
-    private userSessionService: UserSessionService,
-    private awsS3Service: AwsS3Service,
-  ) {}
-
-  async createPortalUser(
-    payload: MentorRegistrationDto | XternRegistrationDto,
-    portalType: PortalType,
-  ): Promise<any> {
-    try {
-      const user = await this.createUser(payload, {
-        strategy: UserLoginStrategy.LOCAL,
-        portalType,
-      });
-
-      const tokenInfo = await this.generateUserSession(user);
-
-      return {
-        token: tokenInfo,
-        user: user,
-      };
-    } catch (error) {
-      ErrorHelper.ConflictException('Email Already Exist');
-      this.logger.log('createPortalUser', { error });
-    }
-  }
-
-  private async generateUserSession(
-    user: IDriver | IPassenger,
-    rememberMe = true,
-  ) {
-    const tokenInfo = this.tokenHelper.generate(user);
-
-    await this.userSessionService.create(user, {
-      sessionId: tokenInfo.sessionId,
-      rememberMe,
-    });
-
-    return tokenInfo;
-  }
-
-  async createUser(
-    payload: MentorRegistrationDto | XternRegistrationDto,
-    options: {
-      strategy: UserLoginStrategy;
-      portalType: PortalType;
-      adminCreated?: boolean;
-    },
-    roleNames?: RoleNameEnum[],
-  ): Promise<IPassenger | IDriver> {
-    const { email } = payload;
-    const { strategy, portalType, adminCreated } = options;
-
-    const emailQuery = {
-      email: email.toLowerCase(),
-    };
-
-    let emailExist, user;
-
-    if (!portalType) {
-      ErrorHelper.BadRequestException(PORTAL_TYPE_ERROR);
-    }
-
-    emailExist = await this.userRepo.findOne(emailQuery, { getDeleted: true });
-
-    if (emailExist) {
-      ErrorHelper.BadRequestException(EMAIL_ALREADY_EXISTS);
-    }
-
-    const roleData = await this.roleRepo.findOne({ name: portalType });
-
-    user = await this.userRepo.create({
-      email: payload.email.toLowerCase(),
-      password: await this.encryptHelper.hash(payload.password),
-      firstName: payload.firstName,
-      lastName: payload.lastName,
-      country: payload.country,
-      strategy,
-      hasChangedPassword: strategy === UserLoginStrategy.LOCAL,
-      emailConfirm: strategy === UserLoginStrategy.LOCAL ? false : true,
-      portalType: portalType,
-      roles: [roleData],
-    });
-
-    return user.toObject();
-  }
-
-  async login(params: LoginDto) {
-    try {
-      const { email, password, portalType } = params;
-
-      const user = await this.validateUser(email, password, portalType);
-
-      const tokenInfo = await this.generateUserSession(user, params.rememberMe);
-
-      await this.userRepo.updateOne(
-        { _id: user._id },
-        { lastSeen: new Date() },
-      );
-
-      return {
-        token: tokenInfo,
-        user,
-      };
-    } catch (error) {
-      ErrorHelper.BadRequestException(error);
-    }
-  }
-
-  async validateUser(
-    email: string,
-    password: string,
-    portalType?: PortalType,
-  ): Promise<IDriver | IPassenger> {
-    const emailQuery = {
-      email: email.toLowerCase(),
-    };
-
-    const user = await this.userRepo
-      .findOne(emailQuery)
-      .populate('roles', 'name');
-
-    if (!user) {
-      ErrorHelper.BadRequestException(INVALID_EMAIL_OR_PASSWORD);
-    }
-
-    const passwordMatch = await this.encryptHelper.compare(
-      password,
-      user.password,
-    );
-    if (!passwordMatch) {
-      ErrorHelper.BadRequestException(INVALID_EMAIL_OR_PASSWORD);
-    }
-
-    if (user.status === StatusEnum.INACTIVE) {
-      ErrorHelper.BadRequestException('Your account is inactive');
-    }
-
-    const roleNames = user.roles.map((role) => role.name);
-
-    if (!roleNames.includes(portalType as any)) {
-      ErrorHelper.ForbiddenException(
-        'Forbidden: You does not have the required role to access this route.',
-      );
-    }
-
-    return user.toObject();
-  }
-
-  async resendVerificationEmail(userId: string) {
-    const user = await this.userRepo.findById(userId);
-
-    if (!user) {
-      ErrorHelper.BadRequestException('User not found');
-    }
-
-    if (user.emailConfirm) {
-      ErrorHelper.BadRequestException('Email already confirmed');
-    }
-
-    const confirmationCode = await this.userService.generateOtpCode(
-      user.toObject(),
-    );
-
-    await this.mailEvent.sendUserConfirmation(user, confirmationCode);
-
-    return user;
-  }
-
-  async forgotPassword(email: string, callbackURL: string) {
-    const emailQuery = {
-      email: email.toLowerCase(),
-    };
-
-    if (!callbackURL) {
-      ErrorHelper.BadRequestException('Please input a valid callbackURL');
-    }
-
-    const user = await this.userRepo.findOne(emailQuery);
-
-    if (!user) {
-      ErrorHelper.BadRequestException('User does not exist');
-    }
-
-    const confirmationCode = await this.userService.generateOtpCode(
-      user.toObject(),
-      {
-        numberOnly: false,
-        length: 21,
-      },
-    );
-
-    await this.mailEvent.sendResetPassword(user, confirmationCode, callbackURL);
-
-    return {
-      success: true,
-    };
-  }
-
-  async resetPassword(code: string, password: string) {
-    const token = await this.tokenRepo.findOne({ code });
-
-    if (!token) {
-      ErrorHelper.BadRequestException(INVALID_CODE_FORGOT_PASSWORD);
-    }
-
-    const user = await this.userRepo.findById(token.user);
-
-    if (!user) {
-      ErrorHelper.BadRequestException(INVALID_USER);
-    }
-
-    // Ensure new password is not the same as the old password
-    const passwordMatch = await this.encryptHelper.compare(
-      password,
-      user.password,
-    );
-    if (passwordMatch) {
-      ErrorHelper.BadRequestException(
-        'New password cannot be the same as the previous password',
-      );
-    }
-
-    await this.userService.verifyOtpCode(user.toObject(), code);
-
-    const hashedPassword = await this.encryptHelper.hash(password);
-
-    await this.userRepo.findByIdAndUpdate(user._id, {
-      password: hashedPassword,
-      hasChangedPassword: true, // Mark password as changed
-    });
-
-    return {
-      success: true,
-    };
-  }
-
-  async verifyUserEmail(userId: string, code: string) {
-    const errorMessage = 'OTP has expired';
-
-    const user = await this.userRepo.findById(userId);
-
-    if (!user) {
-      ErrorHelper.BadRequestException('User not found');
-    }
-
-    await this.userService.verifyOtpCode(user.toObject(), code, errorMessage);
-
-    const updatedUser = await this.userRepo.findByIdAndUpdate(
-      user._id,
-      { emailConfirm: true },
-      { new: true },
-    );
-
-    return updatedUser;
-  }
-
-  async logoutUser(userId: string) {
-    return await this.userService.logout(userId);
-  }
-
-  async syncUsers() {
-    return await this.userService.syncUsers();
-  }
-
-  async tCodeLogin(code: string) {
-    const token = await this.tokenRepo.findOne({ code });
-
-    if (!token) {
-      ErrorHelper.BadRequestException(INVALID_CODE);
-    }
-
-    let user = null;
-
-    user = await this.userRepo.findById(token.user);
-
-    if (!user) {
-      ErrorHelper.BadRequestException(INVALID_USER);
-    }
-
-    await this.userService.verifyOtpCode(user.toObject(), code);
-    const tokenInfo = await this.generateUserSession(user.toObject());
-
-    return {
-      token: tokenInfo,
-      user: user.toObject(),
-    };
-  }
-
-  async getAllUsers() {
-    return await this.userRepo.find({});
-  }
-
-  async getUserInfo(email: string): Promise<UserInfoResponse> {
-    const user = await this.userRepo.findOne({ email });
-
-    if (!user) {
-      ErrorHelper.NotFoundException('No User Found.');
-    }
-
-    return { ...user.toJSON() };
-  }
-
-  async updateUserInfo(
-    userId: string,
-    updateUserDto: UpdateUserDto,
-  ): Promise<IDriver | IPassenger> {
-    const updatedUser = await this.userRepo.findByIdAndUpdate(
-      userId,
-      { $set: updateUserDto },
-      { new: true, runValidators: true },
-    );
-
-    if (!updatedUser) {
-      ErrorHelper.NotFoundException(INVALID_USER);
-    }
-
-    return updatedUser.toObject();
-  }
-
-  async uploadAvatar(userId: string, file: Express.Multer.File) {
-    const user = await this.userRepo.findById(userId);
-
-    if (!user) {
-      ErrorHelper.NotFoundException('User not found');
-    }
-
-    if (!file) {
-      ErrorHelper.BadRequestException('Image is required');
-    }
-
-    const allowedMimeTypes = ['image/jpeg', 'image/png', 'image/gif'];
-    if (!allowedMimeTypes.includes(file.mimetype)) {
-      ErrorHelper.BadRequestException(
-        'Unsupported file type. Please upload a JPEG, PNG, or GIF image.',
-      );
-    }
-
-    const maxSizeInBytes = 5 * 1024 * 1024; // 5 MB
-    if (file.size > maxSizeInBytes) {
-      ErrorHelper.BadRequestException(
-        'File size exceeds the maximum limit of 5 MB.',
-      );
-    }
-
-    const uploadedUrl = await this.awsS3Service.uploadAttachment(file);
-
-    await this.userRepo.findByIdAndUpdate(userId, { avatar: uploadedUrl });
-
-    return { avatar: uploadedUrl };
-  }
-
-  async changePasswordConfirmation(
-    user: IPassenger | IDriver,
-    oldPassword: string,
-  ) {
-    const _user = await this.userRepo.findById(user._id);
-
-    if (_user.strategy !== UserLoginStrategy.LOCAL && !_user.password) {
-      ErrorHelper.ForbiddenException(
-        'You can not change your password since you do not have one, please use the forgot password to get a password',
-      );
-    }
-
-    const passwordMatch = await this.encryptHelper.compare(
-      oldPassword,
-      _user.password,
-    );
-
-    if (!passwordMatch) {
-      ErrorHelper.BadRequestException('Please enter a valid current password');
-    }
-
-    const confirmationCode = await this.userService.generateOtpCode(user);
-
-    await this.mailEvent.sendUserConfirmation(
-      user as IDriver | IPassenger,
-      confirmationCode,
-    );
-
-    return {
-      success: true,
-    };
-  }
-
-  async verifychangePasswordConfirmation(
-    user: IDriver | IPassenger,
-    code: string,
-  ) {
-    const errorMessage = 'OTP has expired’';
-
-    await this.userService.verifyOtpCode(user, code, errorMessage);
-
-    return {
-      success: true,
-    };
-  }
-
-  async updatePassword(user: IDriver | IPassenger, password: string) {
-    const userDoc = await this.userRepo.findById(user._id);
-
-    const hashedPassword = await this.encryptHelper.hash(password);
-    userDoc.password = hashedPassword;
-
-    await this.userRepo.updateOne(
-      {
-        _id: user._id,
-      },
-      {
-        password: hashedPassword,
-        hasChangedPassword: true,
-      },
-    );
-  }
-
-  async getAllRoles() {
-    return await this.roleRepo.find({});
-  }
-
-  async getAllUserRoles() {
-    return await this.userRepo.find().populate('roles');
-  }
-
-  async sessionExists(params: LoginDto): Promise<{
-    exists: boolean;
-    user: IDriver | IPassenger;
-  }> {
-    const { email, password } = params;
-
-    const user = await this.validateUser(email, password);
-
-    const session = await this.userSessionService.checkSession(user._id);
-
-    return {
-      exists: !!session,
-      user,
-    };
-  }
-}
-````
-
 ## File: src/modules/config/config.module.ts
 ````typescript
 import { Module } from '@nestjs/common';
@@ -2073,6 +1479,24 @@ import { Module } from '@nestjs/common';
 
 @Module({})
 export class DatabaseModule {}
+````
+
+## File: src/modules/driver/dto/driver-regidtration.dto.ts
+````typescript
+import { BaseRegistrationDto } from 'src/modules/auth/dto/base-registeration.dto';
+
+// For the initial user creation, driver-specific details like license and vehicle info
+// are usually collected *after* the account is created during an onboarding/verification flow.
+// Therefore, this DTO extends the base without additional required fields for registration itself.
+export class DriverRegistrationDto extends BaseRegistrationDto {}
+````
+
+## File: src/modules/driver/riders.module.ts
+````typescript
+import { Module } from '@nestjs/common';
+
+@Module({})
+export class RidersModule {}
 ````
 
 ## File: src/modules/geolocation/geolocation.module.ts
@@ -2098,21 +1522,165 @@ import { HealthController } from './health.controller';
 export class HealthModule {}
 ````
 
-## File: src/modules/mail/enums/index.ts
+## File: src/modules/mail/cron-job/email.processor.ts
 ````typescript
-export * from './mail.enum';
+import { Processor, Process } from '@nestjs/bull';
+import { Job } from 'bull';
+import { Injectable, Logger } from '@nestjs/common';
+import { MailerService } from '@nestjs-modules/mailer';
+import * as ejs from 'ejs';
+import * as fs from 'fs';
+import * as path from 'path';
+
+@Processor('emailQueue')
+@Injectable()
+export class EmailProcessor {
+  private logger = new Logger(EmailProcessor.name);
+
+  constructor(private mailerService: MailerService) {}
+
+  private from = '"TravEazi Team" <notifications@travezi.com>';
+
+  // Resolve the path and read the template file
+  private marketingTemplatePath = path.resolve(
+    __dirname,
+    '..',
+    'templates',
+    'marketing.ejs',
+  );
+
+  private marketingEmailTemplate = fs.readFileSync(this.marketingTemplatePath, {
+    encoding: 'utf-8',
+  });
+
+  @Process('sendBulkEmail')
+  async handleBulkEmailJob(job: Job) {
+    const data = job.data;
+    const batchSize = 50; // Number of emails per batch
+    const maxRetries = 3; // Maximum number of retries
+    const batches = [];
+
+    for (let i = 0; i < data.to.length; i += batchSize) {
+      batches.push(data.to.slice(i, i + batchSize));
+    }
+
+    this.logger.log(`Scheduled time for job ${job.id}: ${data.sendTime}`);
+
+    for (const batch of batches) {
+      const emailPromises = batch.map((recipient) => {
+        let retries = 0;
+        const sendEmail = async () => {
+          try {
+            return await this.mailerService.sendMail({
+              to: recipient.email,
+              from: this.from,
+              subject: data.subject,
+              context: {
+                name: recipient.firstName,
+                email: data.email,
+                body: data.body,
+              },
+              headers: {
+                'X-Category': data.type,
+              },
+              html: ejs.render(this.marketingEmailTemplate, {
+                subject: data.subject,
+                name: recipient.firstName,
+                body: data.body,
+              }),
+              text: ejs.render(this.marketingEmailTemplate, {
+                subject: data.subject,
+                name: recipient.firstName,
+                body: data.body,
+              }),
+            });
+          } catch (error) {
+            if (retries < maxRetries) {
+              retries++;
+              this.logger.warn(
+                `Retry ${retries} for email to ${recipient.email}`,
+              );
+              await new Promise((resolve) => setTimeout(resolve, 1000)); // Wait for 1 second before retrying
+              return sendEmail();
+            } else {
+              throw error;
+            }
+          }
+        };
+        return sendEmail();
+      });
+
+      try {
+        const results = await Promise.all(emailPromises);
+        this.logger.log(`Batch sent successfully: ${results}`);
+      } catch (error) {
+        this.logger.error(`Failed to send batch: ${error.message}`);
+        throw error;
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 1000)); // Wait for 1 second before sending the next batch
+    }
+
+    await job.update({ status: 'completed' });
+    return { status: 'completed', jobId: job.id };
+  }
+}
 ````
 
-## File: src/modules/mail/enums/mail.enum.ts
+## File: src/modules/mail/dto/index.ts
 ````typescript
-export enum MailType {
-  USER_CONFIRMATION = 'USER_CONFIRMATION',
-  RESET_PASSWORD = 'RESET_PASSWORD',
-  USER_CREDENTIALS = 'USER_CREDENTIALS',
-  IN_APP_EMAIL = 'IN_APP_EMAIL',
-  ANNOUNCEMENTS = 'ANNOUNCEMENTS',
-  REMINDERS = 'REMINDERS',
-  UPDATES = 'UPDATES',
+export * from './mail.dto';
+````
+
+## File: src/modules/mail/dto/mail.dto.ts
+````typescript
+import {
+  IsArray,
+  IsBoolean,
+  IsEnum,
+  IsNumber,
+  IsObject,
+  IsOptional,
+  IsString,
+} from 'class-validator';
+import { MailType } from '../enums/mail.enum';
+import { envType } from 'src/core/interfaces';
+import { PaginationDto } from 'src/core/dto';
+
+export class SendMailDto {
+  @IsArray()
+  @IsOptional()
+  to?: string[];
+
+  @IsString()
+  @IsOptional()
+  body?: string;
+
+  @IsString()
+  @IsOptional()
+  cc?: string;
+
+  @IsString()
+  subject: string;
+
+  @IsEnum(MailType)
+  type: MailType;
+
+  @IsObject()
+  data: object & { env?: envType };
+
+  @IsBoolean()
+  saveAsNotification: boolean;
+}
+
+export class GetScheduleEmailsDto extends PaginationDto {
+  @IsNumber()
+  @IsOptional()
+  limit: number;
+
+  @IsNumber()
+  @IsOptional()
+  page: number;
 }
 ````
 
@@ -2172,220 +1740,6 @@ export class Email extends Document {
 }
 
 export const EmailSchema = SchemaFactory.createForClass(Email);
-````
-
-## File: src/modules/mail/templates/email/emailnotification.ejs
-````
-<!doctype html>
-<html>
-  <meta charset="utf-8" />
-  <title><%= locals.subject %></title>
-
-  <head>
-    <link
-      href="https://fonts.googleapis.com/css2?family=DM+Sans&family=Inter:wght@100;200;300;400;600&family=Joan&family=Roboto:ital,wght@0,100;0,300;1,100&display=swap"
-      rel="stylesheet"
-    />
-    <style>
-      * {
-        font-family: 'DM Sans', sans-serif;
-        color: #000000;
-        font-weight: 400;
-        font-size: 14px;
-        line-height: 24px;
-        text-align: justify;
-      }
-
-      body {
-        background: #f0f7ff;
-        -webkit-font-smoothing: antialiased;
-        font-size: 14px;
-        line-height: 1.4;
-        margin: 1.5rem;
-        display: flex;
-        justify-content: center;
-        padding: 1rem;
-        -ms-text-size-adjust: 100%;
-        -webkit-text-size-adjust: 100%;
-      }
-
-      .main {
-        padding: 2rem;
-        width: auto;
-        background: white;
-        margin: 1.5rem;
-        border-radius: 8px;
-        box-shadow: 0px 10px 30px rgba(0, 0, 0, 0.01);
-      }
-
-      .container {
-        padding: 24px;
-        max-width: 600px;
-        background: #eef2f5;
-        border-radius: 10px;
-      }
-
-      p {
-        font-size: 14px;
-      }
-
-      a {
-        color: #000;
-        text-decoration: none;
-      }
-
-      footer {
-        margin-top: 2rem;
-      }
-
-      footer div,
-      footer aside {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        width: 100%;
-        text-align: center;
-        gap: 8px;
-      }
-
-      footer div {
-        width: 30%;
-        margin: 16px auto;
-      }
-
-      .main-header {
-        font-style: normal;
-        font-weight: 700;
-        font-size: 20px;
-        margin-bottom: 10px;
-      }
-
-      .user-name {
-        font-style: normal;
-        font-size: 16px;
-      }
-
-      .fw-bold {
-        font-weight: 600;
-        text-decoration: none;
-      }
-
-      .bold {
-        font-style: bold;
-        font-size: 30px;
-      }
-
-      .center-text {
-        width: 100%;
-        margin: auto;
-        text-align: center;
-      }
-
-      .mt-n5 {
-        margin-top: -5px;
-      }
-
-      .my-50 {
-        margin: 15px 0px;
-        text-align: center;
-      }
-
-      main aside {
-        margin-top: 16px;
-        font-size: 14px;
-      }
-
-      .landmark {
-        color: #616161;
-        margin-bottom: 16px;
-        margin: auto;
-        width: 100%;
-        text-align: center;
-      }
-
-      .image {
-        display: block;
-        width: 80px;
-        margin: auto;
-        object-fit: contain;
-        pointer-events: none;
-      }
-
-      .logo {
-        height: 30px;
-        width: 30px;
-        margin: auto;
-      }
-
-      img.g-img + div {
-        display: none;
-      }
-
-      .content {
-        padding: 0 10px;
-      }
-
-      table {
-        margin: 20px 5px;
-      }
-
-      .bg-bg {
-        background: #eef2f5;
-        padding: 20px 10px;
-        width: 30%;
-        margin: 10px auto;
-      }
-
-      .bg-dark {
-        color: #000;
-        font-weight: 700;
-      }
-    </style>
-  </head>
-
-  <body>
-    <div class="container">
-      <a href="#">
-        <img
-          class="image g-img"
-          src=""
-          alt="TravEazi.io logo"
-        />
-      </a>
-      <div class="main">
-        <table role="presentation" cellpadding="2px" class="content">
-          <p class="user-name">Hi <%= locals.name %>,</p>
-          <h5>
-            <%- locals.body %>
-          </h5>
-          <p>Best regards,</p>
-              <!-- <a href="">
-              <img
-                class="image"
-                src=<%= locals.image %>
-                alt=""
-              />
-            </a> -->
-
-          <p>
-            <a class="bg-dark" href="https://www.traveazi.com"
-              >TravEzi Support Team</a
-            >
-          </p>
-        </table>
-      </div>
-      <footer>
- 
-        <aside>
-          <small class="landmark"
-            >Copyright &copy; <%= new Date().getFullYear() %>
-          </small>
-        </aside>
-        <p class="center-text fw-bold">TravEazi</p>
-      </footer>
-    </div>
-  </body>
-</html>
 ````
 
 ## File: src/modules/mail/templates/confrimation.ejs
@@ -2606,52 +1960,1486 @@ export const EmailSchema = SchemaFactory.createForClass(Email);
 </html>
 ````
 
-## File: src/modules/mail/mail.controller.ts
+## File: src/modules/passenger/dto/passenger.dto.ts
 ````typescript
-import { Body, Controller, Logger, Post } from '@nestjs/common';
-import { SendMailDto } from './dto/mail.dto';
-import { MailService } from './mail.service';
-import { MailType } from './enums';
+import { BaseRegistrationDto } from 'src/modules/auth/dto/base-registeration.dto';
 
-@Controller()
-export class MailController {
-  private logger = new Logger(MailController.name);
+// Currently, no additional fields are strictly required for passenger *initial* registration
+// beyond the base fields. Specific preferences might be added later during onboarding.
+export class PassengerRegistrationDto extends BaseRegistrationDto {}
+````
 
-  constructor(private readonly mailService: MailService) {}
+## File: src/modules/rides/rides.module.ts
+````typescript
+import { Module } from '@nestjs/common';
 
-  @Post('mail')
-  async sendMail(data: SendMailDto) {
-    this.logger.log('sendMail event received', JSON.stringify(data));
+@Module({})
+export class RidesModule {}
+````
 
+## File: src/modules/storage/constants/index.ts
+````typescript
+export * from './secret-key';
+````
+
+## File: src/modules/storage/constants/secret-key.ts
+````typescript
+export const secretKeys = 'awsSecretKeysToken';
+````
+
+## File: src/modules/storage/decorators/index.ts
+````typescript
+export * from './inject-secret';
+````
+
+## File: src/modules/storage/decorators/inject-secret.ts
+````typescript
+import { Inject } from '@nestjs/common';
+
+import { secretKeys } from '../constants';
+
+export function InjectAwsSecretKeys() {
+  return Inject(secretKeys);
+}
+````
+
+## File: src/modules/storage/interfaces/index.ts
+````typescript
+export * from './secret-key.interfaces';
+````
+
+## File: src/modules/storage/interfaces/secret-key.interfaces.ts
+````typescript
+export type SecretKey = {
+  AWS_REGION: string;
+  AWS_ACCESS_KEY_ID: string;
+  AWS_SECRET_ACCESS_KEY: string;
+  AWS_S3_BUCKET_NAME: string;
+};
+````
+
+## File: src/modules/storage/index.ts
+````typescript
+export * from './s3-bucket.module';
+export * from './s3-bucket.service';
+````
+
+## File: src/modules/storage/s3-bucket.module.ts
+````typescript
+import { Provider } from '@nestjs/common';
+import { S3 } from 'aws-sdk';
+import { AwsSdkModule } from 'nest-aws-sdk';
+import { AwsS3Service } from './s3-bucket.service';
+import { secretKeys as secretKeysToken } from './constants';
+import { SecretKey } from './interfaces';
+import { SecretsService } from 'src/global/secrets/service';
+
+export class AwsS3Module {
+  static forRoot(secretKey: keyof SecretsService) {
+    const AwsS3SecretKeysProvider: Provider<SecretKey> = {
+      provide: secretKeysToken,
+      inject: [SecretsService],
+      useFactory: (secretsService: SecretsService) => secretsService[secretKey],
+    };
+
+    return {
+      module: AwsS3Module,
+      imports: [
+        AwsSdkModule.forFeatures([S3]),
+        AwsSdkModule.forRootAsync({
+          defaultServiceOptions: {
+            useFactory: (secretsService: SecretsService) => {
+              return {
+                region: secretsService[secretKey].AWS_REGION,
+                credentials: {
+                  accessKeyId: secretsService[secretKey].AWS_ACCESS_KEY_ID,
+                  secretAccessKey:
+                    secretsService[secretKey].AWS_SECRET_ACCESS_KEY,
+                },
+                signatureVersion: 'v4',
+              };
+            },
+            inject: [SecretsService],
+          },
+        }),
+      ],
+      providers: [AwsS3Service, AwsS3SecretKeysProvider],
+      exports: [AwsS3Service],
+    };
+  }
+}
+````
+
+## File: src/modules/storage/s3-bucket.service.ts
+````typescript
+import { Injectable, Logger } from '@nestjs/common';
+import { S3 } from 'aws-sdk';
+import { InjectAwsService } from 'nest-aws-sdk';
+import { InjectAwsSecretKeys } from './decorators';
+import { SecretKey } from './interfaces';
+
+@Injectable()
+export class AwsS3Service {
+  private logger = new Logger(AwsS3Service.name);
+  constructor(
+    @InjectAwsSecretKeys() private secretKeys: SecretKey,
+    @InjectAwsService(S3) private readonly s3: S3,
+  ) {}
+
+  async uploadAttachment(attachment: Express.Multer.File, fileName?: string) {
+    if (!attachment) {
+      return null;
+    }
+
+    fileName = fileName || this.generateFileName(attachment);
+    const bucket = this.secretKeys.AWS_S3_BUCKET_NAME;
+
+    const params = {
+      Bucket: bucket,
+      Key: fileName,
+      Body: attachment.buffer,
+      ACL: 'public-read',
+    };
+
+    const s3Response = await this.s3.upload(params).promise();
+
+    return s3Response.Location;
+  }
+
+  private generateFileName(attachment: Express.Multer.File) {
+    return `${Date.now()}-${attachment.originalname}`.replace(/\s/g, '_');
+  }
+
+  async upload(params: S3.Types.PutObjectRequest) {
+    return this.s3.upload(params).promise();
+  }
+
+  async uploadToS3(fileBuffer: Buffer, fileName: string): Promise<string> {
+    const bucket = this.secretKeys.AWS_S3_BUCKET_NAME;
+
+    const params: AWS.S3.PutObjectRequest = {
+      Bucket: bucket,
+      Key: fileName,
+      Body: fileBuffer,
+      ACL: 'public-read',
+    };
+
+    const s3Response = await this.s3.upload(params).promise();
+    return s3Response.Location;
+  }
+}
+````
+
+## File: src/modules/user/schemas/action.schema.ts
+````typescript
+import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
+import { ActionEnum, Subject } from 'src/core/interfaces';
+
+@Schema({
+  timestamps: true,
+})
+export class Action {
+  @Prop({ enum: ActionEnum, default: ActionEnum.Read })
+  action: ActionEnum;
+
+  @Prop({
+    type: String,
+  })
+  subject: Subject;
+
+  @Prop()
+  description: string;
+}
+
+export const ActionSchema = SchemaFactory.createForClass(Action);
+````
+
+## File: src/modules/user/schemas/role.schema.ts
+````typescript
+import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
+import { Document } from 'mongoose';
+import { RoleNameEnum } from 'src/core/interfaces';
+import { Action, ActionSchema } from './action.schema';
+
+@Schema({
+  timestamps: true,
+})
+export class Role extends Document {
+  @Prop({
+    type: String,
+    nullable: false,
+    unique: true,
+  })
+  name: RoleNameEnum;
+
+  @Prop({
+    type: String,
+    nullable: true,
+  })
+  description: string;
+
+  @Prop({
+    type: [ActionSchema],
+  })
+  actions: Action[];
+}
+
+export const roleSchema = SchemaFactory.createForClass(Role);
+````
+
+## File: src/modules/user/schemas/token.schema.ts
+````typescript
+import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
+import { Document, Schema as MSchema } from 'mongoose';
+import { User } from './user.schema';
+
+@Schema({
+  timestamps: true,
+})
+export class Token extends Document {
+  @Prop({ type: MSchema.Types.ObjectId, ref: 'User' })
+  user: User;
+
+  @Prop({ required: true, type: String })
+  code: string;
+
+  @Prop({ type: Boolean, default: false })
+  isUsed: boolean;
+
+  @Prop({ required: false, type: Date })
+  expirationTime: Date;
+}
+
+export const TokenSchema = SchemaFactory.createForClass(Token);
+````
+
+## File: src/modules/user/user.module.ts
+````typescript
+import { Module } from '@nestjs/common';
+import { UserService } from './user.service';
+import { MongooseModule } from '@nestjs/mongoose';
+import { Token, TokenSchema } from './schemas/token.schema';
+import { UserSchema, User } from './schemas/user.schema';
+import { roleSchema, Role } from './schemas/role.schema';
+
+@Module({
+  imports: [
+    MongooseModule.forFeature([
+      { name: Token.name, schema: TokenSchema },
+      { name: User.name, schema: UserSchema },
+      { name: Role.name, schema: roleSchema },
+    ]),
+  ],
+  providers: [UserService],
+  exports: [UserService],
+})
+export class UserModule {}
+````
+
+## File: src/modules/user/user.service.ts
+````typescript
+import { Injectable, Logger } from '@nestjs/common';
+import { InjectModel } from '@nestjs/mongoose';
+import { Model } from 'mongoose';
+import { DateHelper, ErrorHelper } from 'src/core/helpers';
+import { IPassenger, IDriver } from 'src/core/interfaces';
+import { TokenHelper } from 'src/global/utils/token.utils';
+import { UserSessionService } from 'src/global/user-session/service';
+import { Token } from './schemas/token.schema';
+import { User } from './schemas/user.schema';
+
+@Injectable()
+export class UserService {
+  private logger = new Logger(UserService.name);
+  constructor(
+    @InjectModel(Token.name) private tokenRepo: Model<Token>,
+    private tokenHelper: TokenHelper,
+    private userSessionService: UserSessionService,
+    @InjectModel(User.name) private userRepo: Model<User>,
+  ) {}
+
+  async generateOtpCode(
+    user: IDriver | IPassenger,
+    options = {
+      numberOnly: true,
+      length: 4,
+    },
+    expirationTimeInMinutes = 15,
+  ): Promise<string> {
+    let code = '';
+
+    if (options.numberOnly) {
+      code = this.tokenHelper.generateRandomNumber(options.length);
+    } else {
+      code = this.tokenHelper.generateRandomString(options.length);
+    }
+
+    this.logger.debug('Generating OTP code for user: ', user._id);
+    this.logger.debug('OTP code: ', code);
+
+    await this.tokenRepo.findOneAndDelete({ user: user?._id, isUsed: false });
+
+    await this.tokenRepo.create({
+      user: user._id,
+      code,
+      expirationTime: DateHelper.addToCurrent({
+        minutes: expirationTimeInMinutes,
+      }),
+    });
+
+    return code;
+  }
+
+  async verifyOtpCode(
+    user: IDriver | IPassenger,
+    code: string,
+    message?: string,
+  ): Promise<boolean> {
+    const otp = await this.tokenRepo.findOne({
+      user: user._id,
+      code,
+      isUsed: false,
+    });
+
+    if (!otp) {
+      ErrorHelper.BadRequestException('Invalid code');
+    }
+
+    if (DateHelper.isAfter(new Date(), otp.expirationTime)) {
+      ErrorHelper.BadRequestException(
+        message ||
+          "This code has expired. You can't change your password using this link",
+      );
+    }
+
+    await otp.deleteOne();
+
+    return true;
+  }
+
+  async logout(userId: string) {
+    await this.userSessionService.delete(userId);
+
+    return {
+      success: true,
+    };
+  }
+
+  async getUser(userId: string): Promise<User> {
     try {
-      switch (data.type) {
-        case MailType.USER_CONFIRMATION:
-          await this.mailService.sendUserConfirmation(data);
-          this.logger.log('sendUserConfirmation called');
-          break;
-
-        case MailType.USER_CREDENTIALS:
-          await this.mailService.sendUserCredentials(data);
-          this.logger.log('sendUserCredentials called');
-          break;
-
-        case MailType.RESET_PASSWORD:
-          await this.mailService.sendResetPassword(data);
-          this.logger.log('sendResetPassword called');
-          break;
-
-        case MailType.IN_APP_EMAIL:
-          await this.mailService.sendInAppEmailNotification(data);
-          this.logger.log('sendInAppEmailNotification called');
-          break;
-
-        default:
-          break;
+      const user = await this.userRepo.findById(userId);
+      if (!user) {
+        ErrorHelper.BadRequestException('User does not exists');
       }
+      return user;
     } catch (error) {
-      this.logger.error(error);
+      ErrorHelper.BadRequestException(error);
     }
   }
+}
+````
+
+## File: test/app.e2e-spec.ts
+````typescript
+import { Test, TestingModule } from '@nestjs/testing';
+import { INestApplication } from '@nestjs/common';
+import * as request from 'supertest';
+import { AppModule } from '../src/modules/main.module';
+
+describe('AppController (e2e)', () => {
+  let app: INestApplication;
+
+  beforeEach(async () => {
+    const moduleFixture: TestingModule = await Test.createTestingModule({
+      imports: [AppModule],
+    }).compile();
+
+    app = moduleFixture.createNestApplication();
+    await app.init();
+  });
+
+  it('/ (GET)', () => {
+    return request(app.getHttpServer())
+      .get('/')
+      .expect(200)
+      .expect('Hello World!');
+  });
+});
+````
+
+## File: test/jest-e2e.json
+````json
+{
+  "moduleFileExtensions": ["js", "json", "ts"],
+  "rootDir": ".",
+  "testEnvironment": "node",
+  "testRegex": ".e2e-spec.ts$",
+  "transform": {
+    "^.+\\.(t|j)s$": "ts-jest"
+  }
+}
+````
+
+## File: .eslintrc.js
+````javascript
+module.exports = {
+  parser: '@typescript-eslint/parser',
+  parserOptions: {
+    project: 'tsconfig.json',
+    tsconfigRootDir: __dirname,
+    sourceType: 'module',
+  },
+  plugins: ['@typescript-eslint/eslint-plugin'],
+  extends: [
+    'plugin:@typescript-eslint/recommended',
+    'plugin:prettier/recommended',
+  ],
+  root: true,
+  env: {
+    node: true,
+    jest: true,
+  },
+  ignorePatterns: ['.eslintrc.js'],
+  rules: {
+    '@typescript-eslint/interface-name-prefix': 'off',
+    '@typescript-eslint/explicit-function-return-type': 'off',
+    '@typescript-eslint/explicit-module-boundary-types': 'off',
+    '@typescript-eslint/no-explicit-any': 'off',
+  },
+};
+````
+
+## File: .gitignore
+````
+# compiled output
+/dist
+/node_modules
+/build
+
+# Logs
+logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+
+# OS
+.DS_Store
+
+# Tests
+/coverage
+/.nyc_output
+
+# IDEs and editors
+/.idea
+.project
+.classpath
+.c9/
+*.launch
+.settings/
+*.sublime-workspace
+
+# IDE - VSCode
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+# dotenv environment variable files
+.env
+.env.development.local
+.env.test.local
+.env.production.local
+.env.local
+
+# temp directory
+.temp
+.tmp
+
+# Runtime data
+pids
+*.pid
+*.seed
+*.pid.lock
+
+# Diagnostic reports (https://nodejs.org/api/report.html)
+report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
+````
+
+## File: .prettierrc
+````
+{
+  "singleQuote": true,
+  "trailingComma": "all"
+}
+````
+
+## File: instructions.md
+````markdown
+# Nigerian Intercity Carpooling Platform: Backend (NestJS) - Current State Analysis
+
+## 1. Project Overview
+
+This document summarizes the current state of the NestJS backend for the Nigerian Intercity Carpooling platform. The goal of the platform is to connect private car owners (Drivers) traveling between Nigerian cities with passengers (Passengers) seeking rides along the same routes, addressing issues of cost, convenience, and safety in intercity travel.
+
+This summary is based on the provided codebase (`repomix-output.md`) and informed by the features and requirements outlined in the initial MVP PRD and the subsequent Comprehensive Product Overview document.
+
+**Target Audience for this Document:** LLMs and Developers needing context on the existing backend structure and components to guide further development.
+
+## 2. Technology Stack (Backend)
+
+*   **Framework:** NestJS (v11.x) - A progressive Node.js framework using TypeScript.
+*   **Language:** TypeScript
+*   **Database:** MongoDB (via Mongoose ORM)
+*   **Authentication:** JWT (JSON Web Tokens), Phone number OTP (implied, infrastructure partially present), Password Hashing (bcryptjs)
+*   **Session Management:** Redis (via `@nestjs-modules/ioredis` and custom `UserSessionService`)
+*   **Real-time Communication:** Socket.IO with Redis Adapter (for potential future features like real-time tracking/messaging)
+*   **Asynchronous Tasks:** Bull (potentially for background jobs like email sending)
+*   **Email:** Nodemailer (via `@nestjs-modules/mailer`) with EJS templates.
+*   **Configuration:** `@nestjs/config` (using `.env` files)
+*   **API Documentation:** Swagger (`@nestjs/swagger`)
+*   **Validation:** `class-validator`, `class-transformer`
+*   **Linting/Formatting:** ESLint, Prettier
+
+## 3. Core Architectural Concepts
+
+*   **Modular Design:** The application is structured into NestJS modules (`src/modules`).
+*   **Global Modules:** Common services and utilities like configuration (`SecretsModule`), token generation (`TokenHelper`), and user session management (`UserSessionModule`) are grouped in `src/global` and exposed globally.
+*   **Core Abstractions:** Reusable components like Guards (`AuthGuard`), Filters (`HttpExceptionFilter`), Interceptors (`LoggerInterceptor`, `TransformInterceptor`), Decorators (`User`), Helpers (`EncryptHelper`, `ErrorHelper`), and base DTOs (Pagination) are located in `src/core`.
+*   **API Structure:** Primarily follows RESTful principles, managed through Controllers and Services.
+*   **Data Handling:** Uses Mongoose Schemas for MongoDB interaction and DTOs (Data Transfer Objects) for API request/response validation and shaping.
+*   **Error Handling:** Centralized HTTP exception filtering (`HttpExceptionFilter`) and a utility class (`ErrorHelper`) for standardized error responses.
+*   **Request/Response Handling:** Uses interceptors for logging (`LoggerInterceptor`) and standardizing response format (`TransformInterceptor`).
+
+## 4. Directory Structure Overview
+src/
+├── app.module.ts # Root application module
+├── main.ts # Application entry point (bootstrap)
+│
+├── core/ # Core framework elements (guards, filters, helpers, base DTOs, etc.)
+│ ├── adpater/ # WebSocket adapters (RedisIoAdapter)
+│ ├── constants/ # Application-wide constants (messages, patterns)
+│ ├── decorators/ # Custom decorators (@User)
+│ ├── dto/ # Base DTOs (Pagination)
+│ ├── enums/ # Core enumerations (PortalType)
+│ ├── filters/ # Exception filters (HttpExceptionFilter)
+│ ├── guards/ # Authentication/Authorization guards (AuthGuard)
+│ ├── helpers/ # Utility helpers (Encryption, Error Handling)
+│ ├── interceptors/ # Request/Response interceptors (Logging, Transformation)
+│ ├── interfaces/ # TypeScript interfaces (User, HTTP, Roles)
+│ ├── redis/ # Redis module configuration helper
+│ └── validators/ # Custom class-validators
+│
+├── global/ # Globally available modules and services
+│ ├── secrets/ # Configuration service (SecretsService)
+│ ├── user-session/ # Redis-based user session management
+│ ├── utils/ # Utility classes (TokenHelper)
+│ └── global.module.ts # Module consolidating global providers
+│
+└── modules/ # Feature-specific modules
+├── auth/ # Authentication, User Registration, Login, Password Mgmt
+├── config/ # (Placeholder) Configuration module?
+├── database/ # (Placeholder) Database configuration module?
+├── driver/ # (Placeholder) Driver-specific logic
+├── geolocation/ # (Placeholder) Geolocation-related logic
+├── health/ # Health check endpoint (/health-check)
+├── mail/ # Email sending functionality (Mailer, Templates, Events)
+├── rides/ # (Placeholder) Ride management logic
+└── users/ # (Placeholder) User management logic (potentially merged with Auth)
+
+
+## 5. Module Breakdown & Functionality
+
+*   **`AppModule` (`app.module.ts`):**
+    *   The root module, importing necessary configuration (`ConfigModule`, `SecretsModule`), database connection (`MongooseModule`), and feature modules.
+*   **`GlobalModule` (`global/global.module.ts`):**
+    *   Provides `SecretsService`, `TokenHelper`, and `UserSessionService` globally.
+*   **`AuthModule` (`modules/auth/`):**
+    *   **Purpose:** Handles user identity, authentication, and core profile actions.
+    *   **Components:**
+        *   `AuthController`: Exposes endpoints for registration (`/create-user`), login (`/login`), email verification (`/confirmation`, `/resend-verification`), password reset (`/forgot-password`, `/reset-password`), logout (`/logout`), fetching user info (`/user`), changing password (`/change-password`), avatar upload (`/user/upload-avatar`), role fetching (`/roles`, `/users`).
+        *   `AuthService`: Contains the business logic for user creation, validation, login, token generation, session management, password handling, email verification flows, avatar upload coordination (mentions `AwsS3Service` - integration needed).
+        *   `DTOs`: Defines data structures for requests (e.g., `AuthDto`, `LoginDto`, `UpdateUserDto`, `ForgotPasswordDto`).
+        *   **Entities/Schemas Used:** `User`, `Token`, `Role`.
+    *   **Key Features Implemented:** Email/Password registration & login, JWT generation & verification, Redis session management, Email confirmation flow, Forgot/Reset password flow, Logout, Basic user profile fetch/update, Avatar upload (logic points to AWS S3, but service implementation not shown), Role fetching.
+    *   **PRD Alignment:** Covers core Authentication and Profile Management requirements. Handles different `PortalType` (DRIVER, PASSENGER, ADMIN).
+*   **`UserSessionModule` (`global/user-session/`):**
+    *   **Purpose:** Manages user sessions using Redis.
+    *   **Components:** `UserSessionService` provides methods to create, get, check, and delete user sessions based on user ID and a unique `sessionId` stored within the JWT. Supports "remember me" functionality.
+    *   **PRD Alignment:** Crucial for maintaining user login state and security.
+*   **`MailModule` (`modules/mail/`):**
+    *   **Purpose:** Handles sending emails for various events.
+    *   **Components:**
+        *   `MailController`: Internal controller likely triggered by events or queues.
+        *   `MailService`: Uses `@nestjs-modules/mailer` to send emails using EJS templates (`confirmation.ejs`, `resetpassword.ejs`, etc.).
+        *   `MailEvent`: Service to trigger specific email sends (e.g., `sendUserConfirmation`, `sendResetPassword`).
+        *   `EmailProcessor`: (Implied by filename `email.processor.ts`) Likely a Bull queue processor for handling email jobs asynchronously.
+        *   `EmailSchema`: Mongoose schema potentially for logging email events/statuses.
+        *   `Templates`: EJS files for email content.
+    *   **PRD Alignment:** Fulfills requirements for sending verification and notification emails. Integration with Bull suggests asynchronous handling.
+*   **`HealthModule` (`modules/health/`):**
+    *   **Purpose:** Provides an endpoint (`/health-check`) to monitor application health.
+    *   **Components:** `HealthController` uses `@nestjs/terminus` to check the status of dependencies (currently MongoDB).
+    *   **PRD Alignment:** Good practice for monitoring and deployment.
+*   **`SecretsModule` (`global/secrets/`):**
+    *   **Purpose:** Loads and provides access to environment variables and configuration.
+    *   **Components:** `SecretsService` extends `ConfigService` to provide typed access to secrets (DB credentials, JWT secret, Mail credentials, Redis config).
+    *   **PRD Alignment:** Essential for secure configuration management.
+*   **Placeholder Modules:**
+    *   `RidesModule`, `RidersModule` (Driver), `GeolocationModule`, `UsersModule`, `ConfigModule`, `DatabaseModule`: These exist as empty module files (`@Module({})`). They represent planned areas of functionality that are **not yet implemented**.
+    *   **PRD Alignment:** These correspond directly to core features (Ride Management, Driver specifics, Geolocation, Payments) outlined in the PRDs but require significant development.
+
+## 6. Core Utilities & Shared Components (`src/core/`)
+
+*   **`AuthGuard`:** Middleware to protect routes, verifying JWTs using `TokenHelper` and checking Redis sessions via `UserSessionService`.
+*   **`HttpExceptionFilter`:** Catches HTTP exceptions and standardizes the error response format (`{ success: false, statusCode, message }`).
+*   **`LoggerInterceptor` & `TransformInterceptor`:** Logs incoming requests and formats successful responses consistently (`{ success: true, data, message, meta? }`). Handles pagination responses specifically.
+*   **`EncryptHelper`:** Wrapper around `bcryptjs` for hashing and comparing passwords.
+*   **`ErrorHelper`:** Utility class to throw standardized `HttpException` types (BadRequest, Unauthorized, NotFound, etc.).
+*   **`TokenHelper` (`global/utils/`):** Generates and verifies JWTs (access tokens, potentially refresh tokens, password reset tokens). Generates random strings/numbers (useful for OTPs, session IDs).
+*   **Base DTOs:** `PaginationDto`, `PaginationResultDto`, `PaginationMetadataDto` provide a standard way to handle paginated API responses.
+*   **`RedisIoAdapter`:** Custom Socket.IO adapter using Redis for potential multi-instance scaling of real-time features.
+
+## 7. Database Schema (Mongoose Models Identified)
+
+*   **`User` (`modules/auth/entities/schemas/user.schema.ts` - *Inferred Path*):**
+    *   Fields: `firstName`, `lastName`, `email`, `password`, `avatar`, `about`, `country`, `gender`, `phoneNumber`, `emailConfirm`, `status`, `strategy` (Local, Google etc.), `portalType`, `roles` (Ref to Role), `lastSeen`, `createdAt`, `hasChangedPassword`.
+    *   *PRD Alignment:* Covers User Data requirements for both Drivers and Passengers, including verification status and basic profile info. Needs extension for Driver-specific vehicle details.
+*   **`Token` (`modules/user/schemas/token.entity.ts`):**
+    *   Fields: `user` (Ref to User), `code` (likely for OTP/verification), `expiresAt`.
+    *   *PRD Alignment:* Supports OTP-based verification flows (Email confirmation, Password reset).
+*   **`Role` (`modules/admin/entities/role.entity.ts` - *Inferred Path*):**
+    *   Fields: `name` (Enum: ADMIN, DRIVER, PASSENGER), `description`, `actions` (Permissions).
+    *   *PRD Alignment:* Supports role-based access control, differentiating user types.
+*   **`Email` (`modules/mail/schema/email.schema.ts`):**
+    *   Fields: `event`, `email`, `timestamp`, `message_id`, etc. (Likely for tracking email sending status/webhooks).
+*   **Placeholder Schemas:** `Rider`, `Rides` are mentioned in `MailModule` imports but their definitions are not included in the provided code dump. These are critical for core functionality.
+*   **`Country` (`modules/seed/schemas/country.schema.ts` - *Inferred Path*):** Seems to be related to user profile data, possibly for dropdowns or validation.
+
+## 8. External Integrations
+
+*   **Implemented/Partially Implemented:**
+    *   **Redis:** Used for User Session caching (`UserSessionService`) and Socket.IO scaling (`RedisIoAdapter`). Configured via `SecretsService`.
+    *   **MongoDB:** Primary database, connection managed by `MongooseModule` using URI from `SecretsService`.
+    *   **Nodemailer:** Used for sending emails via SMTP (`MailService`). Configured via `SecretsService`.
+    *   **Bull:** Queue system (likely using Redis backend) for background tasks, specifically set up for email processing (`MailModule`, `EmailProcessor`).
+    *   **Swagger:** API documentation generation.
+*   **Mentioned/Required but Not Fully Implemented:**
+    *   **Payment Gateways (Paystack, Flutterwave):** Explicitly required by PRD for payments. **No code present.**
+    *   **Mapping Services (Google Maps, etc.):** Required by PRD for route visualization, geocoding, distance calculation. **No code present.**
+    *   **SMS Providers:** Required by PRD for OTP phone verification. `TokenHelper` can generate OTPs, but **no SMS sending integration code present.**
+    *   **AWS S3:** Mentioned in `AuthService` for avatar uploads. **`AwsS3Service` is referenced but its implementation is missing.**
+
+## 9. Configuration & Environment
+
+*   Managed by `SecretsService` which reads from `.env` files.
+*   Key configurations include: `PORT`, `MONGO_URI`, `JWT_SECRET`, `MAIL_*` credentials, `REDIS_*` credentials.
+
+## 10. Testing
+
+*   Basic E2E test setup (`test/app.e2e-spec.ts`) using `supertest`.
+*   Jest configuration present (`jest.config.js`, `test/jest-e2e.json`).
+*   **No unit tests** specific to services or controllers were included in the dump.
+
+## 11. Summary & Next Steps (Backend Focus)
+
+**Current Strengths:**
+
+*   Solid foundation using NestJS best practices (Modules, Services, Controllers, DI).
+*   Core Authentication (Register, Login, JWT, Session), User Profile basics, and Notification (Email) systems are partially implemented.
+*   Robust configuration management (`SecretsService`).
+*   Infrastructure for background jobs (Bull) and real-time features (Socket.IO + Redis) is present.
+*   Basic error handling and response standardization are in place.
+*   API documentation setup (Swagger).
+
+**Key Areas for Immediate Development (based on PRDs and missing code):**
+
+1.  **Ride Management Module (`RidesModule`):**
+    *   Implement `Rides` schema (origin, destination, waypoints, schedule, price, seats, status). Use geospatial indexing.
+    *   Develop `RidesService` and `RidesController` for:
+        *   Drivers: Creating, publishing, updating, canceling rides.
+        *   Passengers: Searching rides (by location, date), filtering.
+        *   Geospatial queries for searching.
+2.  **Booking Management:**
+    *   Implement `Booking` schema (linking User, Ride, status, payment info).
+    *   Develop services/endpoints for:
+        *   Passengers: Requesting/Booking rides, viewing bookings.
+        *   Drivers: Viewing/Accepting/Rejecting booking requests.
+3.  **Payment Integration (`PaymentModule`):**
+    *   Integrate with Nigerian payment gateways (Paystack/Flutterwave).
+    *   Implement services for:
+        *   Fare calculation.
+        *   Initiating payments upon booking confirmation.
+        *   Handling payment callbacks/webhooks.
+        *   Recording transactions.
+        *   Handling payouts/refunds (longer term).
+4.  **Driver Specifics (`DriverModule` / extend `AuthModule`):**
+    *   Add Vehicle information to the `User` schema or a separate `Vehicle` schema (make, model, year, plate number, documents).
+    *   Implement endpoints/services for driver vehicle registration and document upload (using the planned `AwsS3Service`).
+    *   Implement driver verification logic.
+5.  **Geolocation Module (`GeolocationModule`):**
+    *   Integrate with a Mapping Service API.
+    *   Implement services for:
+        *   Geocoding (address to coordinates).
+        *   Reverse Geocoding (coordinates to address).
+        *   Route calculation (distance, estimated duration).
+        *   Real-time location tracking (requires WebSocket integration).
+6.  **Safety Features:**
+    *   Implement backend logic for Trip Sharing (generating shareable links/tokens).
+    *   Add Emergency Contact fields to `User` schema and endpoints to manage them.
+    *   Implement Rating/Review system (schemas and services for Users to rate each other post-ride).
+7.  **Communication:**
+    *   Implement backend logic for in-app messaging (potentially using WebSockets/Redis pub-sub). Store messages.
+    *   Integrate Push Notification service (e.g., FCM, APNS) for real-time updates.
+    *   Integrate SMS Provider for phone number OTP verification.
+8.  **Refine Existing Modules:**
+    *   Add comprehensive validation (DTOs).
+    *   Implement role-based authorization checks more granularly where needed.
+    *   Develop Unit and Integration tests.
+    *   Complete `AwsS3Service` implementation.
+
+This document provides a snapshot of the backend's current state. Development should prioritize building out the placeholder modules (`Rides`, `Driver`, `Geolocation`, `Payment`) and integrating the required third-party services to meet the core functionality outlined in the PRDs.
+````
+
+## File: nest-cli.json
+````json
+{
+  "$schema": "https://json.schemastore.org/nest-cli",
+  "collection": "@nestjs/schematics",
+  "sourceRoot": "src",
+  "compilerOptions": {
+    "deleteOutDir": true,
+    "assets": [
+      {
+        "include": "modules/mail/templates/**/*",
+        "outDir": "dist/modules/mail/templates"
+      }
+    ],
+    "watchAssets": true
+  }
+}
+````
+
+## File: README.md
+````markdown
+<p align="center">
+  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
+</p>
+
+[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
+[circleci-url]: https://circleci.com/gh/nestjs/nest
+
+  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
+    <p align="center">
+<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
+<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
+<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
+<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
+<a href="https://coveralls.io/github/nestjs/nest?branch=master" target="_blank"><img src="https://coveralls.io/repos/github/nestjs/nest/badge.svg?branch=master#9" alt="Coverage" /></a>
+<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
+<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
+<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
+  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
+    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
+  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
+</p>
+  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
+  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+
+## Description
+
+[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
+
+## Project setup
+
+```bash
+$ npm install
+```
+
+## Compile and run the project
+
+```bash
+# development
+$ npm run start
+
+# watch mode
+$ npm run start:dev
+
+# production mode
+$ npm run start:prod
+```
+
+## Run tests
+
+```bash
+# unit tests
+$ npm run test
+
+# e2e tests
+$ npm run test:e2e
+
+# test coverage
+$ npm run test:cov
+```
+
+## Deployment
+
+When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
+
+If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
+
+```bash
+$ npm install -g mau
+$ mau deploy
+```
+
+With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
+
+## Resources
+
+Check out a few resources that may come in handy when working with NestJS:
+
+- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
+- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
+- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
+- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
+- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
+- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
+- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
+- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
+
+## Support
+
+Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
+
+## Stay in touch
+
+- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
+- Website - [https://nestjs.com](https://nestjs.com/)
+- Twitter - [@nestframework](https://twitter.com/nestframework)
+
+## License
+
+Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+````
+
+## File: tsconfig.build.json
+````json
+{
+  "extends": "./tsconfig.json",
+  "exclude": ["node_modules", "test", "dist", "**/*spec.ts"]
+}
+````
+
+## File: tsconfig.json
+````json
+{
+  "compilerOptions": {
+    "module": "commonjs",
+    "declaration": true,
+    "removeComments": true,
+    "emitDecoratorMetadata": true,
+    "experimentalDecorators": true,
+    "allowSyntheticDefaultImports": true,
+    "target": "ES2021",
+    "sourceMap": true,
+    "outDir": "./dist",
+    "baseUrl": "./",
+    "incremental": true,
+    "skipLibCheck": true,
+    "strictNullChecks": false,
+    "noImplicitAny": false,
+    "strictBindCallApply": false,
+    "forceConsistentCasingInFileNames": false,
+    "noFallthroughCasesInSwitch": false
+  }
+}
+````
+
+## File: src/core/adpater/index.ts
+````typescript
+export * from './redis.adpater';
+````
+
+## File: src/core/adpater/redis.adpater.ts
+````typescript
+import { INestApplication } from '@nestjs/common';
+import { IoAdapter } from '@nestjs/platform-socket.io';
+import { createAdapter } from '@socket.io/redis-adapter';
+import { createClient } from 'redis';
+import { Server, ServerOptions } from 'socket.io';
+import { SecretsService } from 'src/global/secrets/service';
+
+export class RedisIoAdapter extends IoAdapter {
+  protected redisAdapter;
+
+  constructor(app: INestApplication) {
+    super();
+    const configService = app.get(SecretsService);
+
+    const pubClient = createClient({
+      socket: {
+        host: configService.userSessionRedis.REDIS_HOST,
+        port: parseInt(configService.userSessionRedis.REDIS_PORT, 10),
+      },
+      username: configService.userSessionRedis.REDIS_USER,
+      password: configService.userSessionRedis.REDIS_PASSWORD,
+    });
+    const subClient = pubClient.duplicate();
+
+    pubClient.connect();
+    subClient.connect();
+
+    this.redisAdapter = createAdapter(pubClient, subClient);
+  }
+
+  createIOServer(port: number, options?: ServerOptions) {
+    const server = super.createIOServer(port, options) as Server;
+
+    server.adapter(this.redisAdapter);
+
+    return server;
+  }
+
+  bindClientConnect(server: any, callback: (socket: any) => void): void {
+    server.on('connection', (socket: any) => callback(socket));
+  }
+}
+````
+
+## File: src/core/constants/base.constant.ts
+````typescript
+export const PASSWORD_PATTERN = '^(?=.*[a-z])(?=.*[A-Z])(?=.*[0-9])(?=.{8,})';
+export const BASE_COMMISSION = 0.3;
+export const DRIVER_ONBOARDING_STEPS = 8;
+export const PASSENGER_ONBOARDING_STEPS = 5;
+````
+
+## File: src/core/constants/messages.constant.ts
+````typescript
+export const INVALID_EMAIL_OR_PASSWORD = 'Invalid email or password';
+export const INVALID_USER = 'Invalid user';
+export const INVALID_CODE = 'Invalid code or expired';
+export const INVALID_CODE_FORGOT_PASSWORD =
+  "This link has expired. You can't change your password using this link";
+export const INVALID_TOKEN = 'Invalid token';
+export const EMAIL_ALREADY_EXISTS = 'Email already exists';
+export const USER_DOESNT_EXIST = 'User Not Found';
+export const PORTAL_TYPE_ERROR = 'Please specify portal type';
+
+export const STORY_ASSIGNED = 'A story have been assigned to you.';
+export const STORY_UPDATED = 'A story assigned to you was updated';
+export const SUBTASK_ASSIGNED = 'A subtask have been assigned to you.';
+export const WELCOME_MESSAGE = 'Welcome to Xtern.ai';
+export const SLA_BREACH = 'SLA Breach';
+export const SLA_WARNING = 'SLA Warning';
+````
+
+## File: src/core/decorators/index.ts
+````typescript
+export * from './user.decorator';
+````
+
+## File: src/core/decorators/user.decorator.ts
+````typescript
+/* eslint-disable @typescript-eslint/no-explicit-any */
+import { createParamDecorator, ExecutionContext } from '@nestjs/common';
+
+import { IUser } from '../../core/interfaces';
+
+export const User = createParamDecorator<any, any>(
+  (data: string, ctx: ExecutionContext): IUser | any => {
+    const request = ctx.switchToHttp().getRequest();
+    const user = request.user;
+
+    // eslint-disable-next-line security/detect-object-injection
+    return data ? user[data] : user;
+  },
+);
+````
+
+## File: src/core/dto/index.ts
+````typescript
+export * from './page-meta.dto';
+export * from './page-options.dto';
+export * from './pagination.dto';
+````
+
+## File: src/core/enums/auth.enum.ts
+````typescript
+export enum PortalType {
+  DRIVER = 'DRIVER',
+  PASSENGER = 'PASSENGER',
+  ADMIN = 'ADMIN',
+}
+````
+
+## File: src/core/guards/authenticate.guard.ts
+````typescript
+import {
+  CanActivate,
+  ExecutionContext,
+  Injectable,
+  Logger,
+} from '@nestjs/common';
+
+import { ErrorHelper } from '../../core/helpers';
+import { IUser, RequestHeadersEnum } from '../../core/interfaces';
+import { TokenHelper } from '../../global/utils/token.utils';
+import { UserSessionService } from '../../global/user-session/service';
+
+@Injectable()
+export class AuthGuard implements CanActivate {
+  private logger = new Logger(AuthGuard.name);
+
+  constructor(
+    private tokenHelper: TokenHelper,
+    private userSession: UserSessionService,
+  ) {}
+
+  async canActivate(context: ExecutionContext): Promise<boolean> {
+    const req = context.switchToHttp().getRequest();
+
+    const authorization =
+      req.headers[RequestHeadersEnum.Authorization] ||
+      String(req.cookies.accessToken);
+
+    if (!authorization) {
+      ErrorHelper.ForbiddenException('Authorization header is required');
+    }
+
+    const user = await this.verifyAccessToken(authorization);
+
+    req.user = user;
+
+    return true;
+  }
+
+  async verifyAccessToken(authorization: string): Promise<IUser> {
+    const [bearer, accessToken] = authorization.split(' ');
+
+    if (bearer == 'Bearer' && accessToken !== '') {
+      const user = this.tokenHelper.verify<IUser & { sessionId: string }>(
+        accessToken,
+      );
+
+      const session = await this.userSession.get(user._id);
+
+      if (!session) {
+        this.logger.error(`verifyAccessToken: Session not found ${user._id}`);
+        ErrorHelper.UnauthorizedException('Unauthorized!');
+      }
+
+      if (session.sessionId !== user.sessionId) {
+        this.logger.error(
+          `verifyAccessToken: SessionId not match ${session.sessionId} - ${user.sessionId}`,
+        );
+        ErrorHelper.UnauthorizedException('Unauthorized');
+      }
+
+      return user;
+    } else {
+      this.logger.error(`verifyAccessToken: Invalid token ${accessToken}`);
+      ErrorHelper.UnauthorizedException('Unauthorized');
+    }
+  }
+}
+````
+
+## File: src/core/guards/index.ts
+````typescript
+export * from './authenticate.guard';
+export * from './ws.guard';
+````
+
+## File: src/core/helpers/index.ts
+````typescript
+export * from './error.utils';
+export * from './ecrypt.helper';
+export * from './date.helper';
+````
+
+## File: src/core/interfaces/http/index.ts
+````typescript
+export * from './http.interface';
+````
+
+## File: src/core/interfaces/user/role.interface.ts
+````typescript
+export enum RoleNameEnum {
+  Admin = 'ADMIN',
+  Driver = 'DRIVER',
+  Passenger = 'PASSENGER',
+}
+
+export enum ActionEnum {
+  Manage = 'manage',
+  Create = 'create',
+  Read = 'read',
+  Update = 'update',
+  Delete = 'delete',
+}
+
+export enum Subject {
+  UserManagement = 'USER_MANAGEMENT',
+  RideManagement = 'RIDE_MANAGEMENT',
+}
+
+export interface IAction {
+  action: ActionEnum;
+  subject: Subject;
+  description: string;
+}
+
+export interface IRole {
+  name: RoleNameEnum;
+  description: string;
+  actions: IAction[];
+}
+````
+
+## File: src/global/secrets/service.ts
+````typescript
+import { Injectable } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+
+@Injectable()
+export class SecretsService extends ConfigService {
+  constructor() {
+    super();
+  }
+
+  NODE_ENV = this.get<string>('NODE_ENV');
+  PORT = this.get('PORT');
+  MONGO_URI = this.get('MONGO_URI');
+
+  get mailSecret() {
+    return {
+      MAIL_USERNAME: this.get('MAIL_USERNAME'),
+      MAIL_PASSWORD: this.get('MAIL_PASSWORD'),
+      MAIL_HOST: this.get('MAIL_HOST'),
+      MAIL_PORT: this.get('MAIL_PORT'),
+      SENDER_EMAIL: this.get<string>('SENDER_EMAIL', ''),
+      NAME: this.get<string>('NAME', ''),
+    };
+  }
+
+  get googleSecret() {
+    return {
+      GOOGLE_CLIENT_ID: this.get('GOOGLE_CLIENT_ID'),
+      GOOGLE_CLIENT_SECRET: this.get('GOOGLE_CLIENT_SECRET'),
+    };
+  }
+
+  get jwtSecret() {
+    return {
+      JWT_SECRET: this.get('APP_SECRET'),
+      JWT_EXPIRES_IN: this.get('ACCESS_TOKEN_EXPIRES', '14d'),
+    };
+  }
+
+  get database() {
+    return {
+      host: this.get('MONGO_HOST'),
+      user: this.get('MONGO_ROOT_USERNAME'),
+      pass: this.get('MONGO_ROOT_PASSWORD'),
+    };
+  }
+
+  get userSessionRedis() {
+    return {
+      REDIS_HOST: this.get('REDIS_HOST'),
+      REDIS_USER: this.get('REDIS_USERNAME'),
+      REDIS_PASSWORD: this.get('REDIS_PASSWORD'),
+      REDIS_PORT: this.get('REDIS_PORT'),
+    };
+  }
+
+  get authAwsSecret() {
+    return {
+      AWS_REGION: this.get('AWS_REGION', 'eu-west-2'),
+      AWS_ACCESS_KEY_ID: this.get('AWS_ACCESS_KEY_ID', 'AKIA36G3JG4TMYVGM6G2'),
+      AWS_SECRET_ACCESS_KEY: this.get(
+        'AWS_SECRET_ACCESS_KEY',
+        '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',
+      ),
+      AWS_S3_BUCKET_NAME: this.get('AWS_S3_BUCKET_NAME', 'traveazi-prod-sess'),
+    };
+  }
+}
+````
+
+## File: src/global/user-session/module.ts
+````typescript
+import { Module } from '@nestjs/common';
+import { RedisModule } from '@nestjs-modules/ioredis';
+
+import { SecretsService } from '../secrets/service';
+import { UserSessionService } from './service';
+
+@Module({
+  imports: [
+    RedisModule.forRootAsync({
+      useFactory: ({ userSessionRedis }: SecretsService) => {
+        if (!userSessionRedis.REDIS_HOST) {
+          throw new Error(
+            'Invalid Redis configuration: REDIS_HOST is missing.',
+          );
+        }
+        return {
+          type: 'single',
+          url: `redis://${userSessionRedis.REDIS_USER}:${userSessionRedis.REDIS_PASSWORD}@${userSessionRedis.REDIS_HOST}:${userSessionRedis.REDIS_PORT}`,
+        };
+      },
+      inject: [SecretsService],
+    }),
+  ],
+  providers: [UserSessionService],
+  exports: [UserSessionService],
+})
+export class UserSessionModule {}
+````
+
+## File: src/modules/auth/dto/base-registeration.dto.ts
+````typescript
+import { Transform } from 'class-transformer';
+import {
+  IsEmail,
+  IsEnum,
+  IsNotEmpty,
+  IsOptional,
+  IsString,
+  MinLength,
+  IsBoolean,
+  Equals,
+  IsPhoneNumber, // Import if you have a specific validator package or use IsMatchPattern
+} from 'class-validator';
+import { PASSWORD_PATTERN } from '../../../core/constants/base.constant';
+import { UserGender } from 'src/core/enums/user.enum';
+import { IsMatchPattern } from '../../../core/validators/IsMatchPattern.validator';
+
+export class BaseRegistrationDto {
+  @IsString()
+  @IsNotEmpty()
+  @MinLength(2)
+  firstName: string;
+
+  @IsString()
+  @IsNotEmpty()
+  @MinLength(2)
+  lastName: string;
+
+  @IsEmail()
+  @IsNotEmpty()
+  @Transform(({ value }) => value?.toLowerCase().trim())
+  email: string;
+
+  @IsString()
+  @IsNotEmpty()
+  @MinLength(8, { message: 'Password must be at least 8 characters long' })
+  @IsMatchPattern(PASSWORD_PATTERN, {
+    message:
+      'Password must contain at least one uppercase letter, one lowercase letter, and one number',
+  })
+  password: string;
+
+  // Consider adding password confirmation if needed on the frontend
+  // @IsString()
+  // @IsNotEmpty()
+  // @Match('password', { message: 'Passwords do not match' }) // You might need a custom 'Match' validator or check in service
+  // passwordConfirmation: string;
+
+  @IsOptional()
+  @IsPhoneNumber('NG', {
+    message: 'Please provide a valid Nigerian phone number',
+  }) // Use 'NG' if validator supports it, otherwise use regex via IsMatchPattern
+  // Example Regex (adjust as needed for Nigerian formats like 080..., +23480...):
+  // @IsMatchPattern(/^(\+234|0)[789][01]\d{8}$/, { message: 'Invalid Nigerian phone number format' })
+  phoneNumber?: string;
+
+  @IsOptional()
+  @IsString()
+  country?: string;
+
+  @IsOptional()
+  @IsEnum(UserGender)
+  gender?: UserGender;
+
+  @IsBoolean({ message: 'You must accept the terms and conditions.' })
+  @Equals(true, { message: 'You must accept the terms and conditions.' })
+  termsAccepted: boolean;
+}
+````
+
+## File: src/modules/auth/dto/index.ts
+````typescript
+export * from './auth.dto';
+export * from './update-user.dto';
+````
+
+## File: src/modules/auth/dto/update-user.dto.ts
+````typescript
+import { IsOptional, IsString, IsObject, IsEnum } from 'class-validator';
+
+export class UpdateUserDto {
+  @IsOptional()
+  @IsString()
+  firstName?: string;
+
+  @IsOptional()
+  @IsString()
+  lastName?: string;
+
+  @IsOptional()
+  @IsString()
+  about?: string;
+
+  @IsOptional()
+  @IsString()
+  email?: string;
+}
+````
+
+## File: src/modules/auth/auth.module.ts
+````typescript
+import { Module } from '@nestjs/common';
+import { AuthService } from './auth.service';
+import { AuthController } from './auth.controller';
+import { EncryptHelper } from 'src/core/helpers';
+import { TokenHelper } from 'src/global/utils/token.utils';
+import { MailController } from '../mail/mail.controller';
+import { MailEvent } from '../mail/mail.event';
+import { MongooseModule } from '@nestjs/mongoose';
+import { TokenSchema, Token } from '../user/schemas/token.schema';
+import { MailModule } from '../mail/mail.module';
+import { UserModule } from '../user/user.module';
+import { roleSchema, Role } from '../user/schemas/role.schema';
+import { AwsS3Module } from '../storage';
+import { UserSchema, User } from '../user/schemas/user.schema';
+
+@Module({
+  imports: [
+    MailModule,
+    UserModule,
+    MongooseModule.forFeature([
+      { name: Token.name, schema: TokenSchema },
+      { name: Role.name, schema: roleSchema },
+      { name: User.name, schema: UserSchema },
+    ]),
+    AwsS3Module.forRoot('authAwsSecret'),
+  ],
+  providers: [
+    AuthService,
+    TokenHelper,
+    EncryptHelper,
+    MailEvent,
+    MailController,
+  ],
+  controllers: [AuthController],
+  exports: [AuthService],
+})
+export class AuthModule {}
+````
+
+## File: src/modules/driver/schemas/vehicle.schema.ts
+````typescript
+import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
+import mongoose, { Document } from 'mongoose';
+import { User } from '../../user/schemas/user.schema'; // Adjust path
+import { VehicleVerificationStatus } from 'src/core/enums/vehicle.enum';
+
+export type VehicleDocument = Vehicle & Document;
+
+@Schema({ timestamps: true })
+export class Vehicle {
+  @Prop({
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: true,
+    index: true,
+  })
+  driver: User;
+
+  @Prop({ type: String, required: true, trim: true })
+  make: string; // e.g., Toyota
+
+  @Prop({ type: String, required: true, trim: true })
+  model: string; // e.g., Camry
+
+  @Prop({ type: Number, required: true })
+  year: number;
+
+  @Prop({ type: String, required: true, trim: true })
+  color: string;
+
+  @Prop({
+    type: String,
+    required: true,
+    unique: true,
+    uppercase: true,
+    trim: true,
+    index: true,
+  })
+  plateNumber: string;
+
+  @Prop({
+    type: Number,
+    required: true,
+    min: 1,
+    comment: 'Number of seats available for passengers (excluding driver)',
+  })
+  seatsAvailable: number;
+
+  @Prop({ type: String })
+  vehicleRegistrationImageUrl?: string;
+
+  @Prop({ type: String })
+  proofOfOwnershipImageUrl?: string; // e.g., Vehicle license
+
+  @Prop({ type: String })
+  vehicleInsuranceImageUrl?: string;
+
+  @Prop({ type: Date })
+  insuranceExpiryDate?: Date;
+
+  @Prop({
+    type: String,
+    enum: VehicleVerificationStatus,
+    default: VehicleVerificationStatus.NOT_SUBMITTED,
+  })
+  vehicleVerificationStatus: VehicleVerificationStatus;
+
+  @Prop({ type: String })
+  vehicleRejectionReason?: string;
+
+  @Prop({ type: Boolean, default: false })
+  isDefault: boolean; // If the driver has multiple vehicles, which one is primary
+
+  @Prop({ type: [String], default: [] }) // Array of strings like "Air Conditioning", "USB Charging"
+  features?: string[];
+}
+
+export const VehicleSchema = SchemaFactory.createForClass(Vehicle);
+````
+
+## File: src/modules/mail/enums/index.ts
+````typescript
+export * from './mail.enum';
+````
+
+## File: src/modules/mail/enums/mail.enum.ts
+````typescript
+export enum MailType {
+  USER_CONFIRMATION = 'USER_CONFIRMATION',
+  RESET_PASSWORD = 'RESET_PASSWORD',
+  USER_CREDENTIALS = 'USER_CREDENTIALS',
+  IN_APP_EMAIL = 'IN_APP_EMAIL',
+  ANNOUNCEMENTS = 'ANNOUNCEMENTS',
+  REMINDERS = 'REMINDERS',
+  UPDATES = 'UPDATES',
 }
 ````
 
@@ -2743,12 +3531,10 @@ import { MongooseModule } from '@nestjs/mongoose';
 import { Email, EmailSchema } from './schema/email.schema';
 import { UserModule } from '../user/user.module';
 import { MailEvent } from './mail.event';
-import { Token, TokenSchema } from '../user/schemas/token.entity';
-import { UserSchema, User } from '../auth/entities/schemas';
-import { Role, roleSchema } from '../admin/entities/role.entity';
-import { Rider, RiderSchema } from '../rider/entities/rider.entity';
-import { Rides, Rideschema } from '../rider/entities/rides.entity';
 import { EmailProcessor } from './cron-job/email.processor';
+import { TokenSchema, Token } from '../user/schemas/token.schema';
+import { UserSchema, User } from '../user/schemas/user.schema';
+import { roleSchema, Role } from '../user/schemas/role.schema';
 
 @Module({
   imports: [
@@ -2809,8 +3595,6 @@ import { EmailProcessor } from './cron-job/email.processor';
       { name: Token.name, schema: TokenSchema },
       { name: User.name, schema: UserSchema },
       { name: Role.name, schema: roleSchema },
-      { name: Rider.name, schema: RiderSchema },
-      { name: Rides.name, schema: Rideschema },
     ]),
   ],
   controllers: [MailController],
@@ -2961,349 +3745,205 @@ export class MailService {
 }
 ````
 
-## File: src/modules/rides/rides.module.ts
+## File: src/modules/user/schemas/user.schema.ts
 ````typescript
-import { Module } from '@nestjs/common';
+import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
+import mongoose, { Document } from 'mongoose';
+import { Role } from './role.schema';
+import {
+  UserGender,
+  UserStatus,
+  DriverVerificationStatus,
+} from 'src/core/enums/user.enum';
+import { UserLoginStrategy } from 'src/core/interfaces';
+import { Vehicle } from '../../driver/schemas/vehicle.schema';
 
-@Module({})
-export class RidesModule {}
+export type UserDocument = User & Document;
+
+@Schema({ timestamps: true })
+export class User {
+  @Prop({ type: String, required: true, trim: true })
+  firstName: string;
+
+  @Prop({ type: String, required: true, trim: true })
+  lastName: string;
+
+  @Prop({
+    type: String,
+    required: true,
+    unique: true,
+    lowercase: true,
+    trim: true,
+    index: true,
+  })
+  email: string;
+
+  @Prop({ type: String, required: false, select: false }) // Required only for LOCAL strategy initially
+  password?: string;
+
+  @Prop({ type: String, unique: true, sparse: true, index: true }) // Unique phone number, sparse allows multiple nulls
+  phoneNumber?: string;
+
+  @Prop({ type: Boolean, default: false })
+  phoneVerified: boolean;
+
+  @Prop({ type: Boolean, default: false })
+  emailConfirm: boolean;
+
+  @Prop({ type: String, enum: UserGender })
+  gender?: UserGender;
+
+  @Prop({ type: String })
+  avatar?: string;
+
+  @Prop({ type: String })
+  about?: string;
+
+  @Prop({ type: String })
+  country?: string;
+
+  @Prop({
+    type: String,
+    enum: UserStatus,
+    default: UserStatus.PENDING_EMAIL_VERIFICATION,
+  })
+  status: UserStatus;
+
+  @Prop({
+    type: String,
+    enum: UserLoginStrategy,
+    default: UserLoginStrategy.LOCAL,
+  })
+  strategy: UserLoginStrategy;
+
+  @Prop({
+    type: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Roles' }],
+    required: true,
+  })
+  roles: Role[];
+
+  @Prop({ type: Date })
+  lastSeen?: Date;
+
+  // --- Driver Specific Fields (Optional) ---
+
+  @Prop({
+    type: String,
+    enum: DriverVerificationStatus,
+    default: DriverVerificationStatus.NOT_SUBMITTED,
+  })
+  driverVerificationStatus?: DriverVerificationStatus;
+
+  @Prop({ type: String })
+  driverLicenseNumber?: string;
+
+  @Prop({ type: Date })
+  driverLicenseExpiry?: Date;
+
+  @Prop({ type: String })
+  driverLicenseFrontImageUrl?: string;
+
+  @Prop({ type: String })
+  driverLicenseBackImageUrl?: string;
+
+  @Prop({ type: String })
+  driverRejectionReason?: string;
+
+  @Prop({ type: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Vehicle' }] })
+  vehicles?: Vehicle[];
+
+  // --- Safety & Rating Fields ---
+
+  @Prop({
+    type: [
+      {
+        name: { type: String, required: true },
+        phone: { type: String, required: true }, // Add validation for phone format if needed
+      },
+    ],
+    default: [],
+    _id: false, // Don't create separate _id for each contact
+  })
+  emergencyContacts: { name: string; phone: string }[];
+
+  @Prop({ type: Number, default: 0, min: 0, max: 5 })
+  averageRatingAsDriver: number;
+
+  @Prop({ type: Number, default: 0, min: 0 })
+  totalRatingsAsDriver: number; // Total number of ratings received as driver
+
+  @Prop({ type: Number, default: 0, min: 0, max: 5 })
+  averageRatingAsPassenger: number; // Calculated average rating when acting as passenger
+
+  @Prop({ type: Number, default: 0, min: 0 })
+  totalRatingsAsPassenger: number; // Total number of ratings received as passenger
+}
+
+export const UserSchema = SchemaFactory.createForClass(User);
 ````
 
-## File: src/modules/users/users.module.ts
+## File: src/main.ts
 ````typescript
-import { Module } from '@nestjs/common';
-
-@Module({})
-export class UsersModule {}
-````
-
-## File: src/app.module.ts
-````typescript
-import { Module } from '@nestjs/common';
-import { ConfigModule } from '@nestjs/config';
-import { DatabaseModule } from './modules/database/database.module';
-import { RidesModule } from './modules/rides/rides.module';
-import { GeolocationModule } from './modules/geolocation/geolocation.module';
-import { RidersModule } from './modules/driver/riders.module';
-import { AuthModule } from './modules/auth/auth.module';
-import { UsersModule } from './modules/users/users.module';
-import { MongooseModule } from '@nestjs/mongoose';
-import { SecretsModule } from './global/secrets/module';
+import { NestFactory } from '@nestjs/core';
+import * as express from 'express';
+import { MainModule } from './modules/main.module';
 import { SecretsService } from './global/secrets/service';
-@Module({
-  imports: [
-    DatabaseModule,
-    ConfigModule,
-    AuthModule,
-    UsersModule,
-    RidesModule,
-    RidersModule,
-    GeolocationModule,
-    MongooseModule.forRootAsync({
-      imports: [SecretsModule],
-      inject: [SecretsService],
-      useFactory: (secretsService: SecretsService) => ({
-        uri: secretsService.MONGO_URI,
-      }),
-    }),
-  ],
-  controllers: [],
-  providers: [],
-})
-export class AppModule {}
-````
+import * as cookieParser from 'cookie-parser';
+import { ValidationPipe } from '@nestjs/common';
+import { HttpExceptionFilter } from './core/filters';
+import { LoggerInterceptor, TransformInterceptor } from './core/interceptors';
+import { MongooseModule } from '@nestjs/mongoose';
+import { RedisIoAdapter } from './core/adpater';
+import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 
-## File: test/app.e2e-spec.ts
-````typescript
-import { Test, TestingModule } from '@nestjs/testing';
-import { INestApplication } from '@nestjs/common';
-import * as request from 'supertest';
-import { AppModule } from './../src/app.module';
-
-describe('AppController (e2e)', () => {
-  let app: INestApplication;
-
-  beforeEach(async () => {
-    const moduleFixture: TestingModule = await Test.createTestingModule({
-      imports: [AppModule],
-    }).compile();
-
-    app = moduleFixture.createNestApplication();
-    await app.init();
+async function bootstrap() {
+  const app = await NestFactory.create(MainModule, {
+    bufferLogs: true,
+    cors: true,
   });
 
-  it('/ (GET)', () => {
-    return request(app.getHttpServer())
-      .get('/')
-      .expect(200)
-      .expect('Hello World!');
-  });
-});
-````
+  const { PORT, MONGO_URI } = app.get<SecretsService>(SecretsService);
 
-## File: test/jest-e2e.json
-````json
-{
-  "moduleFileExtensions": ["js", "json", "ts"],
-  "rootDir": ".",
-  "testEnvironment": "node",
-  "testRegex": ".e2e-spec.ts$",
-  "transform": {
-    "^.+\\.(t|j)s$": "ts-jest"
-  }
+  app.use(cookieParser());
+  app.use(
+    (
+      req: express.Request,
+      res: express.Response,
+      next: express.NextFunction,
+    ): void => {
+      if (req.originalUrl.includes('/webhook')) {
+        express.raw({ type: 'application/json' })(req, res, next);
+      } else {
+        express.json()(req, res, next);
+      }
+    },
+  );
+
+  app.useGlobalPipes(new ValidationPipe());
+  app.useGlobalFilters(new HttpExceptionFilter());
+  app.useGlobalInterceptors(
+    new LoggerInterceptor(),
+    new TransformInterceptor(),
+  );
+
+  MongooseModule.forRoot(MONGO_URI);
+
+  app.setGlobalPrefix('api');
+  app.useWebSocketAdapter(new RedisIoAdapter(app));
+
+  // Setup Swagger
+  const config = new DocumentBuilder()
+    .setTitle('Ride-By API')
+    .setDescription('The Ride-By API documentation')
+    .setVersion('1.0')
+    .addBearerAuth()
+    .build();
+  const document = SwaggerModule.createDocument(app, config);
+  SwaggerModule.setup('api/docs', app, document);
+
+  await app.listen(PORT);
 }
-````
-
-## File: .eslintrc.js
-````javascript
-module.exports = {
-  parser: '@typescript-eslint/parser',
-  parserOptions: {
-    project: 'tsconfig.json',
-    tsconfigRootDir: __dirname,
-    sourceType: 'module',
-  },
-  plugins: ['@typescript-eslint/eslint-plugin'],
-  extends: [
-    'plugin:@typescript-eslint/recommended',
-    'plugin:prettier/recommended',
-  ],
-  root: true,
-  env: {
-    node: true,
-    jest: true,
-  },
-  ignorePatterns: ['.eslintrc.js'],
-  rules: {
-    '@typescript-eslint/interface-name-prefix': 'off',
-    '@typescript-eslint/explicit-function-return-type': 'off',
-    '@typescript-eslint/explicit-module-boundary-types': 'off',
-    '@typescript-eslint/no-explicit-any': 'off',
-  },
-};
-````
-
-## File: .gitignore
-````
-# compiled output
-/dist
-/node_modules
-/build
-
-# Logs
-logs
-*.log
-npm-debug.log*
-pnpm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-lerna-debug.log*
-
-# OS
-.DS_Store
-
-# Tests
-/coverage
-/.nyc_output
-
-# IDEs and editors
-/.idea
-.project
-.classpath
-.c9/
-*.launch
-.settings/
-*.sublime-workspace
-
-# IDE - VSCode
-.vscode/*
-!.vscode/settings.json
-!.vscode/tasks.json
-!.vscode/launch.json
-!.vscode/extensions.json
-
-# dotenv environment variable files
-.env
-.env.development.local
-.env.test.local
-.env.production.local
-.env.local
-
-# temp directory
-.temp
-.tmp
-
-# Runtime data
-pids
-*.pid
-*.seed
-*.pid.lock
-
-# Diagnostic reports (https://nodejs.org/api/report.html)
-report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
-````
-
-## File: .prettierrc
-````
-{
-  "singleQuote": true,
-  "trailingComma": "all"
-}
-````
-
-## File: nest-cli.json
-````json
-{
-  "$schema": "https://json.schemastore.org/nest-cli",
-  "collection": "@nestjs/schematics",
-  "sourceRoot": "src",
-  "compilerOptions": {
-    "deleteOutDir": true
-  }
-}
-````
-
-## File: README.md
-````markdown
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
-
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
-
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://coveralls.io/github/nestjs/nest?branch=master" target="_blank"><img src="https://coveralls.io/repos/github/nestjs/nest/badge.svg?branch=master#9" alt="Coverage" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
-
-## Description
-
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
-
-## Project setup
-
-```bash
-$ npm install
-```
-
-## Compile and run the project
-
-```bash
-# development
-$ npm run start
-
-# watch mode
-$ npm run start:dev
-
-# production mode
-$ npm run start:prod
-```
-
-## Run tests
-
-```bash
-# unit tests
-$ npm run test
-
-# e2e tests
-$ npm run test:e2e
-
-# test coverage
-$ npm run test:cov
-```
-
-## Deployment
-
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
-
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
-
-```bash
-$ npm install -g mau
-$ mau deploy
-```
-
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
-
-## Resources
-
-Check out a few resources that may come in handy when working with NestJS:
-
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
-
-## Support
-
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
-
-## Stay in touch
-
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
-
-## License
-
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
-````
-
-## File: tsconfig.build.json
-````json
-{
-  "extends": "./tsconfig.json",
-  "exclude": ["node_modules", "test", "dist", "**/*spec.ts"]
-}
-````
-
-## File: tsconfig.json
-````json
-{
-  "compilerOptions": {
-    "module": "commonjs",
-    "declaration": true,
-    "removeComments": true,
-    "emitDecoratorMetadata": true,
-    "experimentalDecorators": true,
-    "allowSyntheticDefaultImports": true,
-    "target": "ES2021",
-    "sourceMap": true,
-    "outDir": "./dist",
-    "baseUrl": "./",
-    "incremental": true,
-    "skipLibCheck": true,
-    "strictNullChecks": false,
-    "noImplicitAny": false,
-    "strictBindCallApply": false,
-    "forceConsistentCasingInFileNames": false,
-    "noFallthroughCasesInSwitch": false
-  }
-}
-````
-
-## File: src/core/dto/index.ts
-````typescript
-export * from './page-meta.dto';
-export * from './page-options.dto';
-export * from './pagination.dto';
+bootstrap();
 ````
 
 ## File: src/core/dto/page-meta.dto.ts
@@ -3460,10 +4100,438 @@ export class PaginationResultDto<T> {
 }
 ````
 
+## File: src/core/interfaces/user/index.ts
+````typescript
+export * from './user.interface';
+export * from './role.interface';
+````
+
+## File: src/core/interfaces/user/user.interface.ts
+````typescript
+/* eslint-disable @typescript-eslint/no-explicit-any */
+import { UserGender } from 'src/core/enums/user.enum';
+import { UserStatus } from 'src/core/enums/user.enum';
+
+export interface IUser {
+  _id?: string;
+  firstName: string;
+  lastName: string;
+  email: string;
+  reasonToJoin?: string;
+  profession?: string;
+  pathway?: string;
+  techStacks?: object;
+  assessmentScore?: string;
+  emailConfirm: boolean;
+  createdAt?: Date;
+  lastSeen?: Date;
+  status?: UserStatus;
+}
+
+export interface IUser {
+  _id?: string;
+  email: string;
+  firstName: string;
+  lastName: string;
+  avatar?: string;
+  about?: string;
+  country?: string;
+  gender?: UserGender;
+  phoneNumber?: string;
+  emailConfirm: boolean;
+  createdAt?: Date;
+  lastSeen?: Date;
+  status?: UserStatus;
+}
+
+export interface IDriver {
+  _id?: string;
+  email: string;
+  firstName: string;
+  lastName: string;
+  avatar?: string;
+  about?: string;
+  country?: string;
+  gender?: UserGender;
+  phoneNumber?: string;
+  emailConfirm: boolean;
+  createdAt?: Date;
+  lastSeen?: Date;
+  status?: UserStatus;
+}
+
+export interface IPassenger {
+  _id?: string;
+  email: string;
+  firstName: string;
+  lastName: string;
+  avatar?: string;
+  about?: string;
+  country?: string;
+  gender?: UserGender;
+  phoneNumber?: string;
+  emailConfirm: boolean;
+  createdAt?: Date;
+  lastSeen?: Date;
+  status?: UserStatus;
+}
+
+export interface IAdmin {
+  _id?: string;
+  email: string;
+  firstName: string;
+  lastName: string;
+  avatar?: string;
+  about?: string;
+  country?: string;
+  gender?: UserGender;
+  phoneNumber?: string;
+  emailConfirm: boolean;
+  createdAt?: Date;
+  lastSeen?: Date;
+  status?: UserStatus;
+}
+
+export interface IUserMail {
+  email: string;
+  firstName: string;
+}
+
+export enum UserLoginStrategy {
+  LOCAL = 'local',
+  GOOGLE = 'google',
+  FACEBOOK = 'facebook',
+  APPLE = 'apple',
+}
+````
+
 ## File: src/core/interfaces/index.ts
 ````typescript
 export * from './http';
 export * from './user';
+
+export type envType =
+  | 'development'
+  | 'production'
+  | 'test'
+  | 'stg'
+  | 'dev'
+  | 'prod'
+  | 'develop';
+````
+
+## File: src/modules/auth/dto/auth.dto.ts
+````typescript
+import {
+  IsBoolean,
+  IsEmail,
+  IsEnum,
+  IsOptional,
+  IsString,
+  IsUrl,
+} from 'class-validator';
+import { PortalType } from 'src/core/enums/auth.enum';
+
+export class EmailConfirmationDto {
+  @IsString()
+  code: string;
+}
+
+export class TCodeLoginDto {
+  @IsString()
+  tCode: string;
+
+  @IsString()
+  portalType: PortalType;
+}
+
+export class CallbackURLDto {
+  @IsUrl({ require_tld: false })
+  @IsOptional()
+  callbackURL: string;
+}
+
+export class RefreshTokenDto {
+  @IsString()
+  token: string;
+}
+
+export class ForgotPasswordDto {
+  @IsString()
+  @IsEmail()
+  email: string;
+}
+
+export class LoginDto {
+  @IsString()
+  @IsEmail()
+  email: string;
+
+  @IsString()
+  password: string;
+
+  @IsEnum(PortalType)
+  portalType: PortalType;
+
+  @IsOptional()
+  @IsBoolean()
+  rememberMe = false;
+}
+````
+
+## File: src/modules/auth/auth.controller.ts
+````typescript
+import {
+  Body,
+  Controller,
+  Get,
+  HttpCode,
+  HttpStatus,
+  Post,
+  UseGuards,
+  Logger,
+  UseInterceptors,
+  UploadedFile,
+} from '@nestjs/common';
+import { AuthService } from './auth.service';
+import {
+  EmailConfirmationDto,
+  ForgotPasswordDto,
+  LoginDto,
+  TCodeLoginDto,
+} from './dto';
+import { BaseRegistrationDto } from './dto/base-registeration.dto';
+
+import { IDriver, IPassenger } from 'src/core/interfaces';
+import { User as UserDecorator } from 'src/core/decorators';
+import { AuthGuard } from 'src/core/guards';
+import { SecretsService } from 'src/global/secrets/service';
+import { PortalType } from 'src/core/enums/auth.enum';
+import { FileInterceptor } from '@nestjs/platform-express';
+
+@Controller('auth')
+export class AuthController {
+  private logger = new Logger(AuthController.name);
+  constructor(
+    private authService: AuthService,
+    private secretSecret: SecretsService,
+  ) {}
+
+  @Post('/create-user')
+  async register(
+    @Body() body: BaseRegistrationDto,
+    @Body('portalType') portalType: PortalType,
+  ) {
+    const data = await this.authService.createPortalUser(body, portalType);
+
+    return {
+      data,
+      message: 'User created successfully',
+    };
+  }
+
+  @Post('login')
+  async login(@Body() loginDto: LoginDto) {
+    const data = await this.authService.login(loginDto);
+
+    return {
+      data,
+      message: 'Login successful',
+    };
+  }
+
+  @UseGuards(AuthGuard)
+  @Post('resend-verification')
+  async resendVerificationEmail(@UserDecorator() user: IDriver | IPassenger) {
+    const data = await this.authService.resendVerificationEmail(user._id);
+
+    return {
+      data,
+      message: 'Verification Code Sent Successfully',
+    };
+  }
+
+  @HttpCode(HttpStatus.OK)
+  @Post('/forgot-password')
+  async forgotPassword(
+    @Body() body: ForgotPasswordDto,
+    @Body('callbackURL') query: string,
+  ): Promise<object> {
+    const data = await this.authService.forgotPassword(body.email, query);
+
+    return {
+      data,
+      message: 'Password reset link has been sent to your email',
+    };
+  }
+
+  @HttpCode(HttpStatus.OK)
+  @Post('/reset-password')
+  async resetPassword(
+    @Body('code') code: string,
+    @Body('password') password: string,
+  ): Promise<object> {
+    const data = await this.authService.resetPassword(code, password);
+
+    return {
+      data,
+      message: 'Password Changed Successfully',
+    };
+  }
+
+  @UseGuards(AuthGuard)
+  @HttpCode(HttpStatus.OK)
+  @Post('/confirmation')
+  async verifyEmail(
+    @UserDecorator() user: IDriver | IPassenger,
+    @Body() body: EmailConfirmationDto,
+  ): Promise<object> {
+    const data = await this.authService.verifyUserEmail(user._id, body.code);
+
+    return {
+      data,
+      message: 'Email verified successfully',
+    };
+  }
+
+  @UseGuards(AuthGuard)
+  @HttpCode(HttpStatus.OK)
+  @Get('/logout')
+  async logout(@UserDecorator() user: IDriver | IPassenger): Promise<object> {
+    const data = await this.authService.logoutUser(user._id);
+
+    return {
+      data,
+      message: 'Logout successfully',
+    };
+  }
+
+  @HttpCode(HttpStatus.OK)
+  @Post('/tcode-auth')
+  async tCodeAuth(@Body() body: TCodeLoginDto) {
+    const data = await this.authService.tCodeLogin(body.tCode);
+
+    return {
+      data,
+      message: 'Authenticated successfully',
+    };
+  }
+
+  @HttpCode(HttpStatus.OK)
+  @Post('/tcode_auth')
+  async tCodeAuthU(@Body() body: TCodeLoginDto) {
+    return this.tCodeAuth(body);
+  }
+
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(AuthGuard)
+  @Get('/all-users')
+  async getAllUsers() {
+    const data = await this.authService.getAllUsers();
+
+    return {
+      data,
+      message: 'Users Fetched Successfully',
+    };
+  }
+
+  @HttpCode(HttpStatus.OK)
+  @Get('/user')
+  @UseGuards(AuthGuard)
+  async getUser(@UserDecorator() user: IDriver | IPassenger): Promise<object> {
+    const data = await this.authService.getUserInfo(user.email);
+
+    return {
+      data,
+      message: 'User Info Fetched Successfully',
+    };
+  }
+
+  @UseGuards(AuthGuard)
+  @UseInterceptors(FileInterceptor('avatar'))
+  @Post('/user/upload-avatar')
+  async uploadAvatar(
+    @UserDecorator() user: IDriver | IPassenger,
+    @UploadedFile() file: Express.Multer.File,
+  ) {
+    const data = await this.authService.uploadAvatar(user._id, file);
+
+    return {
+      data,
+      message: 'Avatar uploaded successfully',
+    };
+  }
+
+  @UseGuards(AuthGuard)
+  @HttpCode(HttpStatus.OK)
+  @Post('/change-password-confirmation')
+  async changePasswordConfirmation(
+    @UserDecorator() user: IDriver | IPassenger,
+    @Body('oldPassword') body: string,
+  ): Promise<object> {
+    const data = await this.authService.changePasswordConfirmation(user, body);
+
+    return {
+      data,
+      message: 'Change Password Confirmation Sent Successfully',
+    };
+  }
+
+  @UseGuards(AuthGuard)
+  @HttpCode(HttpStatus.OK)
+  @Post('/verify-password-confirmation')
+  async verifychangePasswordConfirmation(
+    @UserDecorator() user: IDriver | IPassenger,
+    @Body('code') code: string,
+  ): Promise<object> {
+    const data = await this.authService.verifychangePasswordConfirmation(
+      user,
+      code,
+    );
+
+    return {
+      data,
+      message: 'Change Password Confirmation Sent Successfully',
+    };
+  }
+
+  @UseGuards(AuthGuard)
+  @HttpCode(HttpStatus.OK)
+  @Post('/change-password')
+  async updatePassword(
+    @UserDecorator() user: IDriver | IPassenger,
+    @Body('password') password: string,
+  ): Promise<object> {
+    const data = await this.authService.updatePassword(user, password);
+
+    return {
+      data,
+      message: 'Password Changed Successfully',
+    };
+  }
+
+  @HttpCode(HttpStatus.OK)
+  @Get('/roles')
+  async getAllRoles(): Promise<object> {
+    const data = await this.authService.getAllRoles();
+
+    return {
+      data,
+      message: 'All Roles Successfully',
+    };
+  }
+
+  @HttpCode(HttpStatus.OK)
+  @Get('/users')
+  async getAllUsersAndRoles(): Promise<object> {
+    const data = await this.authService.getAllUserRoles();
+
+    return {
+      data,
+      message: 'All Users Successfully',
+    };
+  }
+}
 ````
 
 ## File: src/modules/health/health.controller.ts
@@ -3521,68 +4589,538 @@ export class HealthController {
 }
 ````
 
-## File: src/main.ts
+## File: src/modules/mail/mail.controller.ts
 ````typescript
-import { NestFactory } from '@nestjs/core';
-import * as express from 'express';
-import { AppModule } from './app.module';
-import { SecretsService } from './global/secrets/service';
-import * as cookieParser from 'cookie-parser';
-import { ValidationPipe } from '@nestjs/common';
-import { HttpExceptionFilter } from './core/filters';
-import { LoggerInterceptor, TransformInterceptor } from './core/interceptors';
-import { MongooseModule } from '@nestjs/mongoose';
-import { RedisIoAdapter } from './core/adpater';
-import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
+import { Controller, Logger, Post } from '@nestjs/common';
+import { SendMailDto } from './dto/mail.dto';
+import { MailService } from './mail.service';
+import { MailType } from './enums';
 
-async function bootstrap() {
-  const app = await NestFactory.create(AppModule, {
-    bufferLogs: true,
-    cors: true,
-  });
+@Controller()
+export class MailController {
+  private logger = new Logger(MailController.name);
 
-  const { PORT, MONGO_URI } = app.get<SecretsService>(SecretsService);
+  constructor(private readonly mailService: MailService) {}
 
-  app.use(cookieParser());
-  app.use(
-    (
-      req: express.Request,
-      res: express.Response,
-      next: express.NextFunction,
-    ): void => {
-      if (req.originalUrl.includes('/webhook')) {
-        express.raw({ type: 'application/json' })(req, res, next);
-      } else {
-        express.json()(req, res, next);
+  @Post('mail')
+  async sendMail(data: SendMailDto) {
+    this.logger.log('sendMail event received', JSON.stringify(data));
+
+    try {
+      switch (data.type) {
+        case MailType.USER_CONFIRMATION:
+          await this.mailService.sendUserConfirmation(data);
+          this.logger.log('sendUserConfirmation called');
+          break;
+
+        case MailType.USER_CREDENTIALS:
+          await this.mailService.sendUserCredentials(data);
+          this.logger.log('sendUserCredentials called');
+          break;
+
+        case MailType.RESET_PASSWORD:
+          await this.mailService.sendResetPassword(data);
+          this.logger.log('sendResetPassword called');
+          break;
+
+        case MailType.IN_APP_EMAIL:
+          await this.mailService.sendInAppEmailNotification(data);
+          this.logger.log('sendInAppEmailNotification called');
+          break;
+
+        default:
+          break;
       }
-    },
-  );
-
-  app.useGlobalPipes(new ValidationPipe());
-  app.useGlobalFilters(new HttpExceptionFilter());
-  app.useGlobalInterceptors(
-    new LoggerInterceptor(),
-    new TransformInterceptor(),
-  );
-
-  MongooseModule.forRoot(MONGO_URI);
-
-  app.setGlobalPrefix('api');
-  app.useWebSocketAdapter(new RedisIoAdapter(app));
-
-  // Setup Swagger
-  const config = new DocumentBuilder()
-    .setTitle('Ride-By API')
-    .setDescription('The Ride-By API documentation')
-    .setVersion('1.0')
-    .addBearerAuth()
-    .build();
-  const document = SwaggerModule.createDocument(app, config);
-  SwaggerModule.setup('api/docs', app, document);
-
-  await app.listen(PORT);
+    } catch (error) {
+      this.logger.error(error);
+    }
+  }
 }
-bootstrap();
+````
+
+## File: src/modules/auth/auth.service.ts
+````typescript
+import { Injectable, Logger } from '@nestjs/common';
+import {
+  EMAIL_ALREADY_EXISTS,
+  INVALID_CODE,
+  INVALID_CODE_FORGOT_PASSWORD,
+  INVALID_EMAIL_OR_PASSWORD,
+  INVALID_USER,
+  PORTAL_TYPE_ERROR,
+} from 'src/core/constants/messages.constant';
+import { EncryptHelper, ErrorHelper } from 'src/core/helpers';
+import { UserLoginStrategy, IDriver, IPassenger } from 'src/core/interfaces';
+import { PassengerRegistrationDto } from '../passenger/dto/passenger.dto';
+import { DriverRegistrationDto } from '../driver/dto/driver-regidtration.dto';
+import { UserService } from '../user/user.service';
+import { InjectModel } from '@nestjs/mongoose';
+import { Model } from 'mongoose';
+import { Token } from '../user/schemas/token.schema';
+import { MailEvent } from '../mail/mail.event';
+import { UserSessionService } from 'src/global/user-session/service';
+import { TokenHelper } from 'src/global/utils/token.utils';
+import { PortalType } from 'src/core/enums/auth.enum';
+import { UpdateUserDto } from './dto/update-user.dto';
+import { AwsS3Service } from '../storage';
+import { Role } from '../user/schemas/role.schema';
+import { User } from '../user/schemas/user.schema';
+import { IUser } from 'src/core/interfaces';
+import { LoginDto } from './dto/auth.dto';
+import { UserStatus } from 'src/core/enums/user.enum';
+
+@Injectable()
+export class AuthService {
+  private logger = new Logger(AuthService.name);
+
+  constructor(
+    @InjectModel(Token.name) private tokenRepo: Model<Token>,
+    @InjectModel(Role.name) private roleRepo: Model<Role>,
+    @InjectModel(User.name) private userRepo: Model<User>,
+    private userService: UserService,
+    private mailEvent: MailEvent,
+    private encryptHelper: EncryptHelper,
+    private tokenHelper: TokenHelper,
+    private userSessionService: UserSessionService,
+    private awsS3Service: AwsS3Service,
+  ) {}
+
+  async createPortalUser(
+    payload: DriverRegistrationDto | PassengerRegistrationDto,
+    portalType: PortalType,
+  ): Promise<any> {
+    try {
+      const user = await this.createUser(payload, {
+        strategy: UserLoginStrategy.LOCAL,
+        portalType,
+      });
+
+      const tokenInfo = await this.generateUserSession(user);
+
+      return {
+        token: tokenInfo,
+        user: user,
+      };
+    } catch (error) {
+      ErrorHelper.ConflictException('Email Already Exist');
+      this.logger.log('createPortalUser', { error });
+    }
+  }
+
+  private async generateUserSession(
+    user: IDriver | IPassenger,
+    rememberMe = true,
+  ) {
+    const tokenInfo = this.tokenHelper.generate(user);
+
+    await this.userSessionService.create(user, {
+      sessionId: tokenInfo.sessionId,
+      rememberMe,
+    });
+
+    return tokenInfo;
+  }
+
+  async createUser(
+    payload: DriverRegistrationDto | PassengerRegistrationDto,
+    options: {
+      strategy: UserLoginStrategy;
+      portalType: PortalType;
+      adminCreated?: boolean;
+    },
+  ): Promise<IPassenger | IDriver> {
+    const { email } = payload;
+    const { strategy, portalType } = options;
+
+    const emailQuery = {
+      email: email.toLowerCase(),
+    };
+
+    if (!portalType) {
+      ErrorHelper.BadRequestException(PORTAL_TYPE_ERROR);
+    }
+
+    const emailExist = await this.userRepo.findOne(emailQuery, {
+      getDeleted: true,
+    });
+
+    if (emailExist) {
+      ErrorHelper.BadRequestException(EMAIL_ALREADY_EXISTS);
+    }
+
+    const roleData = await this.roleRepo.findOne({ name: portalType });
+
+    const user = await this.userRepo.create({
+      email: payload.email.toLowerCase(),
+      password: await this.encryptHelper.hash(payload.password),
+      firstName: payload.firstName,
+      lastName: payload.lastName,
+      country: payload.country,
+      strategy,
+      emailConfirm: strategy === UserLoginStrategy.LOCAL ? false : true,
+      portalType: portalType,
+      roles: [roleData],
+    });
+
+    return { ...user.toObject(), _id: user._id.toString() };
+  }
+
+  async login(params: LoginDto) {
+    try {
+      const { email, password, portalType } = params;
+
+      const user = await this.validateUser(email, password, portalType);
+
+      const tokenInfo = await this.generateUserSession(user, params.rememberMe);
+
+      await this.userRepo.updateOne(
+        { _id: user._id },
+        { lastSeen: new Date() },
+      );
+
+      return {
+        token: tokenInfo,
+        user,
+      };
+    } catch (error) {
+      ErrorHelper.BadRequestException(error);
+    }
+  }
+
+  async validateUser(
+    email: string,
+    password: string,
+    portalType?: PortalType,
+  ): Promise<IDriver | IPassenger> {
+    const emailQuery = {
+      email: email.toLowerCase(),
+    };
+
+    const user = await this.userRepo
+      .findOne(emailQuery)
+      .populate('roles', 'name');
+
+    if (!user) {
+      ErrorHelper.BadRequestException(INVALID_EMAIL_OR_PASSWORD);
+    }
+
+    const passwordMatch = await this.encryptHelper.compare(
+      password,
+      user.password,
+    );
+    if (!passwordMatch) {
+      ErrorHelper.BadRequestException(INVALID_EMAIL_OR_PASSWORD);
+    }
+
+    if (user.status === UserStatus.INACTIVE) {
+      ErrorHelper.BadRequestException('Your account is inactive');
+    }
+
+    const roleNames = user.roles.map((role) => role.name);
+
+    if (!roleNames.includes(portalType as any)) {
+      ErrorHelper.ForbiddenException(
+        'Forbidden: You does not have the required role to access this route.',
+      );
+    }
+
+    return { ...user.toObject(), _id: user._id.toString() };
+  }
+
+  async resendVerificationEmail(userId: string) {
+    const user = await this.userRepo.findById(userId);
+
+    if (!user) {
+      ErrorHelper.BadRequestException('User not found');
+    }
+
+    if (user.emailConfirm) {
+      ErrorHelper.BadRequestException('Email already confirmed');
+    }
+
+    const confirmationCode = await this.userService.generateOtpCode({
+      ...user.toObject(),
+      _id: user._id.toString(),
+    });
+
+    await this.mailEvent.sendUserConfirmation(user, confirmationCode);
+
+    return user;
+  }
+
+  async forgotPassword(email: string, callbackURL: string) {
+    const emailQuery = {
+      email: email.toLowerCase(),
+    };
+
+    if (!callbackURL) {
+      ErrorHelper.BadRequestException('Please input a valid callbackURL');
+    }
+
+    const user = await this.userRepo.findOne(emailQuery);
+
+    if (!user) {
+      ErrorHelper.BadRequestException('User does not exist');
+    }
+
+    const confirmationCode = await this.userService.generateOtpCode(
+      { ...user.toObject(), _id: user._id.toString() },
+      {
+        numberOnly: false,
+        length: 21,
+      },
+    );
+
+    await this.mailEvent.sendResetPassword(user, confirmationCode, callbackURL);
+
+    return {
+      success: true,
+    };
+  }
+
+  async resetPassword(code: string, password: string) {
+    const token = await this.tokenRepo.findOne({ code });
+
+    if (!token) {
+      ErrorHelper.BadRequestException(INVALID_CODE_FORGOT_PASSWORD);
+    }
+
+    const user = await this.userRepo.findById(token.user);
+
+    if (!user) {
+      ErrorHelper.BadRequestException(INVALID_USER);
+    }
+
+    // Ensure new password is not the same as the old password
+    const passwordMatch = await this.encryptHelper.compare(
+      password,
+      user.password,
+    );
+    if (passwordMatch) {
+      ErrorHelper.BadRequestException(
+        'New password cannot be the same as the previous password',
+      );
+    }
+
+    await this.userService.verifyOtpCode(
+      { ...user.toObject(), _id: user._id.toString() },
+      code,
+    );
+
+    const hashedPassword = await this.encryptHelper.hash(password);
+
+    await this.userRepo.findByIdAndUpdate(user._id, {
+      password: hashedPassword,
+      hasChangedPassword: true, // Mark password as changed
+    });
+
+    return {
+      success: true,
+    };
+  }
+
+  async verifyUserEmail(userId: string, code: string) {
+    const errorMessage = 'OTP has expired';
+
+    const user = await this.userRepo.findById(userId);
+
+    if (!user) {
+      ErrorHelper.BadRequestException('User not found');
+    }
+
+    await this.userService.verifyOtpCode(
+      { ...user.toObject(), _id: user._id.toString() },
+      code,
+      errorMessage,
+    );
+
+    const updatedUser = await this.userRepo.findByIdAndUpdate(
+      user._id,
+      { emailConfirm: true },
+      { new: true },
+    );
+
+    return updatedUser;
+  }
+
+  async logoutUser(userId: string) {
+    return await this.userService.logout(userId);
+  }
+
+  async tCodeLogin(code: string) {
+    const token = await this.tokenRepo.findOne({ code });
+
+    if (!token) {
+      ErrorHelper.BadRequestException(INVALID_CODE);
+    }
+
+    let user = null;
+
+    user = await this.userRepo.findById(token.user);
+
+    if (!user) {
+      ErrorHelper.BadRequestException(INVALID_USER);
+    }
+
+    await this.userService.verifyOtpCode(user.toObject(), code);
+    const tokenInfo = await this.generateUserSession(user.toObject());
+
+    return {
+      token: tokenInfo,
+      user: user.toObject(),
+    };
+  }
+
+  async getAllUsers() {
+    return await this.userRepo.find({});
+  }
+
+  async getUserInfo(email: string): Promise<IUser> {
+    const user = await this.userRepo.findOne({ email });
+
+    if (!user) {
+      ErrorHelper.NotFoundException('No User Found.');
+    }
+
+    return { ...user.toJSON(), _id: user._id.toString() };
+  }
+
+  async updateUserInfo(
+    userId: string,
+    updateUserDto: UpdateUserDto,
+  ): Promise<IDriver | IPassenger> {
+    const updatedUser = await this.userRepo.findByIdAndUpdate(
+      userId,
+      { $set: updateUserDto },
+      { new: true, runValidators: true },
+    );
+
+    if (!updatedUser) {
+      ErrorHelper.NotFoundException(INVALID_USER);
+    }
+
+    return { ...updatedUser.toObject(), _id: updatedUser._id.toString() };
+  }
+
+  async uploadAvatar(userId: string, file: Express.Multer.File) {
+    const user = await this.userRepo.findById(userId);
+
+    if (!user) {
+      ErrorHelper.NotFoundException('User not found');
+    }
+
+    if (!file) {
+      ErrorHelper.BadRequestException('Image is required');
+    }
+
+    const allowedMimeTypes = ['image/jpeg', 'image/png', 'image/gif'];
+    if (!allowedMimeTypes.includes(file.mimetype)) {
+      ErrorHelper.BadRequestException(
+        'Unsupported file type. Please upload a JPEG, PNG, or GIF image.',
+      );
+    }
+
+    const maxSizeInBytes = 5 * 1024 * 1024; // 5 MB
+    if (file.size > maxSizeInBytes) {
+      ErrorHelper.BadRequestException(
+        'File size exceeds the maximum limit of 5 MB.',
+      );
+    }
+
+    const uploadedUrl = await this.awsS3Service.uploadAttachment(file);
+
+    await this.userRepo.findByIdAndUpdate(userId, { avatar: uploadedUrl });
+
+    return { avatar: uploadedUrl };
+  }
+
+  async changePasswordConfirmation(
+    user: IPassenger | IDriver,
+    oldPassword: string,
+  ) {
+    const _user = await this.userRepo.findById(user._id);
+
+    if (_user.strategy !== UserLoginStrategy.LOCAL && !_user.password) {
+      ErrorHelper.ForbiddenException(
+        'You can not change your password since you do not have one, please use the forgot password to get a password',
+      );
+    }
+
+    const passwordMatch = await this.encryptHelper.compare(
+      oldPassword,
+      _user.password,
+    );
+
+    if (!passwordMatch) {
+      ErrorHelper.BadRequestException('Please enter a valid current password');
+    }
+
+    const confirmationCode = await this.userService.generateOtpCode(user);
+
+    await this.mailEvent.sendUserConfirmation(
+      user as IDriver | IPassenger,
+      confirmationCode,
+    );
+
+    return {
+      success: true,
+    };
+  }
+
+  async verifychangePasswordConfirmation(
+    user: IDriver | IPassenger,
+    code: string,
+  ) {
+    const errorMessage = 'OTP has expired’';
+
+    await this.userService.verifyOtpCode(user, code, errorMessage);
+
+    return {
+      success: true,
+    };
+  }
+
+  async updatePassword(user: IDriver | IPassenger, password: string) {
+    const userDoc = await this.userRepo.findById(user._id);
+
+    const hashedPassword = await this.encryptHelper.hash(password);
+    userDoc.password = hashedPassword;
+
+    await this.userRepo.updateOne(
+      {
+        _id: user._id,
+      },
+      {
+        password: hashedPassword,
+        hasChangedPassword: true,
+      },
+    );
+  }
+
+  async getAllRoles() {
+    return await this.roleRepo.find({});
+  }
+
+  async getAllUserRoles() {
+    return await this.userRepo.find().populate('roles');
+  }
+
+  async sessionExists(params: LoginDto): Promise<{
+    exists: boolean;
+    user: IDriver | IPassenger;
+  }> {
+    const { email, password } = params;
+
+    const user = await this.validateUser(email, password);
+
+    const session = await this.userSessionService.checkSession(user._id);
+
+    return {
+      exists: !!session,
+      user,
+    };
+  }
+}
 ````
 
 ## File: package.json
@@ -3621,7 +5159,9 @@ bootstrap();
     "@nestjs/platform-socket.io": "^11.0.0",
     "@nestjs/swagger": "^11.1.0",
     "@nestjs/terminus": "^11.0.0",
+    "@nestjs/websockets": "^11.0.16",
     "@socket.io/redis-adapter": "^8.2.0",
+    "aws-sdk": "^2.1692.0",
     "bcryptjs": "^3.0.2",
     "bull": "^4.16.5",
     "class-transformer": "^0.5.1",
@@ -3629,8 +5169,10 @@ bootstrap();
     "cookie-parser": "^1.4.7",
     "dotenv": "^16.4.7",
     "ejs": "^3.1.10",
+    "eslint-plugin-security": "^3.0.1",
     "ioredis": "^5.4.2",
     "mongoose": "^8.9.5",
+    "nest-aws-sdk": "^3.1.0",
     "nodemailer": "^6.10.0",
     "otp-generator": "^4.0.1",
     "passport-jwt": "^4.0.1",

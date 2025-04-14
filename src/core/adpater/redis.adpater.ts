@@ -15,7 +15,7 @@ export class RedisIoAdapter extends IoAdapter {
     const pubClient = createClient({
       socket: {
         host: configService.userSessionRedis.REDIS_HOST,
-        port: configService.userSessionRedis.REDIS_PORT,
+        port: parseInt(configService.userSessionRedis.REDIS_PORT, 10),
       },
       username: configService.userSessionRedis.REDIS_USER,
       password: configService.userSessionRedis.REDIS_PASSWORD,
