@@ -8,28 +8,38 @@ import {
   MinLength,
   IsBoolean,
   Equals,
-  IsPhoneNumber, // Import if you have a specific validator package or use IsMatchPattern
+  IsPhoneNumber,
 } from 'class-validator';
 import { PASSWORD_PATTERN } from '../../../core/constants/base.constant';
 import { UserGender } from 'src/core/enums/user.enum';
 import { IsMatchPattern } from '../../../core/validators/IsMatchPattern.validator';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 export class BaseRegistrationDto {
+  @ApiProperty({ description: "User's first name", minLength: 2 })
   @IsString()
   @IsNotEmpty()
   @MinLength(2)
   firstName: string;
 
+  @ApiProperty({ description: "User's last name", minLength: 2 })
   @IsString()
   @IsNotEmpty()
   @MinLength(2)
   lastName: string;
 
+  @ApiProperty({ description: "User's email address" })
   @IsEmail()
   @IsNotEmpty()
   @Transform(({ value }) => value?.toLowerCase().trim())
   email: string;
 
+  @ApiProperty({
+    description:
+      "User's password - must contain uppercase, lowercase, and number",
+    minLength: 8,
+    pattern: PASSWORD_PATTERN,
+  })
   @IsString()
   @IsNotEmpty()
   @MinLength(8, { message: 'Password must be at least 8 characters long' })
@@ -39,28 +49,33 @@ export class BaseRegistrationDto {
   })
   password: string;
 
-  // Consider adding password confirmation if needed on the frontend
-  // @IsString()
-  // @IsNotEmpty()
-  // @Match('password', { message: 'Passwords do not match' }) // You might need a custom 'Match' validator or check in service
-  // passwordConfirmation: string;
-
+  @ApiPropertyOptional({
+    description: 'Nigerian phone number',
+    example: '+2348012345678',
+  })
   @IsOptional()
   @IsPhoneNumber('NG', {
     message: 'Please provide a valid Nigerian phone number',
-  }) // Use 'NG' if validator supports it, otherwise use regex via IsMatchPattern
-  // Example Regex (adjust as needed for Nigerian formats like 080..., +23480...):
-  // @IsMatchPattern(/^(\+234|0)[789][01]\d{8}$/, { message: 'Invalid Nigerian phone number format' })
+  })
   phoneNumber?: string;
 
+  @ApiPropertyOptional({ description: "User's country" })
   @IsOptional()
   @IsString()
   country?: string;
 
+  @ApiPropertyOptional({
+    description: "User's gender",
+    enum: UserGender,
+  })
   @IsOptional()
   @IsEnum(UserGender)
   gender?: UserGender;
 
+  @ApiProperty({
+    description: 'Whether user has accepted terms and conditions',
+    default: false,
+  })
   @IsBoolean({ message: 'You must accept the terms and conditions.' })
   @Equals(true, { message: 'You must accept the terms and conditions.' })
   termsAccepted: boolean;

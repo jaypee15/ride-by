@@ -32,6 +32,7 @@ import {
   ApiBody,
   ApiConsumes,
 } from '@nestjs/swagger';
+import { AuthUserResponseDto, BaseResponseDto } from './dto/auth-response.dto';
 
 @ApiTags('Authentication')
 @Controller('auth')
@@ -44,7 +45,11 @@ export class AuthController {
 
   @Post('/create-user')
   @ApiOperation({ summary: 'Register a new user' })
-  @ApiResponse({ status: 201, description: 'User successfully created' })
+  @ApiResponse({
+    status: 201,
+    description: 'User successfully created',
+    type: BaseResponseDto<AuthUserResponseDto>,
+  })
   @ApiResponse({ status: 400, description: 'Bad request - Invalid input' })
   async register(
     @Body() body: BaseRegistrationDto,
@@ -60,7 +65,11 @@ export class AuthController {
 
   @Post('login')
   @ApiOperation({ summary: 'Login user' })
-  @ApiResponse({ status: 200, description: 'Login successful' })
+  @ApiResponse({
+    status: 200,
+    description: 'Login successful',
+    type: BaseResponseDto<AuthUserResponseDto>,
+  })
   @ApiResponse({ status: 401, description: 'Invalid credentials' })
   async login(@Body() loginDto: LoginDto) {
     const data = await this.authService.login(loginDto);
@@ -78,6 +87,7 @@ export class AuthController {
   @ApiResponse({
     status: 200,
     description: 'Verification code sent successfully',
+    type: BaseResponseDto<{ sent: boolean }>,
   })
   @ApiResponse({ status: 401, description: 'Unauthorized' })
   async resendVerificationEmail(@UserDecorator() user: IDriver | IPassenger) {
@@ -92,7 +102,11 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   @Post('/forgot-password')
   @ApiOperation({ summary: 'Request password reset' })
-  @ApiResponse({ status: 200, description: 'Password reset email sent' })
+  @ApiResponse({
+    status: 200,
+    description: 'Password reset email sent',
+    type: BaseResponseDto<{ sent: boolean }>,
+  })
   @ApiResponse({ status: 404, description: 'User not found' })
   async forgotPassword(
     @Body() body: ForgotPasswordDto,
@@ -109,7 +123,11 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   @Post('/reset-password')
   @ApiOperation({ summary: 'Reset password using code' })
-  @ApiResponse({ status: 200, description: 'Password changed successfully' })
+  @ApiResponse({
+    status: 200,
+    description: 'Password changed successfully',
+    type: BaseResponseDto<{ updated: boolean }>,
+  })
   @ApiResponse({ status: 400, description: 'Invalid or expired code' })
   @ApiBody({
     schema: {
@@ -136,7 +154,11 @@ export class AuthController {
   @Post('/confirmation')
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Verify email address' })
-  @ApiResponse({ status: 200, description: 'Email verified successfully' })
+  @ApiResponse({
+    status: 200,
+    description: 'Email verified successfully',
+    type: BaseResponseDto<AuthUserResponseDto>,
+  })
   @ApiResponse({ status: 400, description: 'Invalid verification code' })
   @ApiResponse({ status: 401, description: 'Unauthorized' })
   async verifyEmail(
@@ -156,7 +178,11 @@ export class AuthController {
   @Get('/logout')
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Logout user' })
-  @ApiResponse({ status: 200, description: 'Logged out successfully' })
+  @ApiResponse({
+    status: 200,
+    description: 'Logged out successfully',
+    type: BaseResponseDto<{ loggedOut: boolean }>,
+  })
   @ApiResponse({ status: 401, description: 'Unauthorized' })
   async logout(@UserDecorator() user: IDriver | IPassenger): Promise<object> {
     const data = await this.authService.logoutUser(user._id);
@@ -192,7 +218,11 @@ export class AuthController {
   @Get('/all-users')
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Get all users' })
-  @ApiResponse({ status: 200, description: 'Users fetched successfully' })
+  @ApiResponse({
+    status: 200,
+    description: 'Users fetched successfully',
+    type: BaseResponseDto<AuthUserResponseDto[]>,
+  })
   @ApiResponse({ status: 401, description: 'Unauthorized' })
   async getAllUsers() {
     const data = await this.authService.getAllUsers();
@@ -208,7 +238,11 @@ export class AuthController {
   @UseGuards(AuthGuard)
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Get current user info' })
-  @ApiResponse({ status: 200, description: 'User info fetched successfully' })
+  @ApiResponse({
+    status: 200,
+    description: 'User info fetched successfully',
+    type: BaseResponseDto<AuthUserResponseDto>,
+  })
   @ApiResponse({ status: 401, description: 'Unauthorized' })
   async getUser(@UserDecorator() user: IDriver | IPassenger): Promise<object> {
     const data = await this.authService.getUserInfo(user.email);
@@ -225,7 +259,11 @@ export class AuthController {
   @ApiBearerAuth()
   @ApiConsumes('multipart/form-data')
   @ApiOperation({ summary: 'Upload user avatar' })
-  @ApiResponse({ status: 200, description: 'Avatar uploaded successfully' })
+  @ApiResponse({
+    status: 200,
+    description: 'Avatar uploaded successfully',
+    type: BaseResponseDto<AuthUserResponseDto>,
+  })
   @ApiResponse({ status: 401, description: 'Unauthorized' })
   @ApiBody({
     schema: {
