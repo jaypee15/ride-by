@@ -11,6 +11,7 @@ import { SecretsModule } from '../global/secrets/module';
 import { SecretsService } from '../global/secrets/service';
 import { AppModule } from './app.module';
 import { GlobalModule } from 'src/global/global.module';
+import { BookingModule } from './booking/booking.module';
 @Module({
   imports: [
     GlobalModule,
@@ -22,6 +23,7 @@ import { GlobalModule } from 'src/global/global.module';
     DriverModule,
     GeolocationModule,
     AppModule,
+    BookingModule,
     MongooseModule.forRootAsync({
       imports: [SecretsModule],
       inject: [SecretsService],
