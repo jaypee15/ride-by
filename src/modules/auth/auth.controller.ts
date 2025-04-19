@@ -45,6 +45,25 @@ export class AuthController {
   ) {}
 
   @Post('phone/send-otp')
+  @ApiOperation({ summary: 'Send OTP to phone number' })
+  @ApiResponse({
+    status: 200,
+    description: 'OTP sent successfully',
+    type: BaseResponseDto<{ sent: boolean }>,
+  })
+  @ApiResponse({ status: 400, description: 'Bad request - Invalid input' })
+  @ApiResponse({ status: 500, description: 'Internal server error' })
+  @ApiBody({
+    schema: {
+      properties: {
+        phoneNumber: {
+          type: 'string',
+          example: '+2348012345678',
+          description: 'Phone number in E.164 format',
+        },
+      },
+    },
+  })
   @HttpCode(HttpStatus.OK)
   async sendPhoneOtp(@Body() body: SendPhoneOtpDto) {
     const data = await this.authService.sendPhoneVerificationOtp(body);
@@ -55,6 +74,30 @@ export class AuthController {
   }
 
   @Post('phone/verify-otp')
+  @ApiOperation({ summary: 'Verify OTP for phone number' })
+  @ApiResponse({
+    status: 200,
+    description: 'OTP verified successfully',
+    type: BaseResponseDto<{ verified: boolean }>,
+  })
+  @ApiResponse({ status: 400, description: 'Bad request - Invalid input' })
+  @ApiResponse({ status: 500, description: 'Internal server error' })
+  @ApiBody({
+    schema: {
+      properties: {
+        phoneNumber: {
+          type: 'string',
+          example: '+2348012345678',
+          description: 'Phone number in E.164 format',
+        },
+        otp: {
+          type: 'string',
+          example: '123456',
+          description: '6-digit OTP code',
+        },
+      },
+    },
+  })
   @HttpCode(HttpStatus.OK)
   async verifyPhoneOtp(@Body() body: VerifyPhoneOtpDto) {
     const data = await this.authService.verifyPhoneNumberOtp(body);
