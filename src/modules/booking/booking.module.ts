@@ -5,8 +5,8 @@ import { BookingController } from './booking.controller';
 import { Booking, BookingSchema } from './schemas/booking.schema';
 import { Ride, RideSchema } from '../rides/schemas/ride.schema'; // Need RideModel
 import { User, UserSchema } from '../user/schemas/user.schema'; // Need UserModel
+import { PaymentModule } from '../payment/payment.module';
 // Import RidesModule or Service if needed for direct calls (e.g., check availability)
-// Import PaymentModule later when needed
 
 @Module({
   imports: [
@@ -16,7 +16,7 @@ import { User, UserSchema } from '../user/schemas/user.schema'; // Need UserMode
       { name: User.name, schema: UserSchema }, // Provide UserModel
     ]),
     // RidesModule, // If needed
-    // PaymentModule // Add later
+    PaymentModule,
   ],
   providers: [BookingService],
   controllers: [BookingController],

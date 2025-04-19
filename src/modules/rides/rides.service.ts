@@ -1,9 +1,4 @@
-import {
-  Injectable,
-  Logger,
-  ForbiddenException,
-  NotFoundException,
-} from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import mongoose, { Model } from 'mongoose';
 import { Ride, RideDocument } from './schemas/ride.schema';
@@ -44,25 +39,27 @@ export class RidesService {
       (role) => role.name === RoleNameEnum.Driver,
     );
     if (!isDriverRole) {
-      throw new ForbiddenException('User is not registered as a driver.');
+      ErrorHelper.ForbiddenException('User is not registered as a driver.');
     }
     // Optional: Check driver status (e.g., must be ACTIVE and VERIFIED)
     if (
       driver.status !== UserStatus.ACTIVE ||
       driver.driverVerificationStatus !== DriverVerificationStatus.VERIFIED
     ) {
-      throw new ForbiddenException('Driver account is not active or verified.');
+      ErrorHelper.ForbiddenException(
+        'Driver account is not active or verified.',
+      );
     }
 
     // 2. Validate Vehicle
     const vehicle = await this.vehicleModel.findById(dto.vehicleId);
     if (!vehicle) {
-      throw new NotFoundException(
+      ErrorHelper.NotFoundException(
         `Vehicle with ID ${dto.vehicleId} not found.`,
       );
     }
     if (vehicle.driver.toString() !== driverId) {
-      throw new ForbiddenException(
+      ErrorHelper.ForbiddenException(
         'You cannot create a ride with a vehicle you do not own.',
       );
     }
@@ -70,7 +67,7 @@ export class RidesService {
     if (
       vehicle.vehicleVerificationStatus !== VehicleVerificationStatus.VERIFIED
     ) {
-      throw new ForbiddenException(
+      ErrorHelper.ForbiddenException(
         `Vehicle ${vehicle.plateNumber} is not verified.`,
       );
     }
@@ -227,7 +224,7 @@ export class RidesService {
       .exec();
 
     if (!ride) {
-      throw new NotFoundException(`Ride with ID ${rideId} not found.`);
+      ErrorHelper.NotFoundException(`Ride with ID ${rideId} not found.`);
     }
 
     return ride;

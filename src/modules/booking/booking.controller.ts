@@ -250,4 +250,85 @@ export class BookingController {
       data: cancelledBooking.toObject() as Booking,
     };
   }
+
+  @Post('/passenger/bookings/:bookingId/pay') // Prefix with /passenger
+  @ApiOperation({
+    summary: 'Initiate payment for a confirmed booking (Passenger only)',
+  })
+  @ApiResponse({
+    status: 200,
+    description:
+      'Payment initialized successfully. Returns Paystack authorization data.',
+    schema: {
+      properties: {
+        authorization_url: { type: 'string' },
+        access_code: { type: 'string' },
+        reference: { type: 'string' },
+      },
+    },
+  })
+  @ApiResponse({
+    status: 400,
+    description: 'Bad Request - Booking not confirmable or already paid.',
+  })
+  @ApiResponse({ status: 401, description: 'Unauthorized.' })
+  @ApiResponse({
+    status: 403,
+    description: 'Forbidden - Not the owner of the booking.',
+  })
+  @ApiResponse({ status: 404, description: 'Not Found - Booking not found.' })
+  @ApiResponse({ status: 500, description: 'Payment service error.' })
+  async initiateBookingPayment(
+    @User() passenger: IUser,
+    @Param('bookingId') bookingId: string,
+  ): Promise<{ message: string; data: any }> {
+    // Return structure matches TransformInterceptor
+    if (!mongoose.Types.ObjectId.isValid(bookingId)) {
+      ErrorHelper.BadRequestException('Invalid Booking ID format.');
+    }
+    this.logger.log(
+      `Passenger ${passenger._id} initiating payment for booking ${bookingId}`,
+    );
+    const paymentData = await this.bookingService.initiateBookingPayment(
+      passenger._id,
+      bookingId,
+    );
+    return {
+      message:
+        'Payment initialized successfully. Redirect user to authorization URL.',
+      data: paymentData, // Contains { authorization_url, reference, access_code }
+    };
+  }
+
+  @Patch('/driver/bookings/:bookingId/complete') // Prefix with /driver
+  @ApiOperation({ summary: 'Mark a booking as completed (Driver only)' })
+  @ApiResponse({
+    status: 200,
+    description: 'Booking marked as completed.',
+    type: Booking,
+  })
+  @ApiResponse({
+    status: 400,
+    description: 'Bad Request - Booking not in a completable state.',
+  })
+  @ApiResponse({ status: 401, description: 'Unauthorized.' })
+  @ApiResponse({ status: 403, description: 'Forbidden - Not the driver.' })
+  @ApiResponse({ status: 404, description: 'Not Found - Booking not found.' })
+  async completeBooking(
+    @User() driver: IUser,
+    @Param('bookingId') bookingId: string,
+  ): Promise<{ message: string; data: Booking }> {
+    if (!mongoose.Types.ObjectId.isValid(bookingId)) {
+      ErrorHelper.BadRequestException('Invalid Booking ID format.');
+    }
+    this.logger.log(`Driver ${driver._id} completing booking ${bookingId}`);
+    const completedBooking = await this.bookingService.completeBookingByDriver(
+      driver._id,
+      bookingId,
+    );
+    return {
+      message: 'Booking marked as completed.',
+      data: completedBooking.toObject() as Booking,
+    };
+  }
 }

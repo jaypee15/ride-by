@@ -10,6 +10,7 @@ import { RideStatus } from '../rides/enums/ride-status.enum';
 import { ErrorHelper } from 'src/core/helpers';
 import { PaymentStatus } from './enums/payment-status.enum';
 import { PaginationDto, PaginationResultDto } from 'src/core/dto';
+import { PaymentService } from '../payment/payment.service';
 // Import NotificationService later
 
 @Injectable()
@@ -21,7 +22,7 @@ export class BookingService {
     @InjectModel(Ride.name) private rideModel: Model<RideDocument>,
     @InjectModel(User.name) private userModel: Model<UserDocument>,
     // Inject NotificationService later
-    // Inject PaymentService later
+    private readonly paymentService: PaymentService,
   ) {}
 
   async requestBooking(
@@ -406,5 +407,123 @@ export class BookingService {
     } finally {
       session.endSession();
     }
+  }
+
+  async initiateBookingPayment(
+    passengerId: string,
+    bookingId: string,
+  ): Promise<{
+    authorization_url: string;
+    reference: string;
+    access_code: string;
+  }> {
+    this.logger.log(
+      `Passenger ${passengerId} initiating payment for booking ${bookingId}`,
+    );
+    if (!mongoose.Types.ObjectId.isValid(bookingId)) {
+      ErrorHelper.BadRequestException('Invalid Booking ID format.');
+    }
+
+    // 1. Find booking and verify ownership and status
+    const booking = await this.bookingModel
+      .findById(bookingId)
+      .populate<{ passenger: UserDocument }>('passenger', 'email'); // Populate passenger email
+
+    if (!booking) {
+      ErrorHelper.NotFoundException(`Booking with ID ${bookingId} not found.`);
+    }
+    if (booking.passenger._id.toString() !== passengerId) {
+      ErrorHelper.ForbiddenException('You can only pay for your own bookings.');
+    }
+    // Allow payment only if CONFIRMED and PENDING payment
+    if (booking.status !== BookingStatus.CONFIRMED) {
+      ErrorHelper.BadRequestException(
+        `Booking must be confirmed by the driver before payment (current status: ${booking.status}).`,
+      );
+    }
+    if (booking.paymentStatus !== PaymentStatus.PENDING) {
+      // Allow retrying FAILED? For now, only PENDING.
+      ErrorHelper.BadRequestException(
+        `Payment for this booking is not pending (current status: ${booking.paymentStatus}).`,
+      );
+    }
+    if (booking.totalPrice <= 0) {
+      ErrorHelper.BadRequestException('This booking does not require payment.');
+    }
+
+    // 2. Call Payment Service to initialize transaction
+    try {
+      // Convert NGN price to kobo for Paystack
+      const amountInKobo = Math.round(booking.totalPrice * 100);
+      const paymentData = await this.paymentService.initializeTransaction(
+        amountInKobo,
+        booking.passenger.email, // Use passenger's email
+        bookingId,
+        passengerId,
+      );
+
+      // 3. Store transaction reference on the booking (important for webhook matching)
+      await this.bookingModel.updateOne(
+        { _id: bookingId },
+        { $set: { transactionRef: paymentData.reference } },
+      );
+      this.logger.log(
+        `Stored Paystack reference ${paymentData.reference} for booking ${bookingId}`,
+      );
+
+      return paymentData; // Return { authorization_url, reference, access_code }
+    } catch (error) {
+      this.logger.error(
+        `Error initiating payment for booking ${bookingId}: ${error.message}`,
+        error.stack,
+      );
+      // Rethrow the error from PaymentService or a generic one
+      if (error instanceof HttpException) throw error;
+      ErrorHelper.InternalServerErrorException('Failed to initiate payment.');
+    }
+  }
+
+  async completeBookingByDriver(
+    driverId: string,
+    bookingId: string,
+  ): Promise<BookingDocument> {
+    this.logger.log(
+      `Driver ${driverId} attempting to mark booking ${bookingId} as completed.`,
+    );
+    if (!mongoose.Types.ObjectId.isValid(bookingId)) {
+      ErrorHelper.BadRequestException('Invalid Booking ID format.');
+    }
+
+    // 1. Find booking, verify driver and status
+    const booking = await this.bookingModel.findById(bookingId);
+    if (!booking) {
+      ErrorHelper.NotFoundException(`Booking with ID ${bookingId} not found.`);
+    }
+    if (booking.driver.toString() !== driverId) {
+      ErrorHelper.ForbiddenException(
+        'You can only complete bookings for rides you are driving.',
+      );
+    }
+    // Allow completion only if CONFIRMED (or potentially IN_PROGRESS if you add that status)
+    if (booking.status !== BookingStatus.CONFIRMED) {
+      ErrorHelper.BadRequestException(
+        `Booking must be confirmed to be marked as completed (current status: ${booking.status}).`,
+      );
+    }
+
+    // Optionally: Check if Ride departureTime has passed significantly
+
+    // 2. Update Status
+    booking.status = BookingStatus.COMPLETED;
+    await booking.save();
+
+    this.logger.log(
+      `Booking ${bookingId} marked as COMPLETED by driver ${driverId}.`,
+    );
+
+    // TODO: Trigger Notification to Passenger (Phase 6)
+    // TODO: Check if all bookings for the ride are completed/cancelled, then update Ride status (maybe background job)
+
+    return booking;
   }
 }

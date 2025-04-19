@@ -21,38 +21,6 @@ export class TwilioService {
     }
   }
 
-  //   async sendSms(to: string, body: string): Promise<boolean> {
-  //     const { phoneNumber } = this.secretsService.twilio;
-  //     if (!this.twilioClient || !phoneNumber) {
-  //       this.logger.error(
-  //         'Twilio client not initialized or phone number missing. Cannot send SMS.',
-  //       );
-  //       // Depending on requirements, you might throw an error or just return false
-  //       throw new Error('SMS service is not configured properly.');
-  //       // return false;
-  //     }
-
-  //     try {
-  //       const message = await this.twilioClient.messages.create({
-  //         body,
-  //         from: phoneNumber,
-  //         to, // Ensure 'to' number is in E.164 format (e.g., +23480...)
-  //       });
-  //       this.logger.log(`SMS sent successfully to ${to}, SID: ${message.sid}`);
-  //       return true;
-  //     } catch (error) {
-  //       this.logger.error(
-  //         `Failed to send SMS to ${to}: ${error.message}`,
-  //         error.stack,
-  //       );
-  //       // Rethrow or handle specific Twilio errors (e.g., invalid number format)
-  //       throw new Error(`Failed to send verification code: ${error.message}`);
-  //       // return false;
-  //     }
-  //   }
-
-  // --- Optional: If using Twilio Verify Service ---
-
   async sendVerificationToken(
     to: string,
     channel: 'sms' | 'call',

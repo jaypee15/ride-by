@@ -1,8 +1,9 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
 @Injectable()
 export class SecretsService extends ConfigService {
+  private readonly logger = new Logger(SecretsService.name);
   constructor() {
     super();
   }
@@ -71,6 +72,36 @@ export class SecretsService extends ConfigService {
       TWILIO_AUTH_TOKEN: this.get('TWILIO_AUTH_TOKEN'),
       TWILIO_PHONE_NUMBER: this.get('TWILIO_PHONE_NUMBER'),
       TWILIO_VERIFY_SERVICE_SID: this.get('TWILIO_VERIFY_SERVICE_SID'),
+    };
+  }
+
+  get paystack() {
+    const secretKey = this.get<string>('PAYSTACK_SECRET_KEY');
+    const publicKey = this.get<string>('PAYSTACK_PUBLIC_KEY');
+    const baseUrl = this.get<string>(
+      'PAYSTACK_BASE_URL',
+      'https://api.paystack.co',
+    );
+    const frontendCallbackUrl = this.get<string>(
+      'FRONTEND_PAYMENT_CALLBACK_URL',
+    );
+
+    if (!secretKey || !publicKey) {
+      this.logger.error(
+        'Paystack Secret Key or Public Key missing in .env configuration!',
+      );
+    }
+    if (!frontendCallbackUrl) {
+      this.logger.warn(
+        'FRONTEND_PAYMENT_CALLBACK_URL not set in .env, Paystack callback might not work as expected.',
+      );
+    }
+
+    return {
+      secretKey,
+      publicKey,
+      baseUrl,
+      frontendCallbackUrl, // URL where frontend handles Paystack redirect
     };
   }
 }
