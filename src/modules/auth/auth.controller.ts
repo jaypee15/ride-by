@@ -15,7 +15,7 @@ import {
   EmailConfirmationDto,
   ForgotPasswordDto,
   LoginDto,
-  TCodeLoginDto,
+  // TCodeLoginDto,
 } from './dto';
 import { BaseRegistrationDto } from './dto/base-registeration.dto';
 import { IDriver, IPassenger } from 'src/core/interfaces';
@@ -33,6 +33,7 @@ import {
   ApiConsumes,
 } from '@nestjs/swagger';
 import { AuthUserResponseDto, BaseResponseDto } from './dto/auth-response.dto';
+import { SendPhoneOtpDto, VerifyPhoneOtpDto } from './dto/send-phone-otp.dto';
 
 @ApiTags('Authentication')
 @Controller('auth')
@@ -42,6 +43,26 @@ export class AuthController {
     private authService: AuthService,
     private secretSecret: SecretsService,
   ) {}
+
+  @Post('phone/send-otp')
+  @HttpCode(HttpStatus.OK)
+  async sendPhoneOtp(@Body() body: SendPhoneOtpDto) {
+    const data = await this.authService.sendPhoneVerificationOtp(body);
+    return {
+      data,
+      message: 'OTP sent succesfully',
+    };
+  }
+
+  @Post('phone/verify-otp')
+  @HttpCode(HttpStatus.OK)
+  async verifyPhoneOtp(@Body() body: VerifyPhoneOtpDto) {
+    const data = await this.authService.verifyPhoneNumberOtp(body);
+    return {
+      data,
+      message: 'OTP verified successfully',
+    };
+  }
 
   @Post('/create-user')
   @ApiOperation({ summary: 'Register a new user' })
@@ -193,25 +214,25 @@ export class AuthController {
     };
   }
 
-  @HttpCode(HttpStatus.OK)
-  @Post('/tcode-auth')
-  @ApiOperation({ summary: 'Authenticate using temporary code' })
-  @ApiResponse({ status: 200, description: 'Authentication successful' })
-  @ApiResponse({ status: 401, description: 'Invalid code' })
-  async tCodeAuth(@Body() body: TCodeLoginDto) {
-    const data = await this.authService.tCodeLogin(body.tCode);
+  // @HttpCode(HttpStatus.OK)
+  // @Post('/tcode-auth')
+  // @ApiOperation({ summary: 'Authenticate using temporary code' })
+  // @ApiResponse({ status: 200, description: 'Authentication successful' })
+  // @ApiResponse({ status: 401, description: 'Invalid code' })
+  // async tCodeAuth(@Body() body: TCodeLoginDto) {
+  //   const data = await this.authService.tCodeLogin(body.tCode);
 
-    return {
-      data,
-      message: 'Authenticated successfully',
-    };
-  }
+  //   return {
+  //     data,
+  //     message: 'Authenticated successfully',
+  //   };
+  // }
 
-  @HttpCode(HttpStatus.OK)
-  @Post('/tcode_auth')
-  async tCodeAuthU(@Body() body: TCodeLoginDto) {
-    return this.tCodeAuth(body);
-  }
+  // @HttpCode(HttpStatus.OK)
+  // @Post('/tcode_auth')
+  // async tCodeAuthU(@Body() body: TCodeLoginDto) {
+  //   return this.tCodeAuth(body);
+  // }
 
   @HttpCode(HttpStatus.OK)
   @UseGuards(AuthGuard)
