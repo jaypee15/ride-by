@@ -47,8 +47,8 @@ async function bootstrap() {
 
   // Setup Swagger
   const config = new DocumentBuilder()
-    .setTitle('Ride-By API')
-    .setDescription('The Ride-By API documentation')
+    .setTitle('TavEazi API')
+    .setDescription('The TravEazi API documentation')
     .setVersion('1.0')
     .addBearerAuth()
     .build();

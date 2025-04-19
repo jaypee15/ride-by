@@ -10,7 +10,7 @@ import {
 import { EncryptHelper, ErrorHelper } from 'src/core/helpers';
 import { UserLoginStrategy, IDriver, IPassenger } from 'src/core/interfaces';
 import { PassengerRegistrationDto } from '../passenger/dto/passenger.dto';
-import { DriverRegistrationDto } from '../driver/dto/driver-regidtration.dto';
+import { DriverRegistrationDto } from '../driver/dto/driver-registration.dto';
 import { UserService } from '../user/user.service';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';

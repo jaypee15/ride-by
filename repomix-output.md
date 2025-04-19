@@ -101,9 +101,11 @@ src/
   modules/
     auth/
       dto/
+        auth-response.dto.ts
         auth.dto.ts
         base-registeration.dto.ts
         index.ts
+        send-phone-otp.dto.ts
         update-user.dto.ts
       auth.controller.ts
       auth.module.ts
@@ -135,9 +137,11 @@ src/
       schema/
         email.schema.ts
       templates/
-        confrimation.ejs
+        confirmation.ejs
+        credentials.ejs
         emailnotification.ejs
         marketing.ejs
+        resetpassword.ejs
       mail.controller.ts
       mail.event.ts
       mail.module.ts
@@ -160,6 +164,9 @@ src/
       index.ts
       s3-bucket.module.ts
       s3-bucket.service.ts
+    twilio/
+      twiio.module.ts
+      twilio.service.ts
     user/
       schemas/
         action.schema.ts
@@ -187,6 +194,105 @@ tsconfig.json
 ```
 
 # Files
+
+## File: src/core/constants/index.ts
+````typescript
+export * from './base.constant';
+export * from './messages.constant';
+````
+
+## File: src/core/enums/user.enum.ts
+````typescript
+export enum UserGender {
+  MALE = 'MALE',
+  FEMALE = 'FEMALE',
+}
+
+export enum UserStatus {
+  ACTIVE = 'ACTIVE', // Verified and active
+  INACTIVE = 'INACTIVE', // Deactivated by user or admin
+  PENDING_EMAIL_VERIFICATION = 'PENDING_EMAIL_VERIFICATION', // Registered but email not verified
+  PENDING_DRIVER_VERIFICATION = 'PENDING_DRIVER_VERIFICATION', // Email verified, driver docs submitted, pending admin approval
+  SUSPENDED = 'SUSPENDED', // Temporarily suspended by admin
+  BANNED = 'BANNED', // Permanently banned by admin
+}
+
+export enum DriverVerificationStatus {
+  NOT_SUBMITTED = 'NOT_SUBMITTED',
+  PENDING = 'PENDING',
+  VERIFIED = 'VERIFIED',
+  REJECTED = 'REJECTED',
+}
+````
+
+## File: src/core/enums/vehicle.enum.ts
+````typescript
+export enum VehicleVerificationStatus {
+  NOT_SUBMITTED = 'NOT_SUBMITTED',
+  PENDING = 'PENDING',
+  VERIFIED = 'VERIFIED',
+  REJECTED = 'REJECTED',
+}
+````
+
+## File: src/core/filters/http-exception.filter.ts
+````typescript
+import {
+  ArgumentsHost,
+  Catch,
+  ExceptionFilter,
+  HttpException,
+  HttpStatus,
+} from '@nestjs/common';
+
+type ExceptionResponse = {
+  statusCode: number;
+  message: string | string[];
+  error: string;
+};
+
+@Catch(HttpException)
+export class HttpExceptionFilter implements ExceptionFilter<HttpException> {
+  catch(exception: HttpException, host: ArgumentsHost) {
+    const ctx = host.switchToHttp();
+    const response = ctx.getResponse();
+
+    const status =
+      exception instanceof HttpException
+        ? exception.getStatus()
+        : HttpStatus.INTERNAL_SERVER_ERROR;
+
+    const exceptionResponse = exception.getResponse() as ExceptionResponse;
+
+    const getMessage = () => {
+      if (typeof exceptionResponse === 'string') {
+        return exceptionResponse;
+      }
+
+      if (typeof exceptionResponse.message === 'string') {
+        return exceptionResponse.message;
+      }
+
+      if (Array.isArray(exceptionResponse.message)) {
+        return exceptionResponse.message[0];
+      }
+
+      return 'Internal Server Error';
+    };
+
+    response.status(status).json({
+      success: false,
+      statusCode: status,
+      message: getMessage(),
+    });
+  }
+}
+````
+
+## File: src/core/filters/index.ts
+````typescript
+export * from './http-exception.filter';
+````
 
 ## File: src/core/guards/ws.guard.ts
 ````typescript
@@ -227,6 +333,196 @@ export class WsGuard implements CanActivate {
 }
 ````
 
+## File: src/core/helpers/date.helper.ts
+````typescript
+import { DateTime, DurationLike } from 'luxon';
+
+export class DateHelper {
+  static isAfter(date: Date, dateToCompare: Date): boolean {
+    return (
+      DateTime.fromJSDate(new Date(date)) >
+      DateTime.fromJSDate(new Date(dateToCompare))
+    );
+  }
+
+  static addToCurrent(duration: DurationLike): Date {
+    const dt = DateTime.now();
+    return dt.plus(duration).toJSDate();
+  }
+
+  static isAfterCurrent(date: Date): boolean {
+    const d1 = DateTime.fromJSDate(date ?? new Date());
+    const d2 = DateTime.now();
+    return d2 > d1;
+  }
+}
+````
+
+## File: src/core/helpers/ecrypt.helper.ts
+````typescript
+import { Injectable } from '@nestjs/common';
+import * as bcrypt from 'bcryptjs';
+
+@Injectable()
+export class EncryptHelper {
+  async hash(str: string, saltRounds = 10): Promise<string> {
+    return await bcrypt.hash(str, saltRounds);
+  }
+
+  async compare(str: string, hash: string): Promise<boolean> {
+    return bcrypt.compare(str, hash);
+  }
+
+  compareSync(str: string, hash: string): boolean {
+    return bcrypt.compareSync(str, hash);
+  }
+
+  hashSync(str: string, saltRounds = 10): string {
+    return bcrypt.hashSync(str, saltRounds);
+  }
+}
+````
+
+## File: src/core/helpers/error.utils.ts
+````typescript
+import { HttpException, HttpStatus } from '@nestjs/common';
+
+export class ErrorHelper {
+  static BadRequestException(msg: string | string[]) {
+    throw new HttpException(msg, HttpStatus.BAD_REQUEST);
+  }
+  static UnauthorizedException(msg: string) {
+    throw new HttpException(msg, HttpStatus.UNAUTHORIZED);
+  }
+  static NotFoundException(msg: string) {
+    throw new HttpException(msg, HttpStatus.NOT_FOUND);
+  }
+  static ForbiddenException(msg: string) {
+    throw new HttpException(msg, HttpStatus.FORBIDDEN);
+  }
+  static ConflictException(msg: string) {
+    throw new HttpException(msg, HttpStatus.CONFLICT);
+  }
+  static InternalServerErrorException(msg: string) {
+    throw new HttpException(msg, HttpStatus.INTERNAL_SERVER_ERROR);
+  }
+}
+````
+
+## File: src/core/interceptors/index.ts
+````typescript
+export * from './logger.interceptor';
+export * from './transform.interceptor';
+````
+
+## File: src/core/interceptors/logger.interceptor.ts
+````typescript
+import {
+  CallHandler,
+  ExecutionContext,
+  Injectable,
+  Logger,
+  NestInterceptor,
+} from '@nestjs/common';
+import { Request } from 'express';
+import { Observable, tap } from 'rxjs';
+
+@Injectable()
+export class LoggerInterceptor implements NestInterceptor {
+  intercept(
+    context: ExecutionContext,
+    next: CallHandler<unknown>,
+  ): Observable<unknown> {
+    const request = context.switchToHttp().getRequest<Request>();
+    const { method, ip, url } = request;
+    const timestamp = new Date().toISOString();
+
+    return next
+      .handle()
+      .pipe(
+        tap(() =>
+          Logger.log(
+            `info ${timestamp} ip: ${ip} method: ${method} url: ${url}`,
+          ),
+        ),
+      );
+  }
+}
+````
+
+## File: src/core/interceptors/transform.interceptor.ts
+````typescript
+import {
+  CallHandler,
+  ExecutionContext,
+  Injectable,
+  Logger,
+  NestInterceptor,
+} from '@nestjs/common';
+import { Request } from 'express';
+import { finalize, map, Observable } from 'rxjs';
+import { AppResponse } from '../interfaces';
+import { PaginationResultDto } from '../dto';
+
+@Injectable()
+export class TransformInterceptor<T> implements NestInterceptor<T, unknown> {
+  intercept(
+    context: ExecutionContext,
+    next: CallHandler<unknown>,
+  ): Observable<unknown> {
+    const request = context.switchToHttp().getRequest<Request>();
+    const { method, ip, url } = request;
+    const now = Date.now();
+    const timestamp = new Date().toISOString();
+
+    Logger.log(`info ${timestamp} ip: ${ip} method: ${method} url: ${url}`);
+
+    return next.handle().pipe(
+      map((response: AppResponse) => {
+        if (response?.data instanceof PaginationResultDto) {
+          return {
+            success: true,
+            data: response?.data['data'],
+            message: response?.message,
+            meta: response?.data['meta'],
+          };
+        }
+
+        return {
+          success: true,
+          data: response?.data,
+          message: response?.message,
+        };
+      }),
+      finalize(() => {
+        Logger.log(`Excution time... ${Date.now() - now}ms`);
+      }),
+    );
+  }
+}
+````
+
+## File: src/core/interfaces/http/http.interface.ts
+````typescript
+export type AppResponse = {
+  data: object;
+  success: boolean;
+  message: string;
+};
+
+export enum RequestHeadersEnum {
+  Authorization = 'authorization',
+}
+
+export enum RequestMethodEnum {
+  Get = 'GET',
+  Post = 'POST',
+  Put = 'PUT',
+  Patch = 'PATCH',
+  Delete = 'DELETE',
+}
+````
+
 ## File: src/core/redis/redis-lock.service.ts
 ````typescript
 import { Injectable } from '@nestjs/common';
@@ -257,6 +553,1152 @@ export class RedisLock {
     return result === 1;
   }
 }
+````
+
+## File: src/core/redis/redis.module.ts
+````typescript
+import {
+  RedisModule as RedisCoreModule,
+  RedisModuleOptions,
+} from '@nestjs-modules/ioredis';
+import { SecretsService } from 'src/global/secrets/service';
+
+export class RedisModule {
+  static forRoot(secretKey: keyof SecretsService) {
+    return RedisCoreModule.forRootAsync({
+      inject: [SecretsService],
+      useFactory: (secretsService: SecretsService): RedisModuleOptions => {
+        const config = secretsService[secretKey];
+        return {
+          type: 'single',
+          url: `redis://${config.REDIS_USERNAME}:${config.REDIS_PASSWORD}@${config.REDIS_HOST}:${config.REDIS_PORT}`,
+        };
+      },
+    });
+  }
+}
+````
+
+## File: src/core/validators/index.ts
+````typescript
+export * from './IsMatchPattern.validator';
+export * from './validate.validator';
+````
+
+## File: src/core/validators/IsMatchPattern.validator.ts
+````typescript
+import { registerDecorator, ValidationOptions } from 'class-validator';
+
+export function IsMatchPattern(
+  pattern: string,
+  validationOptions?: ValidationOptions,
+) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return function (object: Record<string, any>, propertyName: string) {
+    registerDecorator({
+      name: 'isValidPattern',
+      target: object.constructor,
+      propertyName: propertyName,
+      options: {
+        message: `${propertyName} is invalid`,
+        ...validationOptions,
+      },
+      validator: {
+        validate(value: string) {
+          return typeof value === 'string' && new RegExp(pattern).test(value);
+        },
+      },
+    });
+  };
+}
+````
+
+## File: src/core/validators/validate.validator.ts
+````typescript
+import { validate, ValidationError } from 'class-validator';
+
+type Class = { new (...args: unknown[]): unknown };
+
+const getMessages = (error: ValidationError) => {
+  return Object.values(error.constraints).join(', ');
+};
+
+const validateDto = async (dto: Class, data: object) => {
+  const d = Object.assign(new dto(), data);
+
+  const errors = await validate(d);
+
+  if (errors.length === 0) return null;
+
+  return errors.map(getMessages).join('\n');
+};
+
+export default validateDto;
+````
+
+## File: src/global/user-session/service.ts
+````typescript
+import { Injectable, Logger } from '@nestjs/common';
+import { InjectRedis } from '@nestjs-modules/ioredis';
+import Redis from 'ioredis';
+import { IDriver, IPassenger } from 'src/core/interfaces';
+
+@Injectable()
+export class UserSessionService {
+  private logger = new Logger(UserSessionService.name);
+  constructor(@InjectRedis() private readonly redisClient: Redis) {}
+
+  async create(
+    payload: IDriver | IPassenger,
+    data: {
+      sessionId: string;
+      rememberMe: boolean;
+    },
+  ) {
+    const key = `session:${payload._id}`;
+
+    const twoWeeksInSeconds = 1209600;
+    await this.redisClient.set(
+      key,
+      JSON.stringify({
+        sessionId: data.sessionId,
+        rememberMe: data.rememberMe,
+      }),
+      'EX',
+      twoWeeksInSeconds,
+    );
+
+    this.logger.log(`create: Session created for user ${payload._id}`);
+
+    return payload._id;
+  }
+
+  async get(id: string | number): Promise<{
+    sessionId: string;
+    rememberMe: boolean;
+  }> {
+    const key = `session:${id}`;
+    const session = await this.redisClient.get(key);
+
+    if (!session) {
+      this.logger.error(`get: Session not found`);
+      return null;
+    }
+
+    try {
+      return JSON.parse(session);
+    } catch (error) {
+      this.logger.error(`get: ${error.name} - ${error.message}`);
+      await this.redisClient.del(key);
+      return null;
+    }
+  }
+
+  async checkSession(id: string | number): Promise<boolean> {
+    const key = `session:${id}`;
+    const exist = await this.redisClient.get(key);
+
+    if (!exist) {
+      return false;
+    }
+
+    let parsed = null;
+    try {
+      parsed = JSON.parse(exist);
+    } catch (error) {
+      return false;
+    }
+
+    if (!parsed.rememberMe) {
+      // Delete session if remember me is false
+      await this.redisClient.del(key);
+      return false;
+    }
+
+    return true;
+  }
+
+  async delete(id: string): Promise<boolean> {
+    const key = `session:${id}`;
+
+    try {
+      await this.redisClient.del(key);
+    } catch (error) {
+      return false;
+    }
+
+    return true;
+  }
+}
+````
+
+## File: src/global/utils/token.utils.ts
+````typescript
+import { Injectable, Logger } from '@nestjs/common';
+import * as jwt from 'jsonwebtoken';
+import * as otpGenerator from 'otp-generator';
+
+import { SecretsService } from '../secrets/service';
+import { ErrorHelper } from 'src/core/helpers';
+import { IDriver, IPassenger } from 'src/core/interfaces';
+
+@Injectable()
+export class TokenHelper {
+  private logger = new Logger(TokenHelper.name);
+  constructor(private secretService: SecretsService) {}
+
+  generate(payload: IDriver | IPassenger): {
+    accessToken: string;
+    expires: number;
+    refreshToken: string;
+    sessionId: string;
+  } {
+    const { JWT_SECRET: secret } = this.secretService.jwtSecret;
+
+    const sessionId = this.generateRandomString();
+
+    const token = jwt.sign({ ...payload, sessionId }, secret, {
+      expiresIn: '14d',
+    });
+
+    const refreshToken = jwt.sign(
+      {
+        userId: payload._id,
+        userEmail: payload.email,
+        isRefreshToken: true,
+        sessionId,
+      },
+      secret,
+      {
+        expiresIn: '14d',
+      },
+    );
+
+    const decoded = jwt.decode(token) as jwt.JwtPayload;
+    return {
+      accessToken: token,
+      expires: decoded.exp,
+      // expiresIn: decoded.iat,
+      refreshToken,
+      sessionId,
+    };
+  }
+
+  verify<T>(token: string, opts?: jwt.VerifyOptions): T {
+    try {
+      const { JWT_SECRET: secret } = this.secretService.jwtSecret;
+
+      const options: jwt.VerifyOptions = {
+        ...opts,
+        algorithms: ['HS256'],
+      };
+      const payload = jwt.verify(token, secret, options);
+      return payload as T;
+    } catch (error) {
+      this.logger.log('err', error);
+      if (error.name === 'TokenExpiredError')
+        ErrorHelper.UnauthorizedException('Access token expired');
+      if (error.name === 'JsonWebTokenError')
+        ErrorHelper.UnauthorizedException('Access token not valid');
+      throw error;
+    }
+  }
+
+  generatePasswordResetToken(payload: any): string {
+    const { JWT_SECRET: secret } = this.secretService.jwtSecret;
+
+    return jwt.sign(
+      {
+        userId: payload._id,
+        userEmail: payload.email,
+        isPasswordResetToken: true,
+      },
+      secret,
+      {
+        expiresIn: '1h',
+      },
+    );
+  }
+
+  generateRandomString(size = 21): string {
+    return otpGenerator.generate(size, {
+      digits: true,
+      lowerCaseAlphabets: true,
+      upperCaseAlphabets: true,
+      specialChars: false,
+    });
+  }
+  generateRandomCoupon(size = 10): string {
+    return otpGenerator.generate(size, {
+      digits: true,
+      lowerCaseAlphabets: false,
+      upperCaseAlphabets: true,
+      specialChars: false,
+    });
+  }
+
+  generateRandomPassword(size = 21): string {
+    const data = otpGenerator.generate(size, {
+      digits: true,
+      lowerCaseAlphabets: true,
+      upperCaseAlphabets: true,
+      specialChars: true,
+    });
+
+    return 'D$' + data;
+  }
+
+  generateRandomNumber(size = 6): string {
+    return otpGenerator.generate(size, {
+      digits: true,
+      lowerCaseAlphabets: false,
+      upperCaseAlphabets: false,
+      specialChars: false,
+    });
+  }
+}
+````
+
+## File: src/global/global.module.ts
+````typescript
+import { Global, Module } from '@nestjs/common';
+
+import { SecretsModule } from './secrets/module';
+import { UserSessionModule } from './user-session/module';
+import { TokenHelper } from './utils/token.utils';
+
+@Global()
+@Module({
+  imports: [SecretsModule, UserSessionModule],
+  providers: [TokenHelper],
+  exports: [SecretsModule, TokenHelper, UserSessionModule],
+})
+export class GlobalModule {}
+````
+
+## File: src/modules/auth/dto/auth-response.dto.ts
+````typescript
+import { ApiProperty } from '@nestjs/swagger';
+
+export class BaseResponseDto<T> {
+  @ApiProperty({ description: 'Response message' })
+  message: string;
+
+  @ApiProperty({ description: 'Response data' })
+  data: T;
+}
+
+export class AuthUserResponseDto {
+  @ApiProperty({ description: 'User ID' })
+  _id: string;
+
+  @ApiProperty({ description: 'Email address' })
+  email: string;
+
+  @ApiProperty({ description: 'First name' })
+  firstName: string;
+
+  @ApiProperty({ description: 'Last name' })
+  lastName: string;
+
+  @ApiProperty({ description: 'Profile avatar URL', required: false })
+  avatar?: string;
+
+  @ApiProperty({ description: 'About section', required: false })
+  about?: string;
+
+  @ApiProperty({ description: 'Country', required: false })
+  country?: string;
+
+  @ApiProperty({ description: 'Phone number', required: false })
+  phoneNumber?: string;
+
+  @ApiProperty({ description: 'Email confirmation status' })
+  emailConfirm: boolean;
+
+  @ApiProperty({ description: 'Account creation date' })
+  createdAt: Date;
+
+  @ApiProperty({ description: 'Last seen date' })
+  lastSeen: Date;
+}
+````
+
+## File: src/modules/auth/dto/send-phone-otp.dto.ts
+````typescript
+import { IsNotEmpty, IsPhoneNumber, IsString, Length } from 'class-validator';
+
+export class SendPhoneOtpDto {
+  @IsString()
+  @IsNotEmpty()
+  @IsPhoneNumber('NG', {
+    message:
+      'Please provide a valid Nigerian phone number in E.164 format (e.g., +23480...)',
+  })
+  phoneNumber: string; // Expecting E.164 format (e.g., +2348012345678)
+}
+
+export class VerifyPhoneOtpDto {
+  @IsString()
+  @IsNotEmpty()
+  @IsPhoneNumber('NG', {
+    message:
+      'Please provide a valid Nigerian phone number in E.164 format (e.g., +23480...)',
+  })
+  phoneNumber: string; // Expecting E.164 format
+
+  @IsString()
+  @IsNotEmpty()
+  @Length(6, 6, { message: 'OTP must be exactly 6 digits' }) // Assuming 6-digit OTP
+  otp: string;
+}
+````
+
+## File: src/modules/config/config.module.ts
+````typescript
+import { Module } from '@nestjs/common';
+
+@Module({})
+export class ConfigModule {}
+````
+
+## File: src/modules/database/database.module.ts
+````typescript
+import { Module } from '@nestjs/common';
+
+@Module({})
+export class DatabaseModule {}
+````
+
+## File: src/modules/driver/riders.module.ts
+````typescript
+import { Module } from '@nestjs/common';
+
+@Module({})
+export class RidersModule {}
+````
+
+## File: src/modules/geolocation/geolocation.module.ts
+````typescript
+import { Module } from '@nestjs/common';
+
+@Module({})
+export class GeolocationModule {}
+````
+
+## File: src/modules/health/health.module.ts
+````typescript
+import { Module } from '@nestjs/common';
+import { ConfigModule } from '@nestjs/config';
+import { TerminusModule } from '@nestjs/terminus';
+
+import { HealthController } from './health.controller';
+
+@Module({
+  imports: [TerminusModule, ConfigModule],
+  controllers: [HealthController],
+})
+export class HealthModule {}
+````
+
+## File: src/modules/mail/cron-job/email.processor.ts
+````typescript
+import { Processor, Process } from '@nestjs/bull';
+import { Job } from 'bull';
+import { Injectable, Logger } from '@nestjs/common';
+import { MailerService } from '@nestjs-modules/mailer';
+import * as ejs from 'ejs';
+import * as fs from 'fs';
+import * as path from 'path';
+
+@Processor('emailQueue')
+@Injectable()
+export class EmailProcessor {
+  private logger = new Logger(EmailProcessor.name);
+
+  constructor(private mailerService: MailerService) {}
+
+  private from = '"TravEazi Team" <notifications@travezi.com>';
+
+  // Resolve the path and read the template file
+  private marketingTemplatePath = path.resolve(
+    __dirname,
+    '..',
+    'templates',
+    'marketing.ejs',
+  );
+
+  private marketingEmailTemplate = fs.readFileSync(this.marketingTemplatePath, {
+    encoding: 'utf-8',
+  });
+
+  @Process('sendBulkEmail')
+  async handleBulkEmailJob(job: Job) {
+    const data = job.data;
+    const batchSize = 50; // Number of emails per batch
+    const maxRetries = 3; // Maximum number of retries
+    const batches = [];
+
+    for (let i = 0; i < data.to.length; i += batchSize) {
+      batches.push(data.to.slice(i, i + batchSize));
+    }
+
+    this.logger.log(`Scheduled time for job ${job.id}: ${data.sendTime}`);
+
+    for (const batch of batches) {
+      const emailPromises = batch.map((recipient) => {
+        let retries = 0;
+        const sendEmail = async () => {
+          try {
+            return await this.mailerService.sendMail({
+              to: recipient.email,
+              from: this.from,
+              subject: data.subject,
+              context: {
+                name: recipient.firstName,
+                email: data.email,
+                body: data.body,
+              },
+              headers: {
+                'X-Category': data.type,
+              },
+              html: ejs.render(this.marketingEmailTemplate, {
+                subject: data.subject,
+                name: recipient.firstName,
+                body: data.body,
+              }),
+              text: ejs.render(this.marketingEmailTemplate, {
+                subject: data.subject,
+                name: recipient.firstName,
+                body: data.body,
+              }),
+            });
+          } catch (error) {
+            if (retries < maxRetries) {
+              retries++;
+              this.logger.warn(
+                `Retry ${retries} for email to ${recipient.email}`,
+              );
+              await new Promise((resolve) => setTimeout(resolve, 1000)); // Wait for 1 second before retrying
+              return sendEmail();
+            } else {
+              throw error;
+            }
+          }
+        };
+        return sendEmail();
+      });
+
+      try {
+        const results = await Promise.all(emailPromises);
+        this.logger.log(`Batch sent successfully: ${results}`);
+      } catch (error) {
+        this.logger.error(`Failed to send batch: ${error.message}`);
+        throw error;
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 1000)); // Wait for 1 second before sending the next batch
+    }
+
+    await job.update({ status: 'completed' });
+    return { status: 'completed', jobId: job.id };
+  }
+}
+````
+
+## File: src/modules/mail/dto/index.ts
+````typescript
+export * from './mail.dto';
+````
+
+## File: src/modules/mail/dto/mail.dto.ts
+````typescript
+import {
+  IsArray,
+  IsBoolean,
+  IsEnum,
+  IsNumber,
+  IsObject,
+  IsOptional,
+  IsString,
+} from 'class-validator';
+import { MailType } from '../enums/mail.enum';
+import { envType } from 'src/core/interfaces';
+import { PaginationDto } from 'src/core/dto';
+
+export class SendMailDto {
+  @IsArray()
+  @IsOptional()
+  to?: string[];
+
+  @IsString()
+  @IsOptional()
+  body?: string;
+
+  @IsString()
+  @IsOptional()
+  cc?: string;
+
+  @IsString()
+  subject: string;
+
+  @IsEnum(MailType)
+  type: MailType;
+
+  @IsObject()
+  data: object & { env?: envType };
+
+  @IsBoolean()
+  saveAsNotification: boolean;
+}
+
+export class GetScheduleEmailsDto extends PaginationDto {
+  @IsNumber()
+  @IsOptional()
+  limit: number;
+
+  @IsNumber()
+  @IsOptional()
+  page: number;
+}
+````
+
+## File: src/modules/mail/schema/email.schema.ts
+````typescript
+import { Schema, SchemaFactory, Prop } from '@nestjs/mongoose';
+import { Document } from 'mongoose';
+
+@Schema({
+  timestamps: true,
+})
+export class Email extends Document {
+  @Prop({ type: String })
+  event: string;
+
+  @Prop({ type: String })
+  event_id: string;
+
+  @Prop({ type: String })
+  email: string;
+
+  @Prop({ type: String, required: false })
+  ip: string;
+
+  @Prop({ type: String, required: false })
+  user_agent: string;
+
+  @Prop({ type: String, required: false })
+  url: string;
+
+  @Prop({ type: String, required: false })
+  response: string;
+
+  @Prop({ type: String, required: false })
+  response_code: string;
+
+  @Prop({ type: String, required: false })
+  bounce_category: string;
+
+  @Prop({ type: String, required: false })
+  reason: string;
+
+  @Prop({ type: String })
+  timestamp: string;
+
+  @Prop({ type: String })
+  sending_stream: string;
+
+  @Prop({ type: String })
+  category: string;
+
+  @Prop({ type: { variable_a: String, variable_b: String }, required: false })
+  custom_variables?: { variable_a: String; variable_b: String };
+
+  @Prop({ type: String })
+  message_id: string;
+}
+
+export const EmailSchema = SchemaFactory.createForClass(Email);
+````
+
+## File: src/modules/mail/templates/confirmation.ejs
+````
+<!doctype html>
+<html>
+  <meta charset="utf-8" />
+  <title>Email Verification | TravEazi</title>
+
+  <head>
+    <link
+      href="https://fonts.googleapis.com/css2?family=DM+Sans&family=Inter:wght@100;200;300;400;600&family=Joan&family=Roboto:ital,wght@0,100;0,300;1,100&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      * {
+        font-family: 'DM Sans', sans-serif;
+        color: #000000;
+        font-weight: 400;
+        font-size: 14px;
+        line-height: 24px;
+        text-align: justify;
+      }
+
+      body {
+        background: #f0f7ff;
+        -webkit-font-smoothing: antialiased;
+        font-size: 14px;
+        line-height: 1.4;
+        margin: 1.5rem;
+        display: flex;
+        justify-content: center;
+        padding: 1rem;
+        -ms-text-size-adjust: 100%;
+        -webkit-text-size-adjust: 100%;
+      }
+
+      .main {
+        padding: 2rem;
+        width: auto;
+        background: white;
+        margin: 1.5rem;
+        border-radius: 8px;
+        box-shadow: 0px 10px 30px rgba(0, 0, 0, 0.01);
+      }
+
+      .container {
+        padding: 24px;
+        max-width: 600px;
+        background: #eef2f5;
+        border-radius: 10px;
+      }
+
+      p {
+        font-size: 14px;
+      }
+
+      a {
+        color: #000;
+        text-decoration: none;
+      }
+
+      footer {
+        margin-top: 2rem;
+      }
+
+      footer div,
+      footer aside {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        width: 100%;
+        text-align: center;
+        gap: 8px;
+      }
+
+      footer div {
+        width: 30%;
+        margin: 16px auto;
+      }
+
+      .main-header {
+        font-style: normal;
+        font-weight: 700;
+        font-size: 20px;
+        margin-bottom: 10px;
+      }
+
+      .user-name {
+        font-style: normal;
+        font-size: 16px;
+      }
+
+      .fw-bold {
+        font-weight: 600;
+        text-decoration: none;
+      }
+
+      .bold {
+        font-style: bold;
+        font-size: 30px;
+      }
+
+      .center-text {
+        width: 100%;
+        margin: auto;
+        text-align: center;
+      }
+
+      .mt-n5 {
+        margin-top: -5px;
+      }
+
+      .my-50 {
+        margin: 15px 0px;
+        text-align: center;
+      }
+
+      main aside {
+        margin-top: 16px;
+        font-size: 14px;
+      }
+
+      .landmark {
+        color: #616161;
+        margin-bottom: 16px;
+        margin: auto;
+        width: 100%;
+        text-align: center;
+      }
+
+      .image {
+        display: block;
+        width: 80px;
+        margin: auto;
+        object-fit: contain;
+        pointer-events: none;
+      }
+
+      .logo {
+        height: 30px;
+        width: 30px;
+        margin: auto;
+      }
+
+      img.g-img + div {
+        display: none;
+      }
+
+      .content {
+        padding: 0 10px;
+      }
+
+      table {
+        margin: 20px 5px;
+      }
+
+      .bg-bg {
+        background: #eef2f5;
+        padding: 20px 10px;
+        width: 30%;
+        margin: 10px auto;
+      }
+
+      .bg-dark {
+        color: #000;
+        font-weight: 700;
+      }
+    </style>
+  </head>
+
+  <body>
+    <div class="container">
+        <div class="main-header">
+            <img
+            class="logo"
+            src="https://trav-eazi.s3.amazonaws.com/logo.png"
+            alt="TravEazi Logo"
+            />
+            <h1 class="mt-n5">TravEazi</h1>
+      <div class="main">
+        <table role="presentation" cellpadding="2px" class="content">
+          <p class="user-name">Hi <%= locals.name %>,</p>
+          <p>
+            Thank you for signing up to TravEazi! Please enter the One-Time Password (OTP) below
+             to complete your registration,
+            :
+          </p>
+          <h2 class="my-50 fw-bold bg-bg center-text bold">
+            <%= locals.code %>
+          </h2>
+          <h5>
+            This OTP is valid for the next 15 minutes. If you don't use it
+            within this time frame, you will need to request a new one.
+          </h5>
+          <h5>
+            If you did not initiate this request, please ignore this email.
+          </h5>
+          <p>Best regards,</p>
+          <p>
+            <a class="bg-dark" href="https://www.traveazi.com"
+              >TravEazi Team</a
+            >
+          </p>
+        </table>
+      </div>
+      <footer>
+        
+        <aside>
+          <small class="landmark"
+            >Copyright &copy; <%= new Date().getFullYear() %>
+          </small>
+        </aside>
+        <p class="center-text fw-bold">TravEazi</p>
+      </footer>
+    </div>
+  </body>
+</html>
+````
+
+## File: src/modules/mail/templates/credentials.ejs
+````
+<!doctype html>
+<html>
+  <meta charset="utf-8" />
+  <title>Welcome | xtern.ai</title>
+
+  <head>
+    <link
+      href="https://fonts.googleapis.com/css2?family=DM+Sans&family=Inter:wght@100;200;300;400;600&family=Joan&family=Roboto:ital,wght@0,100;0,300;1,100&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      * {
+        font-family: 'DM Sans', sans-serif;
+        color: #000000;
+        font-weight: 400;
+        font-size: 14px;
+        line-height: 24px;
+        text-align: justify;
+      }
+
+      body {
+        background: #f0f7ff;
+        -webkit-font-smoothing: antialiased;
+        font-size: 14px;
+        line-height: 1.4;
+        margin: 1.5rem;
+        padding: 1rem;
+        display: flex;
+        justify-content: center;
+        -ms-text-size-adjust: 100%;
+        -webkit-text-size-adjust: 100%;
+      }
+
+      .main {
+        padding: 2rem;
+        width: auto;
+        background: white;
+        margin: 1.5rem;
+        border-radius: 8px;
+        box-shadow: 0px 10px 30px rgba(0, 0, 0, 0.01);
+      }
+
+      .container {
+        padding: 24px;
+        max-width: 600px;
+        background: #eef2f5;
+        border-radius: 10px;
+      }
+
+      p {
+        font-size: 14px;
+      }
+
+      a {
+        color: #000;
+        text-decoration: none;
+      }
+
+      footer {
+        margin-top: 2rem;
+      }
+
+      footer div,
+      footer aside {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        width: 100%;
+        text-align: center;
+        gap: 8px;
+      }
+
+      footer div {
+        width: 30%;
+        margin: 16px auto;
+      }
+
+      .main-header {
+        font-style: normal;
+        font-weight: 700;
+        font-size: 20px;
+        margin-bottom: 10px;
+      }
+
+      .user-name {
+        font-style: normal;
+        font-size: 16px;
+      }
+
+      .fw-bold {
+        font-weight: 600;
+        text-decoration: none;
+      }
+
+      .bold {
+        font-style: bold;
+        font-size: 30px;
+      }
+
+      .center-text {
+        width: 100%;
+        margin: auto;
+        text-align: center;
+      }
+
+      .mt-n5 {
+        margin-top: -5px;
+      }
+
+      .my-50 {
+        margin: 15px 0px;
+        text-align: center;
+      }
+
+      main aside {
+        margin-top: 16px;
+        font-size: 14px;
+      }
+
+      .landmark {
+        color: #616161;
+        margin-bottom: 16px;
+        margin: auto;
+        width: 100%;
+        text-align: center;
+      }
+
+      .image {
+        display: block;
+        width: 80px;
+        margin: auto;
+        object-fit: contain;
+        pointer-events: none;
+      }
+
+      .logo {
+        height: 30px;
+        width: 30px;
+        margin: auto;
+      }
+
+      img.g-img + div {
+        display: none;
+      }
+
+      .content {
+        padding: 0 40px;
+      }
+
+      table {
+        margin: 20px 5px;
+      }
+
+      .bg-bg {
+        background: #eef2f5;
+        padding: 20px 10px;
+        width: 80%;
+        margin: 10px auto;
+      }
+
+      .bg-dark {
+        color: #000;
+        font-weight: 700;
+      }
+    </style>
+  </head>
+
+  <body>
+    <div class="container">
+      <a href="#">
+        <img
+          class="image g-img"
+          src="https://traveazi-io-nonprod-general-revamp.s3.eu-west-2.amazonaws.com/1726625876998-xtern-logo.png"
+          alt="traveazi.io logo"
+        />
+      </a>
+      <div class="main">
+        <table role="presentation" cellpadding="2px" class="content">
+          <h3 class="main-header center-text">Welcome to Xtern.ai</h3>
+          <p class="user-name">Hi <%= locals.name %>,</p>
+          <p>
+            We are delighted to inform you that your account has been
+            successfully created on TravEazi.io. Please find the details of your
+            account below:
+          </p>
+          <p>
+            Email Address:
+            <span class="fw-bold mt-n5"> <%= locals.email %> </span>
+          </p>
+          <div>
+            Password:
+            <p class="my-50 fw-bold bg-bg center-text bold">
+              <%= locals.password %>
+            </p>
+          </div>
+          <p>
+            Kindly use the provided password to sign in to your TravEazi.io
+            account. Once signed in, we <b>strongly recommend </b>changing your
+            password for enhanced security.
+          </p>
+          <p>Thank you for choosing xtern.ai</p>
+          <p>Best regards,</p>
+          <p>
+            <a class="bg-dark" href="https://www.traveazi.ai"
+              >TravEazi Support Team</a
+            >
+          </p>
+        </table>
+      </div>
+      <footer>
+        <div>
+          <span class="center-text">
+            <a href="https://www.facebook.com/official.traveazi.io/">
+              <img
+                class="logo"
+                src="https://traveazi-io-nonprod-general-revamp.s3.eu-west-2.amazonaws.com/1726627249979-facebook.png"
+                alt="facebook logo"
+              />
+            </a>
+          </span>
+          <span class="center-text">
+            <a href="https://www.linkedin.com/company/traveazi-io/">
+              <img
+                class="logo"
+                src="https://traveazi-io-nonprod-general-revamp.s3.eu-west-2.amazonaws.com/1726627386183-linkedln.png"
+                alt="linkedIn logo"
+              />
+            </a>
+          </span>
+          <span class="center-text">
+            <a href="https://twitter.com/traveazi_io">
+              <img
+                class="logo"
+                src="https://traveazi-io-nonprod-general-revamp.s3.eu-west-2.amazonaws.com/1726627422689-twitter.png"
+                alt="twitter logo"
+              />
+            </a>
+          </span>
+          <span class="center-text">
+            <a href="https://www.instagram.com/traveazi.io/">
+              <img
+                class="logo"
+                src="https://traveazi-io-nonprod-general-revamp.s3.eu-west-2.amazonaws.com/1726627463049-instagram.png"
+                alt="instagram logo"
+              />
+            </a>
+          </span>
+        </div>
+        <aside>
+          <small class="landmark"
+            >Copyright &copy; <%= new Date().getFullYear() %>
+          </small>
+        </aside>
+        <p class="center-text fw-bold">TravEazi</p>
+      </footer>
+    </div>
+  </body>
+</html>
 ````
 
 ## File: src/modules/mail/templates/emailnotification.ejs
@@ -724,1030 +2166,12 @@ export class RedisLock {
 </html>
 ````
 
-## File: src/modules/app.gateway.ts
-````typescript
-import { Logger } from '@nestjs/common';
-import {
-  OnGatewayConnection,
-  OnGatewayDisconnect,
-  WebSocketGateway,
-  WebSocketServer,
-} from '@nestjs/websockets';
-import { Server, Socket } from 'socket.io';
-import { WsGuard } from 'src/core/guards';
-import { ErrorHelper } from 'src/core/helpers';
-
-@WebSocketGateway({
-  cors: {
-    origin: '*',
-  },
-  path: '/api/chat/socket',
-})
-export class AppGateway implements OnGatewayConnection, OnGatewayDisconnect {
-  constructor(private wsGuard: WsGuard) {}
-
-  private logger = new Logger('WebsocketGateway');
-
-  @WebSocketServer()
-  server: Server;
-
-  handleDisconnect(client: Socket) {
-    this.logger.log(`Client disconnected: ${client.id}`);
-  }
-
-  async handleConnection(client: Socket) {
-    try {
-      this.logger.log(`Client handleConnection: ${client.id}`);
-
-      const user = await this.wsGuard.verifyAccessToken(
-        client.handshake.auth.token || client.handshake.headers.authorization,
-      );
-
-      if (!user) {
-        ErrorHelper.UnauthorizedException('User is not authorized');
-      }
-
-      client.data.user = user;
-
-      client.join(user._id.toString());
-
-      this.logger.log(`Client connected: ${client.id}`);
-    } catch (error) {
-      this.logger.log(`has issues: ${client.id}`);
-      client.emit('exception', error.message);
-      client.disconnect();
-    }
-  }
-}
-````
-
-## File: src/modules/app.module.ts
-````typescript
-import { Module } from '@nestjs/common';
-import { AuthGuard } from 'src/core/guards';
-import { WsGuard } from 'src/core/guards/ws.guard';
-import { AppGateway } from './app.gateway';
-
-@Module({
-  providers: [AppGateway, WsGuard, AuthGuard],
-  imports: [],
-})
-export class AppModule {}
-````
-
-## File: src/modules/main.module.ts
-````typescript
-import { Module } from '@nestjs/common';
-import { ConfigModule } from '@nestjs/config';
-import { DatabaseModule } from './database/database.module';
-import { RidesModule } from './rides/rides.module';
-import { GeolocationModule } from './geolocation/geolocation.module';
-import { RidersModule } from './driver/riders.module';
-import { AuthModule } from './auth/auth.module';
-import { UserModule } from './user/user.module';
-import { MongooseModule } from '@nestjs/mongoose';
-import { SecretsModule } from '../global/secrets/module';
-import { SecretsService } from '../global/secrets/service';
-import { AppModule } from './app.module';
-import { GlobalModule } from 'src/global/global.module';
-@Module({
-  imports: [
-    GlobalModule,
-    DatabaseModule,
-    ConfigModule,
-    AuthModule,
-    UserModule,
-    RidesModule,
-    RidersModule,
-    GeolocationModule,
-    AppModule,
-    MongooseModule.forRootAsync({
-      imports: [SecretsModule],
-      inject: [SecretsService],
-      useFactory: (secretsService: SecretsService) => ({
-        uri: secretsService.MONGO_URI,
-      }),
-    }),
-  ],
-  controllers: [],
-  providers: [],
-})
-export class MainModule {}
-````
-
-## File: src/core/constants/index.ts
-````typescript
-export * from './base.constant';
-export * from './messages.constant';
-````
-
-## File: src/core/enums/user.enum.ts
-````typescript
-export enum UserGender {
-  MALE = 'MALE',
-  FEMALE = 'FEMALE',
-}
-
-export enum UserStatus {
-  ACTIVE = 'ACTIVE', // Verified and active
-  INACTIVE = 'INACTIVE', // Deactivated by user or admin
-  PENDING_EMAIL_VERIFICATION = 'PENDING_EMAIL_VERIFICATION', // Registered but email not verified
-  PENDING_DRIVER_VERIFICATION = 'PENDING_DRIVER_VERIFICATION', // Email verified, driver docs submitted, pending admin approval
-  SUSPENDED = 'SUSPENDED', // Temporarily suspended by admin
-  BANNED = 'BANNED', // Permanently banned by admin
-}
-
-export enum DriverVerificationStatus {
-  NOT_SUBMITTED = 'NOT_SUBMITTED',
-  PENDING = 'PENDING',
-  VERIFIED = 'VERIFIED',
-  REJECTED = 'REJECTED',
-}
-````
-
-## File: src/core/enums/vehicle.enum.ts
-````typescript
-export enum VehicleVerificationStatus {
-  NOT_SUBMITTED = 'NOT_SUBMITTED',
-  PENDING = 'PENDING',
-  VERIFIED = 'VERIFIED',
-  REJECTED = 'REJECTED',
-}
-````
-
-## File: src/core/filters/http-exception.filter.ts
-````typescript
-import {
-  ArgumentsHost,
-  Catch,
-  ExceptionFilter,
-  HttpException,
-  HttpStatus,
-} from '@nestjs/common';
-
-type ExceptionResponse = {
-  statusCode: number;
-  message: string | string[];
-  error: string;
-};
-
-@Catch(HttpException)
-export class HttpExceptionFilter implements ExceptionFilter<HttpException> {
-  catch(exception: HttpException, host: ArgumentsHost) {
-    const ctx = host.switchToHttp();
-    const response = ctx.getResponse();
-
-    const status =
-      exception instanceof HttpException
-        ? exception.getStatus()
-        : HttpStatus.INTERNAL_SERVER_ERROR;
-
-    const exceptionResponse = exception.getResponse() as ExceptionResponse;
-
-    const getMessage = () => {
-      if (typeof exceptionResponse === 'string') {
-        return exceptionResponse;
-      }
-
-      if (typeof exceptionResponse.message === 'string') {
-        return exceptionResponse.message;
-      }
-
-      if (Array.isArray(exceptionResponse.message)) {
-        return exceptionResponse.message[0];
-      }
-
-      return 'Internal Server Error';
-    };
-
-    response.status(status).json({
-      success: false,
-      statusCode: status,
-      message: getMessage(),
-    });
-  }
-}
-````
-
-## File: src/core/filters/index.ts
-````typescript
-export * from './http-exception.filter';
-````
-
-## File: src/core/helpers/date.helper.ts
-````typescript
-import { DateTime, DurationLike } from 'luxon';
-
-export class DateHelper {
-  static isAfter(date: Date, dateToCompare: Date): boolean {
-    return (
-      DateTime.fromJSDate(new Date(date)) >
-      DateTime.fromJSDate(new Date(dateToCompare))
-    );
-  }
-
-  static addToCurrent(duration: DurationLike): Date {
-    const dt = DateTime.now();
-    return dt.plus(duration).toJSDate();
-  }
-
-  static isAfterCurrent(date: Date): boolean {
-    const d1 = DateTime.fromJSDate(date ?? new Date());
-    const d2 = DateTime.now();
-    return d2 > d1;
-  }
-}
-````
-
-## File: src/core/helpers/ecrypt.helper.ts
-````typescript
-import { Injectable } from '@nestjs/common';
-import * as bcrypt from 'bcryptjs';
-
-@Injectable()
-export class EncryptHelper {
-  async hash(str: string, saltRounds = 10): Promise<string> {
-    return await bcrypt.hash(str, saltRounds);
-  }
-
-  async compare(str: string, hash: string): Promise<boolean> {
-    return bcrypt.compare(str, hash);
-  }
-
-  compareSync(str: string, hash: string): boolean {
-    return bcrypt.compareSync(str, hash);
-  }
-
-  hashSync(str: string, saltRounds = 10): string {
-    return bcrypt.hashSync(str, saltRounds);
-  }
-}
-````
-
-## File: src/core/helpers/error.utils.ts
-````typescript
-import { HttpException, HttpStatus } from '@nestjs/common';
-
-export class ErrorHelper {
-  static BadRequestException(msg: string | string[]) {
-    throw new HttpException(msg, HttpStatus.BAD_REQUEST);
-  }
-  static UnauthorizedException(msg: string) {
-    throw new HttpException(msg, HttpStatus.UNAUTHORIZED);
-  }
-  static NotFoundException(msg: string) {
-    throw new HttpException(msg, HttpStatus.NOT_FOUND);
-  }
-  static ForbiddenException(msg: string) {
-    throw new HttpException(msg, HttpStatus.FORBIDDEN);
-  }
-  static ConflictException(msg: string) {
-    throw new HttpException(msg, HttpStatus.CONFLICT);
-  }
-  static InternalServerErrorException(msg: string) {
-    throw new HttpException(msg, HttpStatus.INTERNAL_SERVER_ERROR);
-  }
-}
-````
-
-## File: src/core/interceptors/index.ts
-````typescript
-export * from './logger.interceptor';
-export * from './transform.interceptor';
-````
-
-## File: src/core/interceptors/logger.interceptor.ts
-````typescript
-import {
-  CallHandler,
-  ExecutionContext,
-  Injectable,
-  Logger,
-  NestInterceptor,
-} from '@nestjs/common';
-import { Request } from 'express';
-import { Observable, tap } from 'rxjs';
-
-@Injectable()
-export class LoggerInterceptor implements NestInterceptor {
-  intercept(
-    context: ExecutionContext,
-    next: CallHandler<unknown>,
-  ): Observable<unknown> {
-    const request = context.switchToHttp().getRequest<Request>();
-    const { method, ip, url } = request;
-    const timestamp = new Date().toISOString();
-
-    return next
-      .handle()
-      .pipe(
-        tap(() =>
-          Logger.log(
-            `info ${timestamp} ip: ${ip} method: ${method} url: ${url}`,
-          ),
-        ),
-      );
-  }
-}
-````
-
-## File: src/core/interceptors/transform.interceptor.ts
-````typescript
-import {
-  CallHandler,
-  ExecutionContext,
-  Injectable,
-  Logger,
-  NestInterceptor,
-} from '@nestjs/common';
-import { Request } from 'express';
-import { finalize, map, Observable } from 'rxjs';
-import { AppResponse } from '../interfaces';
-import { PaginationResultDto } from '../dto';
-
-@Injectable()
-export class TransformInterceptor<T> implements NestInterceptor<T, unknown> {
-  intercept(
-    context: ExecutionContext,
-    next: CallHandler<unknown>,
-  ): Observable<unknown> {
-    const request = context.switchToHttp().getRequest<Request>();
-    const { method, ip, url } = request;
-    const now = Date.now();
-    const timestamp = new Date().toISOString();
-
-    Logger.log(`info ${timestamp} ip: ${ip} method: ${method} url: ${url}`);
-
-    return next.handle().pipe(
-      map((response: AppResponse) => {
-        if (response?.data instanceof PaginationResultDto) {
-          return {
-            success: true,
-            data: response?.data['data'],
-            message: response?.message,
-            meta: response?.data['meta'],
-          };
-        }
-
-        return {
-          success: true,
-          data: response?.data,
-          message: response?.message,
-        };
-      }),
-      finalize(() => {
-        Logger.log(`Excution time... ${Date.now() - now}ms`);
-      }),
-    );
-  }
-}
-````
-
-## File: src/core/interfaces/http/http.interface.ts
-````typescript
-export type AppResponse = {
-  data: object;
-  success: boolean;
-  message: string;
-};
-
-export enum RequestHeadersEnum {
-  Authorization = 'authorization',
-}
-
-export enum RequestMethodEnum {
-  Get = 'GET',
-  Post = 'POST',
-  Put = 'PUT',
-  Patch = 'PATCH',
-  Delete = 'DELETE',
-}
-````
-
-## File: src/core/redis/redis.module.ts
-````typescript
-import {
-  RedisModule as RedisCoreModule,
-  RedisModuleOptions,
-} from '@nestjs-modules/ioredis';
-import { SecretsService } from 'src/global/secrets/service';
-
-export class RedisModule {
-  static forRoot(secretKey: keyof SecretsService) {
-    return RedisCoreModule.forRootAsync({
-      inject: [SecretsService],
-      useFactory: (secretsService: SecretsService): RedisModuleOptions => {
-        const config = secretsService[secretKey];
-        return {
-          type: 'single',
-          url: `redis://${config.REDIS_USERNAME}:${config.REDIS_PASSWORD}@${config.REDIS_HOST}:${config.REDIS_PORT}`,
-        };
-      },
-    });
-  }
-}
-````
-
-## File: src/core/validators/index.ts
-````typescript
-export * from './IsMatchPattern.validator';
-export * from './validate.validator';
-````
-
-## File: src/core/validators/IsMatchPattern.validator.ts
-````typescript
-import { registerDecorator, ValidationOptions } from 'class-validator';
-
-export function IsMatchPattern(
-  pattern: string,
-  validationOptions?: ValidationOptions,
-) {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return function (object: Record<string, any>, propertyName: string) {
-    registerDecorator({
-      name: 'isValidPattern',
-      target: object.constructor,
-      propertyName: propertyName,
-      options: {
-        message: `${propertyName} is invalid`,
-        ...validationOptions,
-      },
-      validator: {
-        validate(value: string) {
-          return typeof value === 'string' && new RegExp(pattern).test(value);
-        },
-      },
-    });
-  };
-}
-````
-
-## File: src/core/validators/validate.validator.ts
-````typescript
-import { validate, ValidationError } from 'class-validator';
-
-type Class = { new (...args: unknown[]): unknown };
-
-const getMessages = (error: ValidationError) => {
-  return Object.values(error.constraints).join(', ');
-};
-
-const validateDto = async (dto: Class, data: object) => {
-  const d = Object.assign(new dto(), data);
-
-  const errors = await validate(d);
-
-  if (errors.length === 0) return null;
-
-  return errors.map(getMessages).join('\n');
-};
-
-export default validateDto;
-````
-
-## File: src/global/secrets/module.ts
-````typescript
-import { Module } from '@nestjs/common';
-import { ConfigModule } from '@nestjs/config';
-
-import { SecretsService } from './service';
-
-@Module({
-  imports: [
-    ConfigModule.forRoot({
-      envFilePath: ['.env'],
-      isGlobal: true,
-    }),
-  ],
-  providers: [SecretsService],
-  exports: [SecretsService],
-})
-export class SecretsModule {}
-````
-
-## File: src/global/user-session/service.ts
-````typescript
-import { Injectable, Logger } from '@nestjs/common';
-import { InjectRedis } from '@nestjs-modules/ioredis';
-import Redis from 'ioredis';
-import { IDriver, IPassenger } from 'src/core/interfaces';
-
-@Injectable()
-export class UserSessionService {
-  private logger = new Logger(UserSessionService.name);
-  constructor(@InjectRedis() private readonly redisClient: Redis) {}
-
-  async create(
-    payload: IDriver | IPassenger,
-    data: {
-      sessionId: string;
-      rememberMe: boolean;
-    },
-  ) {
-    const key = `session:${payload._id}`;
-
-    const twoWeeksInSeconds = 1209600;
-    await this.redisClient.set(
-      key,
-      JSON.stringify({
-        sessionId: data.sessionId,
-        rememberMe: data.rememberMe,
-      }),
-      'EX',
-      twoWeeksInSeconds,
-    );
-
-    this.logger.log(`create: Session created for user ${payload._id}`);
-
-    return payload._id;
-  }
-
-  async get(id: string | number): Promise<{
-    sessionId: string;
-    rememberMe: boolean;
-  }> {
-    const key = `session:${id}`;
-    const session = await this.redisClient.get(key);
-
-    if (!session) {
-      this.logger.error(`get: Session not found`);
-      return null;
-    }
-
-    try {
-      return JSON.parse(session);
-    } catch (error) {
-      this.logger.error(`get: ${error.name} - ${error.message}`);
-      await this.redisClient.del(key);
-      return null;
-    }
-  }
-
-  async checkSession(id: string | number): Promise<boolean> {
-    const key = `session:${id}`;
-    const exist = await this.redisClient.get(key);
-
-    if (!exist) {
-      return false;
-    }
-
-    let parsed = null;
-    try {
-      parsed = JSON.parse(exist);
-    } catch (error) {
-      return false;
-    }
-
-    if (!parsed.rememberMe) {
-      // Delete session if remember me is false
-      await this.redisClient.del(key);
-      return false;
-    }
-
-    return true;
-  }
-
-  async delete(id: string): Promise<boolean> {
-    const key = `session:${id}`;
-
-    try {
-      await this.redisClient.del(key);
-    } catch (error) {
-      return false;
-    }
-
-    return true;
-  }
-}
-````
-
-## File: src/global/utils/token.utils.ts
-````typescript
-import { Injectable, Logger } from '@nestjs/common';
-import * as jwt from 'jsonwebtoken';
-import * as otpGenerator from 'otp-generator';
-
-import { SecretsService } from '../secrets/service';
-import { ErrorHelper } from 'src/core/helpers';
-import { IDriver, IPassenger } from 'src/core/interfaces';
-
-@Injectable()
-export class TokenHelper {
-  private logger = new Logger(TokenHelper.name);
-  constructor(private secretService: SecretsService) {}
-
-  generate(payload: IDriver | IPassenger): {
-    accessToken: string;
-    expires: number;
-    refreshToken: string;
-    sessionId: string;
-  } {
-    const { JWT_SECRET: secret } = this.secretService.jwtSecret;
-
-    const sessionId = this.generateRandomString();
-
-    const token = jwt.sign({ ...payload, sessionId }, secret, {
-      expiresIn: '14d',
-    });
-
-    const refreshToken = jwt.sign(
-      {
-        userId: payload._id,
-        userEmail: payload.email,
-        isRefreshToken: true,
-        sessionId,
-      },
-      secret,
-      {
-        expiresIn: '14d',
-      },
-    );
-
-    const decoded = jwt.decode(token) as jwt.JwtPayload;
-    return {
-      accessToken: token,
-      expires: decoded.exp,
-      // expiresIn: decoded.iat,
-      refreshToken,
-      sessionId,
-    };
-  }
-
-  verify<T>(token: string, opts?: jwt.VerifyOptions): T {
-    try {
-      const { JWT_SECRET: secret } = this.secretService.jwtSecret;
-
-      const options: jwt.VerifyOptions = {
-        ...opts,
-        algorithms: ['HS256'],
-      };
-      const payload = jwt.verify(token, secret, options);
-      return payload as T;
-    } catch (error) {
-      this.logger.log('err', error);
-      if (error.name === 'TokenExpiredError')
-        ErrorHelper.UnauthorizedException('Access token expired');
-      if (error.name === 'JsonWebTokenError')
-        ErrorHelper.UnauthorizedException('Access token not valid');
-      throw error;
-    }
-  }
-
-  generatePasswordResetToken(payload: any): string {
-    const { JWT_SECRET: secret } = this.secretService.jwtSecret;
-
-    return jwt.sign(
-      {
-        userId: payload._id,
-        userEmail: payload.email,
-        isPasswordResetToken: true,
-      },
-      secret,
-      {
-        expiresIn: '1h',
-      },
-    );
-  }
-
-  generateRandomString(size = 21): string {
-    return otpGenerator.generate(size, {
-      digits: true,
-      lowerCaseAlphabets: true,
-      upperCaseAlphabets: true,
-      specialChars: false,
-    });
-  }
-  generateRandomCoupon(size = 10): string {
-    return otpGenerator.generate(size, {
-      digits: true,
-      lowerCaseAlphabets: false,
-      upperCaseAlphabets: true,
-      specialChars: false,
-    });
-  }
-
-  generateRandomPassword(size = 21): string {
-    const data = otpGenerator.generate(size, {
-      digits: true,
-      lowerCaseAlphabets: true,
-      upperCaseAlphabets: true,
-      specialChars: true,
-    });
-
-    return 'D$' + data;
-  }
-
-  generateRandomNumber(size = 6): string {
-    return otpGenerator.generate(size, {
-      digits: true,
-      lowerCaseAlphabets: false,
-      upperCaseAlphabets: false,
-      specialChars: false,
-    });
-  }
-}
-````
-
-## File: src/global/global.module.ts
-````typescript
-import { Global, Module } from '@nestjs/common';
-
-import { SecretsModule } from './secrets/module';
-import { UserSessionModule } from './user-session/module';
-import { TokenHelper } from './utils/token.utils';
-
-@Global()
-@Module({
-  imports: [SecretsModule, UserSessionModule],
-  providers: [TokenHelper],
-  exports: [SecretsModule, TokenHelper, UserSessionModule],
-})
-export class GlobalModule {}
-````
-
-## File: src/modules/config/config.module.ts
-````typescript
-import { Module } from '@nestjs/common';
-
-@Module({})
-export class ConfigModule {}
-````
-
-## File: src/modules/database/database.module.ts
-````typescript
-import { Module } from '@nestjs/common';
-
-@Module({})
-export class DatabaseModule {}
-````
-
-## File: src/modules/driver/dto/driver-regidtration.dto.ts
-````typescript
-import { BaseRegistrationDto } from 'src/modules/auth/dto/base-registeration.dto';
-
-// For the initial user creation, driver-specific details like license and vehicle info
-// are usually collected *after* the account is created during an onboarding/verification flow.
-// Therefore, this DTO extends the base without additional required fields for registration itself.
-export class DriverRegistrationDto extends BaseRegistrationDto {}
-````
-
-## File: src/modules/driver/riders.module.ts
-````typescript
-import { Module } from '@nestjs/common';
-
-@Module({})
-export class RidersModule {}
-````
-
-## File: src/modules/geolocation/geolocation.module.ts
-````typescript
-import { Module } from '@nestjs/common';
-
-@Module({})
-export class GeolocationModule {}
-````
-
-## File: src/modules/health/health.module.ts
-````typescript
-import { Module } from '@nestjs/common';
-import { ConfigModule } from '@nestjs/config';
-import { TerminusModule } from '@nestjs/terminus';
-
-import { HealthController } from './health.controller';
-
-@Module({
-  imports: [TerminusModule, ConfigModule],
-  controllers: [HealthController],
-})
-export class HealthModule {}
-````
-
-## File: src/modules/mail/cron-job/email.processor.ts
-````typescript
-import { Processor, Process } from '@nestjs/bull';
-import { Job } from 'bull';
-import { Injectable, Logger } from '@nestjs/common';
-import { MailerService } from '@nestjs-modules/mailer';
-import * as ejs from 'ejs';
-import * as fs from 'fs';
-import * as path from 'path';
-
-@Processor('emailQueue')
-@Injectable()
-export class EmailProcessor {
-  private logger = new Logger(EmailProcessor.name);
-
-  constructor(private mailerService: MailerService) {}
-
-  private from = '"TravEazi Team" <notifications@travezi.com>';
-
-  // Resolve the path and read the template file
-  private marketingTemplatePath = path.resolve(
-    __dirname,
-    '..',
-    'templates',
-    'marketing.ejs',
-  );
-
-  private marketingEmailTemplate = fs.readFileSync(this.marketingTemplatePath, {
-    encoding: 'utf-8',
-  });
-
-  @Process('sendBulkEmail')
-  async handleBulkEmailJob(job: Job) {
-    const data = job.data;
-    const batchSize = 50; // Number of emails per batch
-    const maxRetries = 3; // Maximum number of retries
-    const batches = [];
-
-    for (let i = 0; i < data.to.length; i += batchSize) {
-      batches.push(data.to.slice(i, i + batchSize));
-    }
-
-    this.logger.log(`Scheduled time for job ${job.id}: ${data.sendTime}`);
-
-    for (const batch of batches) {
-      const emailPromises = batch.map((recipient) => {
-        let retries = 0;
-        const sendEmail = async () => {
-          try {
-            return await this.mailerService.sendMail({
-              to: recipient.email,
-              from: this.from,
-              subject: data.subject,
-              context: {
-                name: recipient.firstName,
-                email: data.email,
-                body: data.body,
-              },
-              headers: {
-                'X-Category': data.type,
-              },
-              html: ejs.render(this.marketingEmailTemplate, {
-                subject: data.subject,
-                name: recipient.firstName,
-                body: data.body,
-              }),
-              text: ejs.render(this.marketingEmailTemplate, {
-                subject: data.subject,
-                name: recipient.firstName,
-                body: data.body,
-              }),
-            });
-          } catch (error) {
-            if (retries < maxRetries) {
-              retries++;
-              this.logger.warn(
-                `Retry ${retries} for email to ${recipient.email}`,
-              );
-              await new Promise((resolve) => setTimeout(resolve, 1000)); // Wait for 1 second before retrying
-              return sendEmail();
-            } else {
-              throw error;
-            }
-          }
-        };
-        return sendEmail();
-      });
-
-      try {
-        const results = await Promise.all(emailPromises);
-        this.logger.log(`Batch sent successfully: ${results}`);
-      } catch (error) {
-        this.logger.error(`Failed to send batch: ${error.message}`);
-        throw error;
-      }
-
-      await new Promise((resolve) => setTimeout(resolve, 1000)); // Wait for 1 second before sending the next batch
-    }
-
-    await job.update({ status: 'completed' });
-    return { status: 'completed', jobId: job.id };
-  }
-}
-````
-
-## File: src/modules/mail/dto/index.ts
-````typescript
-export * from './mail.dto';
-````
-
-## File: src/modules/mail/dto/mail.dto.ts
-````typescript
-import {
-  IsArray,
-  IsBoolean,
-  IsEnum,
-  IsNumber,
-  IsObject,
-  IsOptional,
-  IsString,
-} from 'class-validator';
-import { MailType } from '../enums/mail.enum';
-import { envType } from 'src/core/interfaces';
-import { PaginationDto } from 'src/core/dto';
-
-export class SendMailDto {
-  @IsArray()
-  @IsOptional()
-  to?: string[];
-
-  @IsString()
-  @IsOptional()
-  body?: string;
-
-  @IsString()
-  @IsOptional()
-  cc?: string;
-
-  @IsString()
-  subject: string;
-
-  @IsEnum(MailType)
-  type: MailType;
-
-  @IsObject()
-  data: object & { env?: envType };
-
-  @IsBoolean()
-  saveAsNotification: boolean;
-}
-
-export class GetScheduleEmailsDto extends PaginationDto {
-  @IsNumber()
-  @IsOptional()
-  limit: number;
-
-  @IsNumber()
-  @IsOptional()
-  page: number;
-}
-````
-
-## File: src/modules/mail/schema/email.schema.ts
-````typescript
-import { Schema, SchemaFactory, Prop } from '@nestjs/mongoose';
-import { Document } from 'mongoose';
-
-@Schema({
-  timestamps: true,
-})
-export class Email extends Document {
-  @Prop({ type: String })
-  event: string;
-
-  @Prop({ type: String })
-  event_id: string;
-
-  @Prop({ type: String })
-  email: string;
-
-  @Prop({ type: String, required: false })
-  ip: string;
-
-  @Prop({ type: String, required: false })
-  user_agent: string;
-
-  @Prop({ type: String, required: false })
-  url: string;
-
-  @Prop({ type: String, required: false })
-  response: string;
-
-  @Prop({ type: String, required: false })
-  response_code: string;
-
-  @Prop({ type: String, required: false })
-  bounce_category: string;
-
-  @Prop({ type: String, required: false })
-  reason: string;
-
-  @Prop({ type: String })
-  timestamp: string;
-
-  @Prop({ type: String })
-  sending_stream: string;
-
-  @Prop({ type: String })
-  category: string;
-
-  @Prop({ type: { variable_a: String, variable_b: String }, required: false })
-  custom_variables?: { variable_a: String; variable_b: String };
-
-  @Prop({ type: String })
-  message_id: string;
-}
-
-export const EmailSchema = SchemaFactory.createForClass(Email);
-````
-
-## File: src/modules/mail/templates/confrimation.ejs
+## File: src/modules/mail/templates/resetpassword.ejs
 ````
 <!doctype html>
 <html>
   <meta charset="utf-8" />
-  <title>Email Verification | TravEazi</title>
+  <title>Reset Password | xtern.ai</title>
 
   <head>
     <link
@@ -1770,9 +2194,9 @@ export const EmailSchema = SchemaFactory.createForClass(Email);
         font-size: 14px;
         line-height: 1.4;
         margin: 1.5rem;
+        padding: 1rem;
         display: flex;
         justify-content: center;
-        padding: 1rem;
         -ms-text-size-adjust: 100%;
         -webkit-text-size-adjust: 100%;
       }
@@ -1890,11 +2314,11 @@ export const EmailSchema = SchemaFactory.createForClass(Email);
       }
 
       .content {
-        padding: 0 10px;
+        padding: 0 40px;
       }
 
       table {
-        margin: 20px 5px;
+        margin: 20px;
       }
 
       .bg-bg {
@@ -1913,41 +2337,74 @@ export const EmailSchema = SchemaFactory.createForClass(Email);
 
   <body>
     <div class="container">
-        <div class="main-header">
-            <img
-            class="logo"
-            src="https://trav-eazi.s3.amazonaws.com/logo.png"
-            alt="TravEazi Logo"
-            />
-            <h1 class="mt-n5">TravEazi</h1>
+      <a href="#">
+        <img
+          class="image g-img"
+          src="https://traveazi-io-nonprod-general-revamp.s3.eu-west-2.amazonaws.com/1726625876998-xtern-logo.png"
+          alt="traveazi.io logo"
+        />
+      </a>
       <div class="main">
         <table role="presentation" cellpadding="2px" class="content">
           <p class="user-name">Hi <%= locals.name %>,</p>
           <p>
-            Thank you for signing up to TravEazi! Please enter the One-Time Password (OTP) below
-             to complete your registration,
-            :
+            We received a request to reset password to your account. Kindly
+            click the link below to proceed:
           </p>
           <h2 class="my-50 fw-bold bg-bg center-text bold">
-            <%= locals.code %>
+            <a href="<%= locals.url %>">Confirm</a>
           </h2>
           <h5>
-            This OTP is valid for the next 15 minutes. If you don't use it
-            within this time frame, you will need to request a new one.
-          </h5>
-          <h5>
-            If you did not initiate this request, please ignore this email.
+            If you didn’t request this change, please ignore this email. If you
+            have any questions, feel free to contact our support team.
           </h5>
           <p>Best regards,</p>
           <p>
-            <a class="bg-dark" href="https://www.traveazi.com"
-              >TravEazi Team</a
+            <a class="bg-dark" href="https://www.traveazi.ai"
+              >TravEazi Support Team</a
             >
           </p>
         </table>
       </div>
       <footer>
-        
+        <div>
+          <span class="center-text">
+            <a href="https://www.facebook.com/official.traveazi.io/">
+              <img
+                class="logo"
+                src="https://traveazi-io-nonprod-general-revamp.s3.eu-west-2.amazonaws.com/1726627249979-facebook.png"
+                alt="facebook logo"
+              />
+            </a>
+          </span>
+          <span class="center-text">
+            <a href="https://www.linkedin.com/company/traveazi-io/">
+              <img
+                class="logo"
+                src="https://traveazi-io-nonprod-general-revamp.s3.eu-west-2.amazonaws.com/1726627386183-linkedln.png"
+                alt="linkedIn logo"
+              />
+            </a>
+          </span>
+          <span class="center-text">
+            <a href="https://twitter.com/traveazi_io">
+              <img
+                class="logo"
+                src="https://traveazi-io-nonprod-general-revamp.s3.eu-west-2.amazonaws.com/1726627422689-twitter.png"
+                alt="twitter logo"
+              />
+            </a>
+          </span>
+          <span class="center-text">
+            <a href="https://www.instagram.com/traveazi.io/">
+              <img
+                class="logo"
+                src="https://traveazi-io-nonprod-general-revamp.s3.eu-west-2.amazonaws.com/1726627463049-instagram.png"
+                alt="instagram logo"
+              />
+            </a>
+          </span>
+        </div>
         <aside>
           <small class="landmark"
             >Copyright &copy; <%= new Date().getFullYear() %>
@@ -2126,6 +2583,135 @@ export class AwsS3Service {
 
     const s3Response = await this.s3.upload(params).promise();
     return s3Response.Location;
+  }
+}
+````
+
+## File: src/modules/twilio/twiio.module.ts
+````typescript
+import { Module } from '@nestjs/common';
+import { TwilioService } from './twilio.service';
+import { SecretsModule } from '../../global/secrets/module';
+
+@Module({
+  imports: [SecretsModule],
+  providers: [TwilioService],
+  exports: [TwilioService],
+})
+export class TwilioModule {}
+````
+
+## File: src/modules/twilio/twilio.service.ts
+````typescript
+import { Injectable, Logger } from '@nestjs/common';
+import { Twilio } from 'twilio';
+import { SecretsService } from '../../global/secrets/service';
+import { error } from 'console';
+
+@Injectable()
+export class TwilioService {
+  private readonly logger = new Logger(TwilioService.name);
+  private twilioClient: Twilio;
+
+  constructor(private secretsService: SecretsService) {
+    const { TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN } =
+      this.secretsService.twilio;
+    if (TWILIO_ACCOUNT_SID && TWILIO_AUTH_TOKEN) {
+      this.twilioClient = new Twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
+    } else {
+      this.logger.error(
+        'Twilio credentials not found. TwilioService will not function.',
+      );
+      this.logger.debug(error);
+    }
+  }
+
+  //   async sendSms(to: string, body: string): Promise<boolean> {
+  //     const { phoneNumber } = this.secretsService.twilio;
+  //     if (!this.twilioClient || !phoneNumber) {
+  //       this.logger.error(
+  //         'Twilio client not initialized or phone number missing. Cannot send SMS.',
+  //       );
+  //       // Depending on requirements, you might throw an error or just return false
+  //       throw new Error('SMS service is not configured properly.');
+  //       // return false;
+  //     }
+
+  //     try {
+  //       const message = await this.twilioClient.messages.create({
+  //         body,
+  //         from: phoneNumber,
+  //         to, // Ensure 'to' number is in E.164 format (e.g., +23480...)
+  //       });
+  //       this.logger.log(`SMS sent successfully to ${to}, SID: ${message.sid}`);
+  //       return true;
+  //     } catch (error) {
+  //       this.logger.error(
+  //         `Failed to send SMS to ${to}: ${error.message}`,
+  //         error.stack,
+  //       );
+  //       // Rethrow or handle specific Twilio errors (e.g., invalid number format)
+  //       throw new Error(`Failed to send verification code: ${error.message}`);
+  //       // return false;
+  //     }
+  //   }
+
+  // --- Optional: If using Twilio Verify Service ---
+
+  async sendVerificationToken(
+    to: string,
+    channel: 'sms' | 'call',
+  ): Promise<boolean> {
+    const { TWILIO_VERIFY_SERVICE_SID } = this.secretsService.twilio;
+    if (!this.twilioClient || !TWILIO_VERIFY_SERVICE_SID) {
+      this.logger.error('Twilio client or Verify Service SID missing.');
+      throw new Error('Verification service is not configured properly.');
+    }
+    try {
+      const verification = await this.twilioClient.verify.v2
+        .services(TWILIO_VERIFY_SERVICE_SID)
+        .verifications.create({ to, channel });
+      this.logger.log(
+        `Verification sent to ${to}, Status: ${verification.status}`,
+      );
+      return verification.status === 'pending';
+    } catch (error) {
+      this.logger.error(
+        `Failed to send verification to ${to}: ${error.message}`,
+        error.stack,
+      );
+      throw new Error(`Failed to send verification code: ${error.message}`);
+    }
+  }
+
+  async checkVerificationToken(to: string, code: string): Promise<boolean> {
+    const { TWILIO_VERIFY_SERVICE_SID } = this.secretsService.twilio;
+    if (!this.twilioClient || !TWILIO_VERIFY_SERVICE_SID) {
+      this.logger.error('Twilio client or Verify Service SID missing.');
+      throw new Error('Verification service is not configured properly.');
+    }
+    try {
+      const verificationCheck = await this.twilioClient.verify.v2
+        .services(TWILIO_VERIFY_SERVICE_SID)
+        .verificationChecks.create({ to, code });
+      this.logger.log(
+        `Verification check for ${to}, Status: ${verificationCheck.status}`,
+      );
+      return verificationCheck.status === 'approved';
+    } catch (error) {
+      // Twilio might return a 404 for incorrect code, handle gracefully
+      if (error.status === 404) {
+        this.logger.warn(
+          `Verification check failed for ${to}: Incorrect code or expired.`,
+        );
+        return false;
+      }
+      this.logger.error(
+        `Failed to check verification for ${to}: ${error.message}`,
+        error.stack,
+      );
+      throw new Error(`Failed to verify code: ${error.message}`);
+    }
   }
 }
 ````
@@ -2339,32 +2925,115 @@ export class UserService {
 }
 ````
 
-## File: test/app.e2e-spec.ts
+## File: src/modules/app.gateway.ts
 ````typescript
-import { Test, TestingModule } from '@nestjs/testing';
-import { INestApplication } from '@nestjs/common';
-import * as request from 'supertest';
-import { AppModule } from '../src/modules/main.module';
+import { Logger } from '@nestjs/common';
+import {
+  OnGatewayConnection,
+  OnGatewayDisconnect,
+  WebSocketGateway,
+  WebSocketServer,
+} from '@nestjs/websockets';
+import { Server, Socket } from 'socket.io';
+import { WsGuard } from 'src/core/guards';
+import { ErrorHelper } from 'src/core/helpers';
 
-describe('AppController (e2e)', () => {
-  let app: INestApplication;
+@WebSocketGateway({
+  cors: {
+    origin: '*',
+  },
+  path: '/api/chat/socket',
+})
+export class AppGateway implements OnGatewayConnection, OnGatewayDisconnect {
+  constructor(private wsGuard: WsGuard) {}
 
-  beforeEach(async () => {
-    const moduleFixture: TestingModule = await Test.createTestingModule({
-      imports: [AppModule],
-    }).compile();
+  private logger = new Logger('WebsocketGateway');
 
-    app = moduleFixture.createNestApplication();
-    await app.init();
-  });
+  @WebSocketServer()
+  server: Server;
 
-  it('/ (GET)', () => {
-    return request(app.getHttpServer())
-      .get('/')
-      .expect(200)
-      .expect('Hello World!');
-  });
-});
+  handleDisconnect(client: Socket) {
+    this.logger.log(`Client disconnected: ${client.id}`);
+  }
+
+  async handleConnection(client: Socket) {
+    try {
+      this.logger.log(`Client handleConnection: ${client.id}`);
+
+      const user = await this.wsGuard.verifyAccessToken(
+        client.handshake.auth.token || client.handshake.headers.authorization,
+      );
+
+      if (!user) {
+        ErrorHelper.UnauthorizedException('User is not authorized');
+      }
+
+      client.data.user = user;
+
+      client.join(user._id.toString());
+
+      this.logger.log(`Client connected: ${client.id}`);
+    } catch (error) {
+      this.logger.log(`has issues: ${client.id}`);
+      client.emit('exception', error.message);
+      client.disconnect();
+    }
+  }
+}
+````
+
+## File: src/modules/app.module.ts
+````typescript
+import { Module } from '@nestjs/common';
+import { AuthGuard } from 'src/core/guards';
+import { WsGuard } from 'src/core/guards/ws.guard';
+import { AppGateway } from './app.gateway';
+
+@Module({
+  providers: [AppGateway, WsGuard, AuthGuard],
+  imports: [],
+})
+export class AppModule {}
+````
+
+## File: src/modules/main.module.ts
+````typescript
+import { Module } from '@nestjs/common';
+import { ConfigModule } from '@nestjs/config';
+import { DatabaseModule } from './database/database.module';
+import { RidesModule } from './rides/rides.module';
+import { GeolocationModule } from './geolocation/geolocation.module';
+import { RidersModule } from './driver/riders.module';
+import { AuthModule } from './auth/auth.module';
+import { UserModule } from './user/user.module';
+import { MongooseModule } from '@nestjs/mongoose';
+import { SecretsModule } from '../global/secrets/module';
+import { SecretsService } from '../global/secrets/service';
+import { AppModule } from './app.module';
+import { GlobalModule } from 'src/global/global.module';
+@Module({
+  imports: [
+    GlobalModule,
+    DatabaseModule,
+    ConfigModule,
+    AuthModule,
+    UserModule,
+    RidesModule,
+    RidersModule,
+    GeolocationModule,
+    AppModule,
+    MongooseModule.forRootAsync({
+      imports: [SecretsModule],
+      inject: [SecretsService],
+      useFactory: (secretsService: SecretsService) => ({
+        uri: secretsService.MONGO_URI,
+      }),
+    }),
+  ],
+  controllers: [],
+  providers: [],
+})
+export class MainModule {}
 ````
 
 ## File: test/jest-e2e.json
@@ -2704,25 +3373,6 @@ src/
 This document provides a snapshot of the backend's current state. Development should prioritize building out the placeholder modules (`Rides`, `Driver`, `Geolocation`, `Payment`) and integrating the required third-party services to meet the core functionality outlined in the PRDs.
 ````
 
-## File: nest-cli.json
-````json
-{
-  "$schema": "https://json.schemastore.org/nest-cli",
-  "collection": "@nestjs/schematics",
-  "sourceRoot": "src",
-  "compilerOptions": {
-    "deleteOutDir": true,
-    "assets": [
-      {
-        "include": "modules/mail/templates/**/*",
-        "outDir": "dist/modules/mail/templates"
-      }
-    ],
-    "watchAssets": true
-  }
-}
-````
-
 ## File: README.md
 ````markdown
 <p align="center">
@@ -2864,52 +3514,6 @@ Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
 export * from './redis.adpater';
 ````
 
-## File: src/core/adpater/redis.adpater.ts
-````typescript
-import { INestApplication } from '@nestjs/common';
-import { IoAdapter } from '@nestjs/platform-socket.io';
-import { createAdapter } from '@socket.io/redis-adapter';
-import { createClient } from 'redis';
-import { Server, ServerOptions } from 'socket.io';
-import { SecretsService } from 'src/global/secrets/service';
-
-export class RedisIoAdapter extends IoAdapter {
-  protected redisAdapter;
-
-  constructor(app: INestApplication) {
-    super();
-    const configService = app.get(SecretsService);
-
-    const pubClient = createClient({
-      socket: {
-        host: configService.userSessionRedis.REDIS_HOST,
-        port: parseInt(configService.userSessionRedis.REDIS_PORT, 10),
-      },
-      username: configService.userSessionRedis.REDIS_USER,
-      password: configService.userSessionRedis.REDIS_PASSWORD,
-    });
-    const subClient = pubClient.duplicate();
-
-    pubClient.connect();
-    subClient.connect();
-
-    this.redisAdapter = createAdapter(pubClient, subClient);
-  }
-
-  createIOServer(port: number, options?: ServerOptions) {
-    const server = super.createIOServer(port, options) as Server;
-
-    server.adapter(this.redisAdapter);
-
-    return server;
-  }
-
-  bindClientConnect(server: any, callback: (socket: any) => void): void {
-    server.on('connection', (socket: any) => callback(socket));
-  }
-}
-````
-
 ## File: src/core/constants/base.constant.ts
 ````typescript
 export const PASSWORD_PATTERN = '^(?=.*[a-z])(?=.*[A-Z])(?=.*[0-9])(?=.{8,})';
@@ -3049,12 +3653,6 @@ export class AuthGuard implements CanActivate {
 }
 ````
 
-## File: src/core/guards/index.ts
-````typescript
-export * from './authenticate.guard';
-export * from './ws.guard';
-````
-
 ## File: src/core/helpers/index.ts
 ````typescript
 export * from './error.utils';
@@ -3101,177 +3699,24 @@ export interface IRole {
 }
 ````
 
-## File: src/global/secrets/service.ts
-````typescript
-import { Injectable } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
-
-@Injectable()
-export class SecretsService extends ConfigService {
-  constructor() {
-    super();
-  }
-
-  NODE_ENV = this.get<string>('NODE_ENV');
-  PORT = this.get('PORT');
-  MONGO_URI = this.get('MONGO_URI');
-
-  get mailSecret() {
-    return {
-      MAIL_USERNAME: this.get('MAIL_USERNAME'),
-      MAIL_PASSWORD: this.get('MAIL_PASSWORD'),
-      MAIL_HOST: this.get('MAIL_HOST'),
-      MAIL_PORT: this.get('MAIL_PORT'),
-      SENDER_EMAIL: this.get<string>('SENDER_EMAIL', ''),
-      NAME: this.get<string>('NAME', ''),
-    };
-  }
-
-  get googleSecret() {
-    return {
-      GOOGLE_CLIENT_ID: this.get('GOOGLE_CLIENT_ID'),
-      GOOGLE_CLIENT_SECRET: this.get('GOOGLE_CLIENT_SECRET'),
-    };
-  }
-
-  get jwtSecret() {
-    return {
-      JWT_SECRET: this.get('APP_SECRET'),
-      JWT_EXPIRES_IN: this.get('ACCESS_TOKEN_EXPIRES', '14d'),
-    };
-  }
-
-  get database() {
-    return {
-      host: this.get('MONGO_HOST'),
-      user: this.get('MONGO_ROOT_USERNAME'),
-      pass: this.get('MONGO_ROOT_PASSWORD'),
-    };
-  }
-
-  get userSessionRedis() {
-    return {
-      REDIS_HOST: this.get('REDIS_HOST'),
-      REDIS_USER: this.get('REDIS_USERNAME'),
-      REDIS_PASSWORD: this.get('REDIS_PASSWORD'),
-      REDIS_PORT: this.get('REDIS_PORT'),
-    };
-  }
-
-  get authAwsSecret() {
-    return {
-      AWS_REGION: this.get('AWS_REGION', 'eu-west-2'),
-      AWS_ACCESS_KEY_ID: this.get('AWS_ACCESS_KEY_ID', 'AKIA36G3JG4TMYVGM6G2'),
-      AWS_SECRET_ACCESS_KEY: this.get(
-        'AWS_SECRET_ACCESS_KEY',
-        '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',
-      ),
-      AWS_S3_BUCKET_NAME: this.get('AWS_S3_BUCKET_NAME', 'traveazi-prod-sess'),
-    };
-  }
-}
-````
-
-## File: src/global/user-session/module.ts
+## File: src/global/secrets/module.ts
 ````typescript
 import { Module } from '@nestjs/common';
-import { RedisModule } from '@nestjs-modules/ioredis';
+import { ConfigModule } from '@nestjs/config';
 
-import { SecretsService } from '../secrets/service';
-import { UserSessionService } from './service';
+import { SecretsService } from './service';
 
 @Module({
   imports: [
-    RedisModule.forRootAsync({
-      useFactory: ({ userSessionRedis }: SecretsService) => {
-        if (!userSessionRedis.REDIS_HOST) {
-          throw new Error(
-            'Invalid Redis configuration: REDIS_HOST is missing.',
-          );
-        }
-        return {
-          type: 'single',
-          url: `redis://${userSessionRedis.REDIS_USER}:${userSessionRedis.REDIS_PASSWORD}@${userSessionRedis.REDIS_HOST}:${userSessionRedis.REDIS_PORT}`,
-        };
-      },
-      inject: [SecretsService],
+    ConfigModule.forRoot({
+      envFilePath: ['.env'],
+      isGlobal: true,
     }),
   ],
-  providers: [UserSessionService],
-  exports: [UserSessionService],
+  providers: [SecretsService],
+  exports: [SecretsService],
 })
-export class UserSessionModule {}
-````
-
-## File: src/modules/auth/dto/base-registeration.dto.ts
-````typescript
-import { Transform } from 'class-transformer';
-import {
-  IsEmail,
-  IsEnum,
-  IsNotEmpty,
-  IsOptional,
-  IsString,
-  MinLength,
-  IsBoolean,
-  Equals,
-  IsPhoneNumber, // Import if you have a specific validator package or use IsMatchPattern
-} from 'class-validator';
-import { PASSWORD_PATTERN } from '../../../core/constants/base.constant';
-import { UserGender } from 'src/core/enums/user.enum';
-import { IsMatchPattern } from '../../../core/validators/IsMatchPattern.validator';
-
-export class BaseRegistrationDto {
-  @IsString()
-  @IsNotEmpty()
-  @MinLength(2)
-  firstName: string;
-
-  @IsString()
-  @IsNotEmpty()
-  @MinLength(2)
-  lastName: string;
-
-  @IsEmail()
-  @IsNotEmpty()
-  @Transform(({ value }) => value?.toLowerCase().trim())
-  email: string;
-
-  @IsString()
-  @IsNotEmpty()
-  @MinLength(8, { message: 'Password must be at least 8 characters long' })
-  @IsMatchPattern(PASSWORD_PATTERN, {
-    message:
-      'Password must contain at least one uppercase letter, one lowercase letter, and one number',
-  })
-  password: string;
-
-  // Consider adding password confirmation if needed on the frontend
-  // @IsString()
-  // @IsNotEmpty()
-  // @Match('password', { message: 'Passwords do not match' }) // You might need a custom 'Match' validator or check in service
-  // passwordConfirmation: string;
-
-  @IsOptional()
-  @IsPhoneNumber('NG', {
-    message: 'Please provide a valid Nigerian phone number',
-  }) // Use 'NG' if validator supports it, otherwise use regex via IsMatchPattern
-  // Example Regex (adjust as needed for Nigerian formats like 080..., +23480...):
-  // @IsMatchPattern(/^(\+234|0)[789][01]\d{8}$/, { message: 'Invalid Nigerian phone number format' })
-  phoneNumber?: string;
-
-  @IsOptional()
-  @IsString()
-  country?: string;
-
-  @IsOptional()
-  @IsEnum(UserGender)
-  gender?: UserGender;
-
-  @IsBoolean({ message: 'You must accept the terms and conditions.' })
-  @Equals(true, { message: 'You must accept the terms and conditions.' })
-  termsAccepted: boolean;
-}
+export class SecretsModule {}
 ````
 
 ## File: src/modules/auth/dto/index.ts
@@ -3280,68 +3725,15 @@ export * from './auth.dto';
 export * from './update-user.dto';
 ````
 
-## File: src/modules/auth/dto/update-user.dto.ts
+## File: src/modules/driver/dto/driver-regidtration.dto.ts
 ````typescript
-import { IsOptional, IsString, IsObject, IsEnum } from 'class-validator';
+import { BaseRegistrationDto } from 'src/modules/auth/dto/base-registeration.dto';
 
-export class UpdateUserDto {
-  @IsOptional()
-  @IsString()
-  firstName?: string;
+// For the initial user creation, driver-specific details like license and vehicle info
+// are usually collected *after* the account is created during an onboarding/verification flow.
+// Therefore, this DTO extends the base without additional required fields for registration itself.
 
-  @IsOptional()
-  @IsString()
-  lastName?: string;
-
-  @IsOptional()
-  @IsString()
-  about?: string;
-
-  @IsOptional()
-  @IsString()
-  email?: string;
-}
-````
-
-## File: src/modules/auth/auth.module.ts
-````typescript
-import { Module } from '@nestjs/common';
-import { AuthService } from './auth.service';
-import { AuthController } from './auth.controller';
-import { EncryptHelper } from 'src/core/helpers';
-import { TokenHelper } from 'src/global/utils/token.utils';
-import { MailController } from '../mail/mail.controller';
-import { MailEvent } from '../mail/mail.event';
-import { MongooseModule } from '@nestjs/mongoose';
-import { TokenSchema, Token } from '../user/schemas/token.schema';
-import { MailModule } from '../mail/mail.module';
-import { UserModule } from '../user/user.module';
-import { roleSchema, Role } from '../user/schemas/role.schema';
-import { AwsS3Module } from '../storage';
-import { UserSchema, User } from '../user/schemas/user.schema';
-
-@Module({
-  imports: [
-    MailModule,
-    UserModule,
-    MongooseModule.forFeature([
-      { name: Token.name, schema: TokenSchema },
-      { name: Role.name, schema: roleSchema },
-      { name: User.name, schema: UserSchema },
-    ]),
-    AwsS3Module.forRoot('authAwsSecret'),
-  ],
-  providers: [
-    AuthService,
-    TokenHelper,
-    EncryptHelper,
-    MailEvent,
-    MailController,
-  ],
-  controllers: [AuthController],
-  exports: [AuthService],
-})
-export class AuthModule {}
+export class DriverRegistrationDto extends BaseRegistrationDto {}
 ````
 
 ## File: src/modules/driver/schemas/vehicle.schema.ts
@@ -3882,68 +4274,78 @@ export class User {
 export const UserSchema = SchemaFactory.createForClass(User);
 ````
 
-## File: src/main.ts
+## File: test/app.e2e-spec.ts
 ````typescript
-import { NestFactory } from '@nestjs/core';
-import * as express from 'express';
-import { MainModule } from './modules/main.module';
-import { SecretsService } from './global/secrets/service';
-import * as cookieParser from 'cookie-parser';
-import { ValidationPipe } from '@nestjs/common';
-import { HttpExceptionFilter } from './core/filters';
-import { LoggerInterceptor, TransformInterceptor } from './core/interceptors';
-import { MongooseModule } from '@nestjs/mongoose';
-import { RedisIoAdapter } from './core/adpater';
-import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
+import { Test, TestingModule } from '@nestjs/testing';
+import { INestApplication } from '@nestjs/common';
+import * as request from 'supertest';
+import { AppModule } from '../src/modules/main.module';
 
-async function bootstrap() {
-  const app = await NestFactory.create(MainModule, {
-    bufferLogs: true,
-    cors: true,
+describe('AppController (e2e)', () => {
+  let app: INestApplication;
+
+  beforeEach(async () => {
+    const moduleFixture: TestingModule = await Test.createTestingModule({
+      imports: [AppModule],
+    }).compile();
+
+    app = moduleFixture.createNestApplication();
+    await app.init();
   });
 
-  const { PORT, MONGO_URI } = app.get<SecretsService>(SecretsService);
+  it('/ (GET)', () => {
+    return request(app.getHttpServer())
+      .get('/')
+      .expect(200)
+      .expect('Hello World!');
+  });
+});
+````
 
-  app.use(cookieParser());
-  app.use(
-    (
-      req: express.Request,
-      res: express.Response,
-      next: express.NextFunction,
-    ): void => {
-      if (req.originalUrl.includes('/webhook')) {
-        express.raw({ type: 'application/json' })(req, res, next);
-      } else {
-        express.json()(req, res, next);
-      }
-    },
-  );
+## File: src/core/adpater/redis.adpater.ts
+````typescript
+import { INestApplication } from '@nestjs/common';
+import { IoAdapter } from '@nestjs/platform-socket.io';
+import { createAdapter } from '@socket.io/redis-adapter';
+import { createClient } from 'redis';
+import { Server, ServerOptions } from 'socket.io';
+import { SecretsService } from 'src/global/secrets/service';
 
-  app.useGlobalPipes(new ValidationPipe());
-  app.useGlobalFilters(new HttpExceptionFilter());
-  app.useGlobalInterceptors(
-    new LoggerInterceptor(),
-    new TransformInterceptor(),
-  );
+export class RedisIoAdapter extends IoAdapter {
+  protected redisAdapter;
 
-  MongooseModule.forRoot(MONGO_URI);
+  constructor(app: INestApplication) {
+    super();
+    const configService = app.get(SecretsService);
 
-  app.setGlobalPrefix('api');
-  app.useWebSocketAdapter(new RedisIoAdapter(app));
+    const pubClient = createClient({
+      socket: {
+        host: configService.userSessionRedis.REDIS_HOST,
+        port: parseInt(configService.userSessionRedis.REDIS_PORT, 10),
+      },
+      username: configService.userSessionRedis.REDIS_USER,
+      password: configService.userSessionRedis.REDIS_PASSWORD,
+    });
+    const subClient = pubClient.duplicate();
 
-  // Setup Swagger
-  const config = new DocumentBuilder()
-    .setTitle('Ride-By API')
-    .setDescription('The Ride-By API documentation')
-    .setVersion('1.0')
-    .addBearerAuth()
-    .build();
-  const document = SwaggerModule.createDocument(app, config);
-  SwaggerModule.setup('api/docs', app, document);
+    pubClient.connect();
+    subClient.connect();
 
-  await app.listen(PORT);
+    this.redisAdapter = createAdapter(pubClient, subClient);
+  }
+
+  createIOServer(port: number, options?: ServerOptions) {
+    const server = super.createIOServer(port, options) as Server;
+
+    server.adapter(this.redisAdapter);
+
+    return server;
+  }
+
+  bindClientConnect(server: any, callback: (socket: any) => void): void {
+    server.on('connection', (socket: any) => callback(socket));
+  }
 }
-bootstrap();
 ````
 
 ## File: src/core/dto/page-meta.dto.ts
@@ -4100,6 +4502,12 @@ export class PaginationResultDto<T> {
 }
 ````
 
+## File: src/core/guards/index.ts
+````typescript
+export * from './authenticate.guard';
+export * from './ws.guard';
+````
+
 ## File: src/core/interfaces/user/index.ts
 ````typescript
 export * from './user.interface';
@@ -4220,318 +4628,281 @@ export type envType =
   | 'develop';
 ````
 
-## File: src/modules/auth/dto/auth.dto.ts
+## File: src/global/secrets/service.ts
 ````typescript
-import {
-  IsBoolean,
-  IsEmail,
-  IsEnum,
-  IsOptional,
-  IsString,
-  IsUrl,
-} from 'class-validator';
-import { PortalType } from 'src/core/enums/auth.enum';
+import { Injectable } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 
-export class EmailConfirmationDto {
-  @IsString()
-  code: string;
-}
+@Injectable()
+export class SecretsService extends ConfigService {
+  constructor() {
+    super();
+  }
 
-export class TCodeLoginDto {
-  @IsString()
-  tCode: string;
+  NODE_ENV = this.get<string>('NODE_ENV');
+  PORT = this.get('PORT');
+  MONGO_URI = this.get('MONGO_URI');
 
-  @IsString()
-  portalType: PortalType;
-}
+  get mailSecret() {
+    return {
+      MAIL_USERNAME: this.get('MAIL_USERNAME'),
+      MAIL_PASSWORD: this.get('MAIL_PASSWORD'),
+      MAIL_HOST: this.get('MAIL_HOST'),
+      MAIL_PORT: this.get('MAIL_PORT'),
+      SENDER_EMAIL: this.get<string>('SENDER_EMAIL', ''),
+      NAME: this.get<string>('NAME', ''),
+    };
+  }
 
-export class CallbackURLDto {
-  @IsUrl({ require_tld: false })
-  @IsOptional()
-  callbackURL: string;
-}
+  get googleSecret() {
+    return {
+      GOOGLE_CLIENT_ID: this.get('GOOGLE_CLIENT_ID'),
+      GOOGLE_CLIENT_SECRET: this.get('GOOGLE_CLIENT_SECRET'),
+    };
+  }
 
-export class RefreshTokenDto {
-  @IsString()
-  token: string;
-}
+  get jwtSecret() {
+    return {
+      JWT_SECRET: this.get('APP_SECRET'),
+      JWT_EXPIRES_IN: this.get('ACCESS_TOKEN_EXPIRES', '14d'),
+    };
+  }
 
-export class ForgotPasswordDto {
-  @IsString()
-  @IsEmail()
-  email: string;
-}
+  get database() {
+    return {
+      host: this.get('MONGO_HOST'),
+      user: this.get('MONGO_ROOT_USERNAME'),
+      pass: this.get('MONGO_ROOT_PASSWORD'),
+    };
+  }
 
-export class LoginDto {
-  @IsString()
-  @IsEmail()
-  email: string;
+  get userSessionRedis() {
+    return {
+      REDIS_HOST: this.get('REDIS_HOST'),
+      REDIS_USER: this.get('REDIS_USERNAME'),
+      REDIS_PASSWORD: this.get('REDIS_PASSWORD'),
+      REDIS_PORT: this.get('REDIS_PORT'),
+    };
+  }
 
-  @IsString()
-  password: string;
+  get authAwsSecret() {
+    return {
+      AWS_REGION: this.get('AWS_REGION', 'eu-west-2'),
+      AWS_ACCESS_KEY_ID: this.get('AWS_ACCESS_KEY_ID', 'AKIA36G3JG4TMYVGM6G2'),
+      AWS_SECRET_ACCESS_KEY: this.get(
+        'AWS_SECRET_ACCESS_KEY',
+        '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',
+      ),
+      AWS_S3_BUCKET_NAME: this.get('AWS_S3_BUCKET_NAME', 'traveazi-prod-sess'),
+    };
+  }
 
-  @IsEnum(PortalType)
-  portalType: PortalType;
-
-  @IsOptional()
-  @IsBoolean()
-  rememberMe = false;
+  get twilio() {
+    return {
+      TWILIO_ACCOUNT_SID: this.get('TWILIO_ACCOUNT_SID'),
+      TWILIO_AUTH_TOKEN: this.get('TWILIO_AUTH_TOKEN'),
+      TWILIO_PHONE_NUMBER: this.get('TWILIO_PHONE_NUMBER'),
+      TWILIO_VERIFY_SERVICE_SID: this.get('TWILIO_VERIFY_SERVICE_SID'),
+    };
+  }
 }
 ````
 
-## File: src/modules/auth/auth.controller.ts
+## File: src/global/user-session/module.ts
 ````typescript
+import { Module } from '@nestjs/common';
+import { RedisModule } from '@nestjs-modules/ioredis';
+
+import { SecretsService } from '../secrets/service';
+import { UserSessionService } from './service';
+
+@Module({
+  imports: [
+    RedisModule.forRootAsync({
+      useFactory: ({ userSessionRedis }: SecretsService) => {
+        if (!userSessionRedis.REDIS_HOST) {
+          throw new Error(
+            'Invalid Redis configuration: REDIS_HOST is missing.',
+          );
+        }
+        return {
+          type: 'single',
+          url: `redis://${userSessionRedis.REDIS_USER}:${userSessionRedis.REDIS_PASSWORD}@${userSessionRedis.REDIS_HOST}:${userSessionRedis.REDIS_PORT}`,
+        };
+      },
+      inject: [SecretsService],
+    }),
+  ],
+  providers: [UserSessionService],
+  exports: [UserSessionService],
+})
+export class UserSessionModule {}
+````
+
+## File: src/modules/auth/dto/base-registeration.dto.ts
+````typescript
+import { Transform } from 'class-transformer';
 import {
-  Body,
-  Controller,
-  Get,
-  HttpCode,
-  HttpStatus,
-  Post,
-  UseGuards,
-  Logger,
-  UseInterceptors,
-  UploadedFile,
-} from '@nestjs/common';
-import { AuthService } from './auth.service';
-import {
-  EmailConfirmationDto,
-  ForgotPasswordDto,
-  LoginDto,
-  TCodeLoginDto,
-} from './dto';
-import { BaseRegistrationDto } from './dto/base-registeration.dto';
+  IsEmail,
+  IsEnum,
+  IsNotEmpty,
+  IsOptional,
+  IsString,
+  MinLength,
+  IsBoolean,
+  Equals,
+  IsPhoneNumber,
+} from 'class-validator';
+import { PASSWORD_PATTERN } from '../../../core/constants/base.constant';
+import { UserGender } from 'src/core/enums/user.enum';
+import { IsMatchPattern } from '../../../core/validators/IsMatchPattern.validator';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
-import { IDriver, IPassenger } from 'src/core/interfaces';
-import { User as UserDecorator } from 'src/core/decorators';
-import { AuthGuard } from 'src/core/guards';
-import { SecretsService } from 'src/global/secrets/service';
-import { PortalType } from 'src/core/enums/auth.enum';
-import { FileInterceptor } from '@nestjs/platform-express';
+export class BaseRegistrationDto {
+  @ApiProperty({ description: "User's first name", minLength: 2 })
+  @IsString()
+  @IsNotEmpty()
+  @MinLength(2)
+  firstName: string;
 
-@Controller('auth')
-export class AuthController {
-  private logger = new Logger(AuthController.name);
-  constructor(
-    private authService: AuthService,
-    private secretSecret: SecretsService,
-  ) {}
+  @ApiProperty({ description: "User's last name", minLength: 2 })
+  @IsString()
+  @IsNotEmpty()
+  @MinLength(2)
+  lastName: string;
 
-  @Post('/create-user')
-  async register(
-    @Body() body: BaseRegistrationDto,
-    @Body('portalType') portalType: PortalType,
-  ) {
-    const data = await this.authService.createPortalUser(body, portalType);
+  @ApiProperty({ description: "User's email address" })
+  @IsEmail()
+  @IsNotEmpty()
+  @Transform(({ value }) => value?.toLowerCase().trim())
+  email: string;
 
-    return {
-      data,
-      message: 'User created successfully',
-    };
-  }
+  @ApiProperty({
+    description:
+      "User's password - must contain uppercase, lowercase, and number",
+    minLength: 8,
+    pattern: PASSWORD_PATTERN,
+  })
+  @IsString()
+  @IsNotEmpty()
+  @MinLength(8, { message: 'Password must be at least 8 characters long' })
+  @IsMatchPattern(PASSWORD_PATTERN, {
+    message:
+      'Password must contain at least one uppercase letter, one lowercase letter, and one number',
+  })
+  password: string;
 
-  @Post('login')
-  async login(@Body() loginDto: LoginDto) {
-    const data = await this.authService.login(loginDto);
+  @ApiPropertyOptional({
+    description: 'Nigerian phone number',
+    example: '+2348012345678',
+  })
+  @IsOptional()
+  @IsPhoneNumber('NG', {
+    message: 'Please provide a valid Nigerian phone number',
+  })
+  phoneNumber?: string;
 
-    return {
-      data,
-      message: 'Login successful',
-    };
-  }
+  @ApiPropertyOptional({ description: "User's country" })
+  @IsOptional()
+  @IsString()
+  country?: string;
 
-  @UseGuards(AuthGuard)
-  @Post('resend-verification')
-  async resendVerificationEmail(@UserDecorator() user: IDriver | IPassenger) {
-    const data = await this.authService.resendVerificationEmail(user._id);
+  @ApiPropertyOptional({
+    description: "User's gender",
+    enum: UserGender,
+  })
+  @IsOptional()
+  @IsEnum(UserGender)
+  gender?: UserGender;
 
-    return {
-      data,
-      message: 'Verification Code Sent Successfully',
-    };
-  }
-
-  @HttpCode(HttpStatus.OK)
-  @Post('/forgot-password')
-  async forgotPassword(
-    @Body() body: ForgotPasswordDto,
-    @Body('callbackURL') query: string,
-  ): Promise<object> {
-    const data = await this.authService.forgotPassword(body.email, query);
-
-    return {
-      data,
-      message: 'Password reset link has been sent to your email',
-    };
-  }
-
-  @HttpCode(HttpStatus.OK)
-  @Post('/reset-password')
-  async resetPassword(
-    @Body('code') code: string,
-    @Body('password') password: string,
-  ): Promise<object> {
-    const data = await this.authService.resetPassword(code, password);
-
-    return {
-      data,
-      message: 'Password Changed Successfully',
-    };
-  }
-
-  @UseGuards(AuthGuard)
-  @HttpCode(HttpStatus.OK)
-  @Post('/confirmation')
-  async verifyEmail(
-    @UserDecorator() user: IDriver | IPassenger,
-    @Body() body: EmailConfirmationDto,
-  ): Promise<object> {
-    const data = await this.authService.verifyUserEmail(user._id, body.code);
-
-    return {
-      data,
-      message: 'Email verified successfully',
-    };
-  }
-
-  @UseGuards(AuthGuard)
-  @HttpCode(HttpStatus.OK)
-  @Get('/logout')
-  async logout(@UserDecorator() user: IDriver | IPassenger): Promise<object> {
-    const data = await this.authService.logoutUser(user._id);
-
-    return {
-      data,
-      message: 'Logout successfully',
-    };
-  }
-
-  @HttpCode(HttpStatus.OK)
-  @Post('/tcode-auth')
-  async tCodeAuth(@Body() body: TCodeLoginDto) {
-    const data = await this.authService.tCodeLogin(body.tCode);
-
-    return {
-      data,
-      message: 'Authenticated successfully',
-    };
-  }
-
-  @HttpCode(HttpStatus.OK)
-  @Post('/tcode_auth')
-  async tCodeAuthU(@Body() body: TCodeLoginDto) {
-    return this.tCodeAuth(body);
-  }
-
-  @HttpCode(HttpStatus.OK)
-  @UseGuards(AuthGuard)
-  @Get('/all-users')
-  async getAllUsers() {
-    const data = await this.authService.getAllUsers();
-
-    return {
-      data,
-      message: 'Users Fetched Successfully',
-    };
-  }
-
-  @HttpCode(HttpStatus.OK)
-  @Get('/user')
-  @UseGuards(AuthGuard)
-  async getUser(@UserDecorator() user: IDriver | IPassenger): Promise<object> {
-    const data = await this.authService.getUserInfo(user.email);
-
-    return {
-      data,
-      message: 'User Info Fetched Successfully',
-    };
-  }
-
-  @UseGuards(AuthGuard)
-  @UseInterceptors(FileInterceptor('avatar'))
-  @Post('/user/upload-avatar')
-  async uploadAvatar(
-    @UserDecorator() user: IDriver | IPassenger,
-    @UploadedFile() file: Express.Multer.File,
-  ) {
-    const data = await this.authService.uploadAvatar(user._id, file);
-
-    return {
-      data,
-      message: 'Avatar uploaded successfully',
-    };
-  }
-
-  @UseGuards(AuthGuard)
-  @HttpCode(HttpStatus.OK)
-  @Post('/change-password-confirmation')
-  async changePasswordConfirmation(
-    @UserDecorator() user: IDriver | IPassenger,
-    @Body('oldPassword') body: string,
-  ): Promise<object> {
-    const data = await this.authService.changePasswordConfirmation(user, body);
-
-    return {
-      data,
-      message: 'Change Password Confirmation Sent Successfully',
-    };
-  }
-
-  @UseGuards(AuthGuard)
-  @HttpCode(HttpStatus.OK)
-  @Post('/verify-password-confirmation')
-  async verifychangePasswordConfirmation(
-    @UserDecorator() user: IDriver | IPassenger,
-    @Body('code') code: string,
-  ): Promise<object> {
-    const data = await this.authService.verifychangePasswordConfirmation(
-      user,
-      code,
-    );
-
-    return {
-      data,
-      message: 'Change Password Confirmation Sent Successfully',
-    };
-  }
-
-  @UseGuards(AuthGuard)
-  @HttpCode(HttpStatus.OK)
-  @Post('/change-password')
-  async updatePassword(
-    @UserDecorator() user: IDriver | IPassenger,
-    @Body('password') password: string,
-  ): Promise<object> {
-    const data = await this.authService.updatePassword(user, password);
-
-    return {
-      data,
-      message: 'Password Changed Successfully',
-    };
-  }
-
-  @HttpCode(HttpStatus.OK)
-  @Get('/roles')
-  async getAllRoles(): Promise<object> {
-    const data = await this.authService.getAllRoles();
-
-    return {
-      data,
-      message: 'All Roles Successfully',
-    };
-  }
-
-  @HttpCode(HttpStatus.OK)
-  @Get('/users')
-  async getAllUsersAndRoles(): Promise<object> {
-    const data = await this.authService.getAllUserRoles();
-
-    return {
-      data,
-      message: 'All Users Successfully',
-    };
-  }
+  @ApiProperty({
+    description: 'Whether user has accepted terms and conditions',
+    default: false,
+  })
+  @IsBoolean({ message: 'You must accept the terms and conditions.' })
+  @Equals(true, { message: 'You must accept the terms and conditions.' })
+  termsAccepted: boolean;
 }
+````
+
+## File: src/modules/auth/dto/update-user.dto.ts
+````typescript
+import { IsOptional, IsString } from 'class-validator';
+import { ApiPropertyOptional } from '@nestjs/swagger';
+
+export class UpdateUserDto {
+  @ApiPropertyOptional({
+    description: 'Updated first name',
+    minLength: 2,
+  })
+  @IsOptional()
+  @IsString()
+  firstName?: string;
+
+  @ApiPropertyOptional({
+    description: 'Updated last name',
+    minLength: 2,
+  })
+  @IsOptional()
+  @IsString()
+  lastName?: string;
+
+  @ApiPropertyOptional({ description: 'Updated about section' })
+  @IsOptional()
+  @IsString()
+  about?: string;
+
+  @ApiPropertyOptional({
+    description: 'Updated email address',
+    example: 'user@example.com',
+  })
+  @IsOptional()
+  @IsString()
+  email?: string;
+}
+````
+
+## File: src/modules/auth/auth.module.ts
+````typescript
+import { Module } from '@nestjs/common';
+import { AuthService } from './auth.service';
+import { AuthController } from './auth.controller';
+import { EncryptHelper } from 'src/core/helpers';
+import { TokenHelper } from 'src/global/utils/token.utils';
+import { MailController } from '../mail/mail.controller';
+import { MailEvent } from '../mail/mail.event';
+import { MongooseModule } from '@nestjs/mongoose';
+import { TokenSchema, Token } from '../user/schemas/token.schema';
+import { MailModule } from '../mail/mail.module';
+import { UserModule } from '../user/user.module';
+import { roleSchema, Role } from '../user/schemas/role.schema';
+import { AwsS3Module } from '../storage';
+import { UserSchema, User } from '../user/schemas/user.schema';
+import { TwilioModule } from '../twilio/twiio.module';
+
+@Module({
+  imports: [
+    MailModule,
+    UserModule,
+    TwilioModule,
+    MongooseModule.forFeature([
+      { name: Token.name, schema: TokenSchema },
+      { name: Role.name, schema: roleSchema },
+      { name: User.name, schema: UserSchema },
+    ]),
+    AwsS3Module.forRoot('authAwsSecret'),
+  ],
+  providers: [
+    AuthService,
+    TokenHelper,
+    EncryptHelper,
+    MailEvent,
+    MailController,
+  ],
+  controllers: [AuthController],
+  exports: [AuthService],
+})
+export class AuthModule {}
 ````
 
 ## File: src/modules/health/health.controller.ts
@@ -4638,6 +5009,176 @@ export class MailController {
 }
 ````
 
+## File: src/main.ts
+````typescript
+import { NestFactory } from '@nestjs/core';
+import * as express from 'express';
+import { MainModule } from './modules/main.module';
+import { SecretsService } from './global/secrets/service';
+import * as cookieParser from 'cookie-parser';
+import { ValidationPipe } from '@nestjs/common';
+import { HttpExceptionFilter } from './core/filters';
+import { LoggerInterceptor, TransformInterceptor } from './core/interceptors';
+import { MongooseModule } from '@nestjs/mongoose';
+import { RedisIoAdapter } from './core/adpater';
+import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
+
+async function bootstrap() {
+  const app = await NestFactory.create(MainModule, {
+    bufferLogs: true,
+    cors: true,
+  });
+
+  const { PORT, MONGO_URI } = app.get<SecretsService>(SecretsService);
+
+  app.use(cookieParser());
+  app.use(
+    (
+      req: express.Request,
+      res: express.Response,
+      next: express.NextFunction,
+    ): void => {
+      if (req.originalUrl.includes('/webhook')) {
+        express.raw({ type: 'application/json' })(req, res, next);
+      } else {
+        express.json()(req, res, next);
+      }
+    },
+  );
+
+  app.useGlobalPipes(new ValidationPipe());
+  app.useGlobalFilters(new HttpExceptionFilter());
+  app.useGlobalInterceptors(
+    new LoggerInterceptor(),
+    new TransformInterceptor(),
+  );
+
+  MongooseModule.forRoot(MONGO_URI);
+
+  app.setGlobalPrefix('api');
+  app.useWebSocketAdapter(new RedisIoAdapter(app));
+
+  // Setup Swagger
+  const config = new DocumentBuilder()
+    .setTitle('Ride-By API')
+    .setDescription('The Ride-By API documentation')
+    .setVersion('1.0')
+    .addBearerAuth()
+    .build();
+  const document = SwaggerModule.createDocument(app, config);
+  SwaggerModule.setup('api/docs', app, document);
+
+  await app.listen(PORT);
+}
+bootstrap();
+````
+
+## File: nest-cli.json
+````json
+{
+  "$schema": "https://json.schemastore.org/nest-cli",
+  "collection": "@nestjs/schematics",
+  "sourceRoot": "src",
+  "compilerOptions": {
+    "deleteOutDir": true,
+    "assets": [
+      {
+        "include": "modules/mail/templates/**/*",
+        "outDir": "dist"
+      }
+    ]
+  }
+}
+````
+
+## File: src/modules/auth/dto/auth.dto.ts
+````typescript
+import {
+  IsBoolean,
+  IsEmail,
+  IsEnum,
+  IsOptional,
+  IsString,
+  IsUrl,
+} from 'class-validator';
+import { PortalType } from 'src/core/enums/auth.enum';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+
+export class EmailConfirmationDto {
+  @ApiProperty({ description: 'Email verification code' })
+  @IsString()
+  code: string;
+}
+
+export class TCodeLoginDto {
+  @ApiProperty({ description: 'Temporary authentication code' })
+  @IsString()
+  tCode: string;
+
+  @ApiProperty({
+    description: 'Type of portal user is accessing',
+    enum: PortalType,
+  })
+  @IsString()
+  portalType: PortalType;
+}
+
+export class CallbackURLDto {
+  @ApiPropertyOptional({
+    description: 'URL to redirect after action',
+    required: false,
+  })
+  @IsUrl({ require_tld: false })
+  @IsOptional()
+  callbackURL: string;
+}
+
+export class RefreshTokenDto {
+  @ApiProperty({ description: 'Refresh token for getting new access token' })
+  @IsString()
+  token: string;
+}
+
+export class ForgotPasswordDto {
+  @ApiProperty({
+    description: 'Email address for password reset',
+    example: 'user@example.com',
+  })
+  @IsString()
+  @IsEmail()
+  email: string;
+}
+
+export class LoginDto {
+  @ApiProperty({
+    description: "User's email address",
+    example: 'user@example.com',
+  })
+  @IsString()
+  @IsEmail()
+  email: string;
+
+  @ApiProperty({ description: "User's password" })
+  @IsString()
+  password: string;
+
+  @ApiProperty({
+    description: 'Type of portal user is accessing',
+    enum: PortalType,
+  })
+  @IsEnum(PortalType)
+  portalType: PortalType;
+
+  @ApiPropertyOptional({
+    description: 'Whether to keep user logged in',
+    default: false,
+  })
+  @IsOptional()
+  @IsBoolean()
+  rememberMe = false;
+}
+````
+
 ## File: src/modules/auth/auth.service.ts
 ````typescript
 import { Injectable, Logger } from '@nestjs/common';
@@ -4668,6 +5209,8 @@ import { User } from '../user/schemas/user.schema';
 import { IUser } from 'src/core/interfaces';
 import { LoginDto } from './dto/auth.dto';
 import { UserStatus } from 'src/core/enums/user.enum';
+import { TwilioService } from '../twilio/twilio.service';
+import { SendPhoneOtpDto, VerifyPhoneOtpDto } from './dto/send-phone-otp.dto';
 
 @Injectable()
 export class AuthService {
@@ -4683,7 +5226,81 @@ export class AuthService {
     private tokenHelper: TokenHelper,
     private userSessionService: UserSessionService,
     private awsS3Service: AwsS3Service,
+    private twilioService: TwilioService,
   ) {}
+
+  async sendPhoneVerificationOtp(
+    dto: SendPhoneOtpDto,
+  ): Promise<{ message: string }> {
+    const { phoneNumber } = dto;
+
+    // 1. Check if phone number is already registered and verified (optional but recommended)
+    const existingUser = await this.userRepo.findOne({
+      phoneNumber,
+      phoneVerified: true,
+    });
+    if (existingUser) {
+      ErrorHelper.ConflictException(
+        'This phone number is already associated with a verified account.',
+      );
+    }
+
+    // 2. Send verification via Twilio Verify
+    try {
+      const sent = await this.twilioService.sendVerificationToken(
+        phoneNumber,
+        'sms',
+      );
+      if (sent) {
+        return { message: 'Verification code sent successfully via SMS.' };
+      } else {
+        // Should not happen if sendVerificationToken throws on failure, but as fallback
+        ErrorHelper.InternalServerErrorException(
+          'Could not send verification code.',
+        );
+      }
+    } catch (error) {
+      // Error is already logged in TwilioService, rethrow specific message
+      ErrorHelper.InternalServerErrorException(
+        error.message || 'Could not send verification code.',
+      );
+    }
+  }
+
+  async verifyPhoneNumberOtp(
+    dto: VerifyPhoneOtpDto,
+  ): Promise<{ verified: boolean; message: string }> {
+    const { phoneNumber, otp } = dto;
+
+    // 1. Check verification using Twilio Verify
+    try {
+      const isApproved = await this.twilioService.checkVerificationToken(
+        phoneNumber,
+        otp,
+      );
+
+      if (isApproved) {
+        // Optionally: If you want to mark the number as pre-verified for registration,
+        // you could store a temporary flag in Redis associated with the phone number.
+        // Example: await this.redisClient.set(`preverified:${phoneNumber}`, 'true', 'EX', 600); // 10 min expiry
+
+        return {
+          verified: true,
+          message: 'Phone number verified successfully.',
+        };
+      } else {
+        // checkVerificationToken returned false (invalid/expired code)
+        ErrorHelper.BadRequestException(
+          'Invalid or expired verification code.',
+        );
+      }
+    } catch (error) {
+      // Error is already logged in TwilioService, rethrow specific message
+      ErrorHelper.InternalServerErrorException(
+        error.message || 'Could not verify code.',
+      );
+    }
+  }
 
   async createPortalUser(
     payload: DriverRegistrationDto | PassengerRegistrationDto,
@@ -4729,7 +5346,7 @@ export class AuthService {
       adminCreated?: boolean;
     },
   ): Promise<IPassenger | IDriver> {
-    const { email } = payload;
+    const { email, phoneNumber } = payload;
     const { strategy, portalType } = options;
 
     const emailQuery = {
@@ -4746,6 +5363,18 @@ export class AuthService {
 
     if (emailExist) {
       ErrorHelper.BadRequestException(EMAIL_ALREADY_EXISTS);
+    }
+
+    //  let phoneVerifiedStatus = false;
+    if (phoneNumber) {
+      const phoneExist = await this.userRepo.findOne({
+        phoneNumber: phoneNumber,
+      });
+      if (phoneExist?.phoneVerified) {
+        ErrorHelper.ConflictException(
+          'Phone number already linked to a verified account.',
+        );
+      }
     }
 
     const roleData = await this.roleRepo.findOne({ name: portalType });
@@ -5123,6 +5752,456 @@ export class AuthService {
 }
 ````
 
+## File: src/modules/auth/auth.controller.ts
+````typescript
+import {
+  Body,
+  Controller,
+  Get,
+  HttpCode,
+  HttpStatus,
+  Post,
+  UseGuards,
+  Logger,
+  UseInterceptors,
+  UploadedFile,
+} from '@nestjs/common';
+import { AuthService } from './auth.service';
+import {
+  EmailConfirmationDto,
+  ForgotPasswordDto,
+  LoginDto,
+  // TCodeLoginDto,
+} from './dto';
+import { BaseRegistrationDto } from './dto/base-registeration.dto';
+import { IDriver, IPassenger } from 'src/core/interfaces';
+import { User as UserDecorator } from 'src/core/decorators';
+import { AuthGuard } from 'src/core/guards';
+import { SecretsService } from 'src/global/secrets/service';
+import { PortalType } from 'src/core/enums/auth.enum';
+import { FileInterceptor } from '@nestjs/platform-express';
+import {
+  ApiTags,
+  ApiOperation,
+  ApiResponse,
+  ApiBearerAuth,
+  ApiBody,
+  ApiConsumes,
+} from '@nestjs/swagger';
+import { AuthUserResponseDto, BaseResponseDto } from './dto/auth-response.dto';
+import { SendPhoneOtpDto, VerifyPhoneOtpDto } from './dto/send-phone-otp.dto';
+
+@ApiTags('Authentication')
+@Controller('auth')
+export class AuthController {
+  private logger = new Logger(AuthController.name);
+  constructor(
+    private authService: AuthService,
+    private secretSecret: SecretsService,
+  ) {}
+
+  @Post('phone/send-otp')
+  @ApiOperation({ summary: 'Send OTP to phone number' })
+  @ApiResponse({
+    status: 200,
+    description: 'OTP sent successfully',
+    type: BaseResponseDto<{ sent: boolean }>,
+  })
+  @ApiResponse({ status: 400, description: 'Bad request - Invalid input' })
+  @ApiResponse({ status: 500, description: 'Internal server error' })
+  @ApiBody({
+    schema: {
+      properties: {
+        phoneNumber: {
+          type: 'string',
+          example: '+2348012345678',
+          description: 'Phone number in E.164 format',
+        },
+      },
+    },
+  })
+  @HttpCode(HttpStatus.OK)
+  async sendPhoneOtp(@Body() body: SendPhoneOtpDto) {
+    const data = await this.authService.sendPhoneVerificationOtp(body);
+    return {
+      data,
+      message: 'OTP sent succesfully',
+    };
+  }
+
+  @Post('phone/verify-otp')
+  @ApiOperation({ summary: 'Verify OTP for phone number' })
+  @ApiResponse({
+    status: 200,
+    description: 'OTP verified successfully',
+    type: BaseResponseDto<{ verified: boolean }>,
+  })
+  @ApiResponse({ status: 400, description: 'Bad request - Invalid input' })
+  @ApiResponse({ status: 500, description: 'Internal server error' })
+  @ApiBody({
+    schema: {
+      properties: {
+        phoneNumber: {
+          type: 'string',
+          example: '+2348012345678',
+          description: 'Phone number in E.164 format',
+        },
+        otp: {
+          type: 'string',
+          example: '123456',
+          description: '6-digit OTP code',
+        },
+      },
+    },
+  })
+  @HttpCode(HttpStatus.OK)
+  async verifyPhoneOtp(@Body() body: VerifyPhoneOtpDto) {
+    const data = await this.authService.verifyPhoneNumberOtp(body);
+    return {
+      data,
+      message: 'OTP verified successfully',
+    };
+  }
+
+  @Post('/create-user')
+  @ApiOperation({ summary: 'Register a new user' })
+  @ApiResponse({
+    status: 201,
+    description: 'User successfully created',
+    type: BaseResponseDto<AuthUserResponseDto>,
+  })
+  @ApiResponse({ status: 400, description: 'Bad request - Invalid input' })
+  async register(
+    @Body() body: BaseRegistrationDto,
+    @Body('portalType') portalType: PortalType,
+  ) {
+    const data = await this.authService.createPortalUser(body, portalType);
+
+    return {
+      data,
+      message: 'User created successfully',
+    };
+  }
+
+  @Post('login')
+  @ApiOperation({ summary: 'Login user' })
+  @ApiResponse({
+    status: 200,
+    description: 'Login successful',
+    type: BaseResponseDto<AuthUserResponseDto>,
+  })
+  @ApiResponse({ status: 401, description: 'Invalid credentials' })
+  async login(@Body() loginDto: LoginDto) {
+    const data = await this.authService.login(loginDto);
+
+    return {
+      data,
+      message: 'Login successful',
+    };
+  }
+
+  @UseGuards(AuthGuard)
+  @Post('resend-verification')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Resend verification email' })
+  @ApiResponse({
+    status: 200,
+    description: 'Verification code sent successfully',
+    type: BaseResponseDto<{ sent: boolean }>,
+  })
+  @ApiResponse({ status: 401, description: 'Unauthorized' })
+  async resendVerificationEmail(@UserDecorator() user: IDriver | IPassenger) {
+    const data = await this.authService.resendVerificationEmail(user._id);
+
+    return {
+      data,
+      message: 'Verification Code Sent Successfully',
+    };
+  }
+
+  @HttpCode(HttpStatus.OK)
+  @Post('/forgot-password')
+  @ApiOperation({ summary: 'Request password reset' })
+  @ApiResponse({
+    status: 200,
+    description: 'Password reset email sent',
+    type: BaseResponseDto<{ sent: boolean }>,
+  })
+  @ApiResponse({ status: 404, description: 'User not found' })
+  async forgotPassword(
+    @Body() body: ForgotPasswordDto,
+    @Body('callbackURL') query: string,
+  ): Promise<object> {
+    const data = await this.authService.forgotPassword(body.email, query);
+
+    return {
+      data,
+      message: 'Password reset link has been sent to your email',
+    };
+  }
+
+  @HttpCode(HttpStatus.OK)
+  @Post('/reset-password')
+  @ApiOperation({ summary: 'Reset password using code' })
+  @ApiResponse({
+    status: 200,
+    description: 'Password changed successfully',
+    type: BaseResponseDto<{ updated: boolean }>,
+  })
+  @ApiResponse({ status: 400, description: 'Invalid or expired code' })
+  @ApiBody({
+    schema: {
+      properties: {
+        code: { type: 'string', example: '123456' },
+        password: { type: 'string', example: 'newPassword123' },
+      },
+    },
+  })
+  async resetPassword(
+    @Body('code') code: string,
+    @Body('password') password: string,
+  ): Promise<object> {
+    const data = await this.authService.resetPassword(code, password);
+
+    return {
+      data,
+      message: 'Password Changed Successfully',
+    };
+  }
+
+  @UseGuards(AuthGuard)
+  @HttpCode(HttpStatus.OK)
+  @Post('/confirmation')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Verify email address' })
+  @ApiResponse({
+    status: 200,
+    description: 'Email verified successfully',
+    type: BaseResponseDto<AuthUserResponseDto>,
+  })
+  @ApiResponse({ status: 400, description: 'Invalid verification code' })
+  @ApiResponse({ status: 401, description: 'Unauthorized' })
+  async verifyEmail(
+    @UserDecorator() user: IDriver | IPassenger,
+    @Body() body: EmailConfirmationDto,
+  ): Promise<object> {
+    const data = await this.authService.verifyUserEmail(user._id, body.code);
+
+    return {
+      data,
+      message: 'Email verified successfully',
+    };
+  }
+
+  @UseGuards(AuthGuard)
+  @HttpCode(HttpStatus.OK)
+  @Get('/logout')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Logout user' })
+  @ApiResponse({
+    status: 200,
+    description: 'Logged out successfully',
+    type: BaseResponseDto<{ loggedOut: boolean }>,
+  })
+  @ApiResponse({ status: 401, description: 'Unauthorized' })
+  async logout(@UserDecorator() user: IDriver | IPassenger): Promise<object> {
+    const data = await this.authService.logoutUser(user._id);
+
+    return {
+      data,
+      message: 'Logout successfully',
+    };
+  }
+
+  // @HttpCode(HttpStatus.OK)
+  // @Post('/tcode-auth')
+  // @ApiOperation({ summary: 'Authenticate using temporary code' })
+  // @ApiResponse({ status: 200, description: 'Authentication successful' })
+  // @ApiResponse({ status: 401, description: 'Invalid code' })
+  // async tCodeAuth(@Body() body: TCodeLoginDto) {
+  //   const data = await this.authService.tCodeLogin(body.tCode);
+
+  //   return {
+  //     data,
+  //     message: 'Authenticated successfully',
+  //   };
+  // }
+
+  // @HttpCode(HttpStatus.OK)
+  // @Post('/tcode_auth')
+  // async tCodeAuthU(@Body() body: TCodeLoginDto) {
+  //   return this.tCodeAuth(body);
+  // }
+
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(AuthGuard)
+  @Get('/all-users')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Get all users' })
+  @ApiResponse({
+    status: 200,
+    description: 'Users fetched successfully',
+    type: BaseResponseDto<AuthUserResponseDto[]>,
+  })
+  @ApiResponse({ status: 401, description: 'Unauthorized' })
+  async getAllUsers() {
+    const data = await this.authService.getAllUsers();
+
+    return {
+      data,
+      message: 'Users Fetched Successfully',
+    };
+  }
+
+  @HttpCode(HttpStatus.OK)
+  @Get('/user')
+  @UseGuards(AuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Get current user info' })
+  @ApiResponse({
+    status: 200,
+    description: 'User info fetched successfully',
+    type: BaseResponseDto<AuthUserResponseDto>,
+  })
+  @ApiResponse({ status: 401, description: 'Unauthorized' })
+  async getUser(@UserDecorator() user: IDriver | IPassenger): Promise<object> {
+    const data = await this.authService.getUserInfo(user.email);
+
+    return {
+      data,
+      message: 'User Info Fetched Successfully',
+    };
+  }
+
+  @UseGuards(AuthGuard)
+  @UseInterceptors(FileInterceptor('avatar'))
+  @Post('/user/upload-avatar')
+  @ApiBearerAuth()
+  @ApiConsumes('multipart/form-data')
+  @ApiOperation({ summary: 'Upload user avatar' })
+  @ApiResponse({
+    status: 200,
+    description: 'Avatar uploaded successfully',
+    type: BaseResponseDto<AuthUserResponseDto>,
+  })
+  @ApiResponse({ status: 401, description: 'Unauthorized' })
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        avatar: {
+          type: 'string',
+          format: 'binary',
+        },
+      },
+    },
+  })
+  async uploadAvatar(
+    @UserDecorator() user: IDriver | IPassenger,
+    @UploadedFile() file: Express.Multer.File,
+  ) {
+    const data = await this.authService.uploadAvatar(user._id, file);
+
+    return {
+      data,
+      message: 'Avatar uploaded successfully',
+    };
+  }
+
+  @UseGuards(AuthGuard)
+  @HttpCode(HttpStatus.OK)
+  @Post('/change-password-confirmation')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Request password change confirmation' })
+  @ApiResponse({
+    status: 200,
+    description: 'Confirmation code sent successfully',
+  })
+  @ApiResponse({ status: 401, description: 'Unauthorized' })
+  async changePasswordConfirmation(
+    @UserDecorator() user: IDriver | IPassenger,
+    @Body('oldPassword') body: string,
+  ): Promise<object> {
+    const data = await this.authService.changePasswordConfirmation(user, body);
+
+    return {
+      data,
+      message: 'Change Password Confirmation Sent Successfully',
+    };
+  }
+
+  @UseGuards(AuthGuard)
+  @HttpCode(HttpStatus.OK)
+  @Post('/verify-password-confirmation')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Verify password change confirmation code' })
+  @ApiResponse({ status: 200, description: 'Code verified successfully' })
+  @ApiResponse({ status: 401, description: 'Unauthorized' })
+  async verifychangePasswordConfirmation(
+    @UserDecorator() user: IDriver | IPassenger,
+    @Body('code') code: string,
+  ): Promise<object> {
+    const data = await this.authService.verifychangePasswordConfirmation(
+      user,
+      code,
+    );
+
+    return {
+      data,
+      message: 'Change Password Confirmation Sent Successfully',
+    };
+  }
+
+  @UseGuards(AuthGuard)
+  @HttpCode(HttpStatus.OK)
+  @Post('/change-password')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Change user password' })
+  @ApiResponse({ status: 200, description: 'Password changed successfully' })
+  @ApiResponse({ status: 401, description: 'Unauthorized' })
+  async updatePassword(
+    @UserDecorator() user: IDriver | IPassenger,
+    @Body('password') password: string,
+  ): Promise<object> {
+    const data = await this.authService.updatePassword(user, password);
+
+    return {
+      data,
+      message: 'Password Changed Successfully',
+    };
+  }
+
+  @HttpCode(HttpStatus.OK)
+  @Get('/roles')
+  @ApiOperation({ summary: 'Get all roles' })
+  @ApiResponse({ status: 200, description: 'Roles fetched successfully' })
+  async getAllRoles(): Promise<object> {
+    const data = await this.authService.getAllRoles();
+
+    return {
+      data,
+      message: 'All Roles Successfully',
+    };
+  }
+
+  @HttpCode(HttpStatus.OK)
+  @Get('/users')
+  @ApiOperation({ summary: 'Get all users with their roles' })
+  @ApiResponse({
+    status: 200,
+    description: 'Users with roles fetched successfully',
+  })
+  async getAllUsersAndRoles(): Promise<object> {
+    const data = await this.authService.getAllUserRoles();
+
+    return {
+      data,
+      message: 'All Users Successfully',
+    };
+  }
+}
+````
+
 ## File: package.json
 ````json
 {
@@ -5179,7 +6258,8 @@ export class AuthService {
     "redis": "^4.7.0",
     "reflect-metadata": "^0.2.0",
     "rxjs": "^7.8.1",
-    "swagger-ui-express": "^5.0.1"
+    "swagger-ui-express": "^5.0.1",
+    "twilio": "^5.5.2"
   },
   "devDependencies": {
     "@nestjs/cli": "^11.0.0",
