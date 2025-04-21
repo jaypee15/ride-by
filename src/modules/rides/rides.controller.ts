@@ -7,6 +7,7 @@ import {
   Get,
   Query,
   Param,
+  Patch,
 } from '@nestjs/common';
 import { RidesService } from './rides.service';
 import { CreateRideDto } from './dto/create-ride.dto';
@@ -177,6 +178,88 @@ export class RidesController {
     return {
       message: 'Ride details fetched successfully.',
       data: ride.toObject() as Ride,
+    };
+  }
+
+  @Patch(':rideId/start') // New endpoint
+  @UseGuards(AuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Start a scheduled ride (Driver only)' })
+  @ApiResponse({
+    status: 200,
+    description: 'Ride started successfully.',
+    type: Ride,
+  })
+  @ApiResponse({
+    status: 400,
+    description: 'Bad Request - Ride cannot be started.',
+  })
+  @ApiResponse({ status: 401, description: 'Unauthorized.' })
+  @ApiResponse({ status: 403, description: 'Forbidden - Not the driver.' })
+  @ApiResponse({ status: 404, description: 'Not Found - Ride not found.' })
+  async startRide(
+    @User() driver: IUser,
+    @Param('rideId') rideId: string,
+  ): Promise<{ message: string; data: Ride }> {
+    if (!mongoose.Types.ObjectId.isValid(rideId)) {
+      ErrorHelper.BadRequestException('Invalid Ride ID format.');
+    }
+    this.logger.log(`Driver ${driver._id} starting ride ${rideId}`);
+    const startedRide = await this.ridesService.startRide(driver._id, rideId);
+    return {
+      message: 'Ride started successfully.',
+      data: startedRide.toObject() as Ride,
+    };
+  }
+
+  // Endpoint for GET /rides/:rideId/share-link (to be added)
+  // Public endpoint GET /trip/:shareToken (to be added in a separate controller/module)
+  @Get(':rideId/share-link')
+  @UseGuards(AuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Generate a shareable link/token for an in-progress ride',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Share token generated successfully.',
+    schema: {
+      properties: {
+        shareToken: { type: 'string' },
+        expiresAt: { type: 'string', format: 'date-time' },
+      },
+    },
+  })
+  @ApiResponse({
+    status: 400,
+    description: 'Bad Request - Ride not in progress.',
+  })
+  @ApiResponse({ status: 401, description: 'Unauthorized.' })
+  @ApiResponse({
+    status: 403,
+    description: 'Forbidden - User not on this ride.',
+  })
+  @ApiResponse({ status: 404, description: 'Not Found - Ride not found.' })
+  async getShareLink(
+    @User() currentUser: IUser,
+    @Param('rideId') rideId: string,
+  ): Promise<{
+    message: string;
+    data: { shareToken: string; expiresAt: Date };
+  }> {
+    if (!mongoose.Types.ObjectId.isValid(rideId)) {
+      ErrorHelper.BadRequestException('Invalid Ride ID format.');
+    }
+    this.logger.log(
+      `User ${currentUser._id} requesting share link for ride ${rideId}`,
+    );
+    const result = await this.ridesService.generateShareLink(
+      rideId,
+      currentUser._id,
+    );
+    return {
+      message: 'Share link generated successfully.',
+      data: result,
     };
   }
 }

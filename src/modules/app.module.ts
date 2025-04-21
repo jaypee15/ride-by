@@ -5,6 +5,7 @@ import { AppGateway } from './app.gateway';
 
 @Module({
   providers: [AppGateway, WsGuard, AuthGuard],
+  exports: [AuthGuard],
   imports: [],
 })
 export class AppModule {}

@@ -199,4 +199,38 @@ export class DriverService {
       );
     }
   }
+  async getDriverProfileAndStatus(
+    driverId: string,
+  ): Promise<Partial<UserDocument>> {
+    this.logger.log(`Fetching profile and status for driver ${driverId}`);
+    const driver = await this.userModel
+      .findById(driverId)
+      .select('+driverVerificationStatus +driverRejectionReason +status') // Explicitly select status fields if needed
+      .populate<{ vehicles: VehicleDocument[] }>({
+        // Populate vehicles with status
+        path: 'vehicles',
+        select:
+          'make model year plateNumber vehicleVerificationStatus vehicleRejectionReason',
+      });
+
+    if (!driver) {
+      ErrorHelper.NotFoundException('Driver user not found.');
+    }
+    // Add role check if necessary, though AuthGuard likely implies user exists
+    // const isDriverRole = driver.roles.some(role => role.name === RoleNameEnum.Driver);
+    // if (!isDriverRole) { throw new ForbiddenException('User is not a driver.'); }
+
+    // Return relevant profile info + verification statuses
+    return {
+      _id: driver._id,
+      firstName: driver.firstName,
+      lastName: driver.lastName,
+      email: driver.email,
+      avatar: driver.avatar,
+      status: driver.status,
+      driverVerificationStatus: driver.driverVerificationStatus,
+      driverRejectionReason: driver.driverRejectionReason,
+      vehicles: driver.vehicles,
+    };
+  }
 }

@@ -8,6 +8,7 @@ import {
   UploadedFile,
   UseInterceptors,
   ParseEnumPipe,
+  Get,
 } from '@nestjs/common';
 import { DriverService } from './driver.service';
 import { RegisterVehicleDto } from './dto/register-vehicle.dto';
@@ -27,16 +28,16 @@ import { Vehicle } from './schemas/vehicle.schema'; // Import for response type
 import { VehicleDocumentType } from './enums/vehicle-document-type.enum';
 import { ErrorHelper } from 'src/core/helpers';
 
-@ApiTags('Driver - Vehicles')
+@ApiTags('Driver')
 @ApiBearerAuth() // Requires JWT token
 @UseGuards(AuthGuard) // Protect all routes in this controller
-@Controller('driver/vehicles') // Base path for vehicle-related driver actions
+@Controller('driver') // Base path for vehicle-related driver actions
 export class DriverController {
   private readonly logger = new Logger(DriverController.name);
 
   constructor(private readonly driverService: DriverService) {}
 
-  @Post()
+  @Post('vehicles/register')
   @ApiOperation({ summary: 'Register a new vehicle for the logged-in driver' })
   @ApiResponse({
     status: 201,
@@ -144,6 +145,35 @@ export class DriverController {
     return {
       message: `${documentType} uploaded successfully.`,
       data: updatedVehicle.toObject() as Vehicle,
+    };
+  }
+
+  @Get('profile-status')
+  @ApiOperation({
+    summary: "Get the logged-in driver's profile and verification status",
+  })
+  @ApiResponse({
+    status: 200,
+    description:
+      'Driver profile and status retrieved.' /* type: User - define a specific Response DTO */,
+  })
+  @ApiResponse({ status: 401, description: 'Unauthorized.' })
+  @ApiResponse({
+    status: 403,
+    description: 'Forbidden - User is not a driver.',
+  }) // Should be caught by role check in service/guard
+  @ApiResponse({ status: 404, description: 'Not Found - Driver not found.' })
+  async getDriverProfileStatus(
+    @User() driver: IUser,
+  ): Promise<{ message: string; data: any }> {
+    // Use 'any' or create specific DTO
+    this.logger.log(`Fetching profile status for driver ${driver._id}`);
+    const profileData = await this.driverService.getDriverProfileAndStatus(
+      driver._id,
+    );
+    return {
+      message: 'Driver profile and status fetched successfully.',
+      data: profileData, // Return the selected data
     };
   }
 }

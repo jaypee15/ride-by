@@ -104,4 +104,14 @@ export class SecretsService extends ConfigService {
       frontendCallbackUrl, // URL where frontend handles Paystack redirect
     };
   }
+
+  get googleMaps() {
+    const apiKey = this.get<string>('GOOGLE_MAPS_API_KEY');
+    if (!apiKey) {
+      this.logger.error(
+        'GOOGLE_MAPS_API_KEY is missing in .env configuration!',
+      );
+    }
+    return { apiKey };
+  }
 }

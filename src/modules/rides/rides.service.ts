@@ -12,6 +12,15 @@ import { VehicleVerificationStatus } from 'src/core/enums/vehicle.enum';
 import { DriverVerificationStatus, UserStatus } from 'src/core/enums/user.enum';
 import { SearchRidesDto } from './dto/search-rides.dto';
 import { PaginationResultDto } from 'src/core/dto';
+import {
+  GeolocationService,
+  Coordinates,
+} from '../geolocation/geolocation.service';
+import { v4 as uuidv4 } from 'uuid'; // For generating unique tokens
+import { InjectRedis } from '@nestjs-modules/ioredis'; // Assuming Redis for storing tokens
+import Redis from 'ioredis';
+import { BookingStatus } from '../booking/enums/booking-status.enum';
+import { PopulatedRideWithBookings } from './interfaces/populated-ride.interface';
 
 @Injectable()
 export class RidesService {
@@ -21,7 +30,8 @@ export class RidesService {
     @InjectModel(Ride.name) private rideModel: Model<RideDocument>,
     @InjectModel(Vehicle.name) private vehicleModel: Model<VehicleDocument>,
     @InjectModel(User.name) private userModel: Model<UserDocument>,
-    // Inject GeolocationService later
+    @InjectRedis() private readonly redisClient: Redis,
+    private readonly geolocationService: GeolocationService,
   ) {}
 
   async createRide(
@@ -42,6 +52,7 @@ export class RidesService {
       ErrorHelper.ForbiddenException('User is not registered as a driver.');
     }
     // Optional: Check driver status (e.g., must be ACTIVE and VERIFIED)
+
     if (
       driver.status !== UserStatus.ACTIVE ||
       driver.driverVerificationStatus !== DriverVerificationStatus.VERIFIED
@@ -80,6 +91,42 @@ export class RidesService {
       );
     }
 
+    const originCoords: Coordinates = {
+      lat: dto.origin.lat,
+      lng: dto.origin.lon,
+    };
+    const destCoords: Coordinates = {
+      lat: dto.destination.lat,
+      lng: dto.destination.lon,
+    };
+
+    let estimatedArrivalTime: Date | undefined = undefined;
+    try {
+      const routeInfo = await this.geolocationService.calculateRoute(
+        originCoords,
+        destCoords,
+      );
+      if (routeInfo && routeInfo.durationSeconds > 0) {
+        const departureDateTime = new Date(dto.departureTime);
+        // Add duration (in seconds) to departure time
+        estimatedArrivalTime = new Date(
+          departureDateTime.getTime() + routeInfo.durationSeconds * 1000,
+        );
+        this.logger.log(
+          `Estimated arrival time calculated: ${estimatedArrivalTime?.toISOString()}`,
+        );
+      } else {
+        this.logger.warn(
+          `Could not calculate route duration for ride creation by ${driverId}. Skipping arrival time estimation.`,
+        );
+      }
+    } catch (geoError) {
+      // Log the error but don't necessarily fail ride creation if route calc fails
+      this.logger.warn(
+        `Geolocation error during route calculation for ride creation by ${driverId}: ${geoError.message}`,
+      );
+    }
+
     // 4. Prepare Ride Data
     const rideData = {
       driver: driverId,
@@ -94,13 +141,13 @@ export class RidesService {
       },
       originAddress: dto.originAddress,
       destinationAddress: dto.destinationAddress,
-      departureTime: departureDateTime, // Use the Date object
+      departureTime: new Date(dto.departureTime), // Convert string to Date
+      estimatedArrivalTime: estimatedArrivalTime, // Add calculated time
       pricePerSeat: dto.pricePerSeat,
       initialSeats: vehicle.seatsAvailable, // Seats from verified vehicle
       availableSeats: vehicle.seatsAvailable, // Initially same as vehicle
       status: RideStatus.SCHEDULED,
       preferences: dto.preferences || [],
-      // estimateArrivalTime: // TODO: Calculate using GeolocationService
       // waypoints: dto.waypoints?.map(wp => ({ type: 'Point', coordinates: [wp.lon, wp.lat] })) || [], // If waypoints are added
     };
 
@@ -228,5 +275,100 @@ export class RidesService {
     }
 
     return ride;
+  }
+
+  async startRide(driverId: string, rideId: string): Promise<RideDocument> {
+    this.logger.log(`Driver ${driverId} attempting to start ride ${rideId}`);
+    if (!mongoose.Types.ObjectId.isValid(rideId)) {
+      ErrorHelper.BadRequestException('Invalid Ride ID format.');
+    }
+
+    // 1. Find Ride, verify driver and status
+    const ride = await this.rideModel.findById(rideId);
+    if (!ride) {
+      ErrorHelper.NotFoundException(`Ride with ID ${rideId} not found.`);
+    }
+    if (ride.driver.toString() !== driverId) {
+      ErrorHelper.ForbiddenException(
+        'You can only start rides you are driving.',
+      );
+    }
+    if (ride.status !== RideStatus.SCHEDULED) {
+      ErrorHelper.BadRequestException(
+        `Ride cannot be started (current status: ${ride.status}).`,
+      );
+    }
+    // Optional: Check if departure time is reasonably close
+
+    // 2. Update Status
+    ride.status = RideStatus.IN_PROGRESS;
+    await ride.save();
+
+    this.logger.log(
+      `Ride ${rideId} started successfully by driver ${driverId}.`,
+    );
+
+    // TODO: Trigger Notification to confirmed Passengers (Phase 6)
+    // await this.notificationService.notifyPassengersRideStarted(ride);
+
+    return ride;
+  }
+
+  async generateShareLink(
+    rideId: string,
+    userId: string,
+  ): Promise<{ shareToken: string; expiresAt: Date }> {
+    this.logger.log(`User ${userId} requesting share link for ride ${rideId}`);
+    // 1. Find Ride and verify status is IN_PROGRESS
+    const ride = await this.rideModel
+      .findById(rideId)
+      .populate<PopulatedRideWithBookings>({
+        path: 'bookings',
+        select: 'passenger status',
+      });
+
+    if (!ride) ErrorHelper.NotFoundException(`Ride ${rideId} not found.`);
+    if (ride.status !== RideStatus.IN_PROGRESS) {
+      ErrorHelper.BadRequestException(
+        'Can only share rides that are currently in progress.',
+      );
+    }
+
+    // 2. Verify requesting user is the driver or a confirmed passenger
+    const isDriver = ride.driver.toString() === userId;
+    const isConfirmedPassenger = ride.bookings.some(
+      (booking) =>
+        booking.passenger.toString() === userId &&
+        booking.status === BookingStatus.CONFIRMED,
+    );
+
+    if (!isDriver && !isConfirmedPassenger) {
+      ErrorHelper.ForbiddenException(
+        'You are not authorized to share this ride.',
+      );
+    }
+
+    // 3. Generate unique token
+    const shareToken = uuidv4(); // Simple unique token
+    const expirySeconds = 4 * 60 * 60; // Example: 4 hours expiry
+    const redisKey = `share_ride:${shareToken}`;
+    const expiresAt = new Date(Date.now() + expirySeconds * 1000);
+
+    // 4. Store token in Redis with Ride ID and expiry
+    try {
+      await this.redisClient.set(redisKey, rideId, 'EX', expirySeconds);
+      this.logger.log(
+        `Generated share token ${shareToken} for ride ${rideId}, expires in ${expirySeconds}s`,
+      );
+      return { shareToken, expiresAt };
+    } catch (error) {
+      this.logger.error(
+        `Failed to store share token in Redis for ride ${rideId}: ${error.message}`,
+        error.stack,
+      );
+      ErrorHelper.InternalServerErrorException(
+        'Failed to generate share link.',
+      );
+    }
   }
 }

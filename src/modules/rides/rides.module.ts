@@ -5,7 +5,7 @@ import { RidesController } from './rides.controller';
 import { Ride, RideSchema } from './schemas/ride.schema';
 import { Vehicle, VehicleSchema } from '../driver/schemas/vehicle.schema'; // Need VehicleModel
 import { User, UserSchema } from '../user/schemas/user.schema'; // Need UserModel
-// Import GeolocationModule later when needed
+import { GeolocationModule } from '../geolocation/geolocation.module';
 
 @Module({
   imports: [
@@ -14,7 +14,7 @@ import { User, UserSchema } from '../user/schemas/user.schema'; // Need UserMode
       { name: Vehicle.name, schema: VehicleSchema }, // Provide VehicleModel
       { name: User.name, schema: UserSchema }, // Provide UserModel
     ]),
-    // GeolocationModule // Add later
+    GeolocationModule,
   ],
   providers: [RidesService],
   controllers: [RidesController],
