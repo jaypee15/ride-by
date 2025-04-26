@@ -8,7 +8,6 @@ export const User = createParamDecorator<any, any>(
     const request = ctx.switchToHttp().getRequest();
     const user = request.user;
 
-    // eslint-disable-next-line security/detect-object-injection
     return data ? user[data] : user;
   },
 );

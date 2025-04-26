@@ -79,7 +79,11 @@ export class Ride {
   @Prop({ type: mongoose.Schema.Types.ObjectId, ref: 'Booking', default: [] })
   bookings: mongoose.Schema.Types.ObjectId[]; // Refs to Booking documents for this ride
 
-  // createdAt and updatedAt handled by timestamps: true
+  @Prop({ type: PointSchema, required: false, index: '2dsphere' }) // Add geospatial index if querying by location
+  currentLocation?: Point;
+
+  @Prop({ type: Date })
+  lastLocationUpdate?: Date;
 }
 
 export const RideSchema = SchemaFactory.createForClass(Ride);

@@ -3,13 +3,23 @@ import {
   ApiOperation,
   ApiResponse,
   ApiTags,
+  ApiBody,
 } from '@nestjs/swagger';
-import { Patch, Controller, UseGuards, Logger, Body } from '@nestjs/common'; // Import Patch
+import {
+  Patch,
+  Controller,
+  UseGuards,
+  Logger,
+  Body,
+  Delete,
+  Post,
+} from '@nestjs/common'; // Import Patch
 import { UpdateEmergencyContactsDto } from '../user/dto/emergency-contact.dto'; // Import DTO
 import { UserService } from '../user/user.service'; // Import UserService
 import { AuthGuard } from 'src/core/guards';
 import { IUser } from 'src/core/interfaces';
 import { User } from 'src/core/decorators';
+import { RegisterDeviceDto } from '../user/dto/register-device.dto';
 
 @ApiTags('User') // Modify tag if adding profile endpoints
 @Controller('user')
@@ -46,5 +56,38 @@ export class UserController {
       message: 'Emergency contacts updated successfully.',
       // Optionally return updated contacts or user profile snippet
     };
+  }
+
+  @Post('devices/register')
+  @UseGuards(AuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Register a device token for push notifications' })
+  @ApiResponse({ status: 200, description: 'Device registered successfully.' })
+  @ApiResponse({ status: 401, description: 'Unauthorized.' })
+  @ApiResponse({ status: 400, description: 'Bad Request - Missing token.' })
+  async registerDevice(
+    @User() currentUser: IUser,
+    @Body() dto: RegisterDeviceDto,
+  ): Promise<{ message: string }> {
+    await this.userService.addDeviceToken(currentUser._id, dto.deviceToken);
+    return { message: 'Device registered successfully.' };
+  }
+
+  @Delete('devices/unregister') // Use DELETE method
+  @UseGuards(AuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Unregister a device token for push notifications' })
+  @ApiResponse({
+    status: 200,
+    description: 'Device unregistered successfully.',
+  })
+  @ApiResponse({ status: 401, description: 'Unauthorized.' })
+  @ApiBody({ type: RegisterDeviceDto }) // Reuse DTO for body structure
+  async unregisterDevice(
+    @User() currentUser: IUser,
+    @Body() dto: RegisterDeviceDto, // Get token from body
+  ): Promise<{ message: string }> {
+    await this.userService.removeDeviceToken(currentUser._id, dto.deviceToken);
+    return { message: 'Device unregistered successfully.' };
   }
 }

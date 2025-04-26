@@ -11,17 +11,17 @@ import { ErrorHelper } from 'src/core/helpers';
 import { PaymentStatus } from './enums/payment-status.enum';
 import { PaginationDto, PaginationResultDto } from 'src/core/dto';
 import { PaymentService } from '../payment/payment.service';
-// Import NotificationService later
+import { NotificationService } from '../notification/notification.service';
 
 @Injectable()
 export class BookingService {
   private readonly logger = new Logger(BookingService.name);
 
   constructor(
-    @InjectModel(Booking.name) private bookingModel: Model<BookingDocument>,
+    @InjectModel(Booking.name) private bookingModel: Model<Booking>,
     @InjectModel(Ride.name) private rideModel: Model<RideDocument>,
-    @InjectModel(User.name) private userModel: Model<UserDocument>,
-    // Inject NotificationService later
+    @InjectModel(User.name) private userModel: Model<User>,
+    private readonly notificationService: NotificationService,
     private readonly paymentService: PaymentService,
   ) {}
 
@@ -101,8 +101,22 @@ export class BookingService {
         `Booking ${newBooking._id} created successfully for ride ${dto.rideId} by passenger ${passengerId}`,
       );
 
-      // TODO: Trigger Notification to Driver (Phase 6)
-      // await this.notificationService.notifyDriverOfBookingRequest(ride.driver, newBooking);
+      try {
+        const driver = await this.userModel
+          .findById(ride.driver)
+          .select('deviceTokens');
+
+        await this.notificationService.sendNotificationToUser(
+          driver._id.toString(),
+          'New Booking Request',
+          `Passenger ${passenger.firstName} wants to book ${newBooking.seatsBooked} seat(s) on your ride.`,
+          { bookingId: newBooking._id.toString(), type: 'BOOKING_REQUEST' },
+        );
+      } catch (notificationError) {
+        this.logger.error(
+          `Failed to send booking request notification to driver ${ride.driver}: ${notificationError.message}`,
+        );
+      }
 
       return newBooking;
     } catch (error) {

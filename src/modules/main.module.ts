@@ -16,6 +16,7 @@ import { RatingModule } from './rating/rating.module';
 import { CommunicationModule } from './communication/communication.module';
 import { AdminModule } from './admin/admin.module';
 import { TripSharingModule } from './trip-sharing/trip-sharing.module';
+import { NotificationModule } from './notification/notification.module';
 @Module({
   imports: [
     GlobalModule,
@@ -33,6 +34,7 @@ import { TripSharingModule } from './trip-sharing/trip-sharing.module';
     AdminModule,
     UserModule,
     TripSharingModule,
+    NotificationModule,
     MongooseModule.forRootAsync({
       imports: [SecretsModule],
       inject: [SecretsService],

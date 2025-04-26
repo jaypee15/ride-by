@@ -131,4 +131,49 @@ export class UserService {
       );
     }
   }
+
+  async addDeviceToken(userId: string, deviceToken: string): Promise<boolean> {
+    this.logger.log(`Adding device token for user ${userId}`);
+    try {
+      // Use $addToSet to avoid duplicate tokens for the same user
+      const result = await this.userRepo.updateOne(
+        { _id: userId },
+        { $addToSet: { deviceTokens: deviceToken } },
+      );
+      this.logger.log(
+        `Device token add result for user ${userId}: Modified ${result.modifiedCount}`,
+      );
+      return result.modifiedCount > 0 || result.matchedCount > 0; // Return true if matched or modified
+    } catch (error) {
+      this.logger.error(
+        `Error adding device token for user ${userId}: ${error.message}`,
+        error.stack,
+      );
+      ErrorHelper.InternalServerErrorException('Failed to register device.');
+    }
+  }
+
+  async removeDeviceToken(
+    userId: string,
+    deviceToken: string,
+  ): Promise<boolean> {
+    this.logger.log(`Removing device token for user ${userId}`);
+    try {
+      // Use $pull to remove a specific token
+      const result = await this.userRepo.updateOne(
+        { _id: userId },
+        { $pull: { deviceTokens: deviceToken } },
+      );
+      this.logger.log(
+        `Device token remove result for user ${userId}: Modified ${result.modifiedCount}`,
+      );
+      return result.modifiedCount > 0;
+    } catch (error) {
+      this.logger.error(
+        `Error removing device token for user ${userId}: ${error.message}`,
+        error.stack,
+      );
+      ErrorHelper.InternalServerErrorException('Failed to unregister device.');
+    }
+  }
 }

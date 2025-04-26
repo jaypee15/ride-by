@@ -12,6 +12,7 @@ The content is organized as follows:
 1. This summary section
 2. Repository information
 3. Directory structure
+4. Repository files (if enabled)
 4. Multiple file entries, each consisting of:
   a. A header with the file path (## File: path/to/file)
   b. The full contents of the file in a code block
@@ -46,6 +47,7 @@ src/
       messages.constant.ts
     decorators/
       index.ts
+      roles.decorator.ts
       user.decorator.ts
     dto/
       index.ts
@@ -62,6 +64,7 @@ src/
     guards/
       authenticate.guard.ts
       index.ts
+      role.guards.ts
       ws.guard.ts
     helpers/
       date.helper.ts
@@ -99,6 +102,12 @@ src/
       token.utils.ts
     global.module.ts
   modules/
+    admin/
+      dto/
+        update-verification.dto.ts
+      admin.controller.ts
+      admin.module.ts
+      admin.service.ts
     auth/
       dto/
         auth-response.dto.ts
@@ -110,18 +119,43 @@ src/
       auth.controller.ts
       auth.module.ts
       auth.service.ts
+    booking/
+      dto/
+        create-booking.dto.ts
+      enums/
+        booking-status.enum.ts
+        payment-status.enum.ts
+      schemas/
+        booking.schema.ts
+      booking.controller.ts
+      booking.module.ts
+      booking.service.ts
+    communication/
+      dto/
+        send-message.dto.ts
+      schemas/
+        message.schema.ts
+      chat.gateway.ts
+      communication.module.ts
+      ride.gateway.ts
     config/
       config.module.ts
     database/
       database.module.ts
     driver/
       dto/
-        driver-regidtration.dto.ts
+        driver-registration.dto.ts
+        register-vehicle.dto.ts
+      enums/
+        vehicle-document-type.enum.ts
       schemas/
         vehicle.schema.ts
-      riders.module.ts
+      driver.controller.ts
+      driver.module.ts
+      driver.service.ts
     geolocation/
       geolocation.module.ts
+      geolocation.service.ts
     health/
       health.controller.ts
       health.module.ts
@@ -146,11 +180,40 @@ src/
       mail.event.ts
       mail.module.ts
       mail.service.ts
+    notification/
+      notification.module.ts
+      notification.service.ts
     passenger/
       dto/
         passenger.dto.ts
+    payment/
+      payment.module.ts
+      payment.service.ts
+      webhook.controller.ts
+    rating/
+      dto/
+        submit-rating.dto.ts
+      enums/
+        role-rated-as.enum.ts
+      schemas/
+        rating.schema.ts
+      rating.controller.ts
+      rating.module.ts
+      rating.service.ts
     rides/
+      dto/
+        coordinates.dto.ts
+        create-ride.dto.ts
+        search-rides.dto.ts
+      enums/
+        ride-status.enum.ts
+      interfaces/
+        populated-ride.interface.ts
+      schemas/
+        ride.schema.ts
+      rides.controller.ts
       rides.module.ts
+      rides.service.ts
     storage/
       constants/
         index.ts
@@ -164,15 +227,23 @@ src/
       index.ts
       s3-bucket.module.ts
       s3-bucket.service.ts
+    trip-sharing/
+      trip-sharing.controller.ts
+      trip-sharing.module.ts
+      trip-sharing.service.ts
     twilio/
       twiio.module.ts
       twilio.service.ts
     user/
+      dto/
+        emergency-contact.dto.ts
+        register-device.dto.ts
       schemas/
         action.schema.ts
         role.schema.ts
         token.schema.ts
         user.schema.ts
+      user.controller.ts
       user.module.ts
       user.service.ts
     app.gateway.ts
@@ -194,6 +265,448 @@ tsconfig.json
 ```
 
 # Files
+
+## File: src/core/decorators/roles.decorator.ts
+````typescript
+import { SetMetadata } from '@nestjs/common';
+import { RoleNameEnum } from '../interfaces/user/role.interface';
+
+export const ROLES_KEY = 'roles';
+export const Roles = (...roles: RoleNameEnum[]) =>
+  SetMetadata(ROLES_KEY, roles);
+````
+
+## File: src/core/guards/role.guards.ts
+````typescript
+import {
+  Injectable,
+  CanActivate,
+  ExecutionContext,
+  ForbiddenException,
+} from '@nestjs/common';
+import { Reflector } from '@nestjs/core';
+import { RoleNameEnum } from '../interfaces/user/role.interface';
+import { IUser } from '../interfaces/user/user.interface';
+import { ROLES_KEY } from '../decorators/roles.decorator';
+
+@Injectable()
+export class RolesGuard implements CanActivate {
+  constructor(private reflector: Reflector) {}
+
+  canActivate(context: ExecutionContext): boolean {
+    const requiredRoles = this.reflector.getAllAndOverride<RoleNameEnum[]>(
+      ROLES_KEY,
+      [context.getHandler(), context.getClass()],
+    );
+
+    if (!requiredRoles || requiredRoles.length === 0) {
+      // If no roles are specified, access is allowed by default (AuthGuard already ran)
+      // Or you might want to deny access if no roles specified for extra security
+      return true;
+    }
+
+    const request = context.switchToHttp().getRequest();
+    const user = request.user as IUser; // Assumes user object attached by AuthGuard
+
+    if (!user || !user.roles) {
+      // This shouldn't happen if AuthGuard ran successfully, but good check
+      throw new ForbiddenException('User role information is missing.');
+    }
+
+    // Check if the user has at least one of the required roles
+    const hasRequiredRole = requiredRoles.some(
+      (role) =>
+        // IMPORTANT: Check how roles are stored on your user object.
+        // If user.roles is an array of Role *objects* with a 'name' property:
+        (user.roles as any[]).some((userRole) => userRole.name === role),
+      // If user.roles is an array of *strings* (role names):
+      // user.roles.includes(role)
+    );
+
+    if (!hasRequiredRole) {
+      throw new ForbiddenException(
+        `Access denied. Required roles: ${requiredRoles.join(', ')}`,
+      );
+    }
+
+    return true;
+  }
+}
+````
+
+## File: src/modules/communication/ride.gateway.ts
+````typescript
+import { RideStatus } from '../rides/enums/ride-status.enum';
+import { Logger, UseGuards } from '@nestjs/common';
+import {
+  OnGatewayConnection,
+  OnGatewayDisconnect,
+  WebSocketGateway,
+  SubscribeMessage,
+  MessageBody,
+  ConnectedSocket,
+  WsException,
+  WebSocketServer,
+} from '@nestjs/websockets';
+import { Server, Socket } from 'socket.io';
+import { WsGuard } from '../../core/guards/ws.guard'; // Use the WS Guard
+import { InjectModel } from '@nestjs/mongoose';
+import { Model } from 'mongoose';
+import { Message, MessageDocument } from './schemas/message.schema';
+import { IUser } from 'src/core/interfaces'; // Assuming IUser is defined
+import {
+  IsNotEmpty,
+  IsLongitude,
+  IsLatitude,
+  IsMongoId,
+} from 'class-validator';
+import { RideDocument, Ride } from '../rides/schemas/ride.schema';
+
+// DTO for location update
+class LocationUpdateDto {
+  @IsNotEmpty() @IsMongoId() rideId: string;
+  @IsNotEmpty() @IsLatitude() lat: number;
+  @IsNotEmpty() @IsLongitude() lon: number;
+}
+
+@WebSocketGateway({
+  cors: { origin: '*' },
+  // namespace: 'ride', // Optional: use a namespace
+  // path: '/api/communication/socket' // Example different path
+})
+@UseGuards(WsGuard)
+export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
+  @WebSocketServer() server: Server; // Inject the server instance
+  private logger = new Logger(ChatGateway.name);
+
+  constructor(
+    @InjectModel(Message.name) private messageModel: Model<MessageDocument>,
+    @InjectModel(Ride.name) private rideModel: Model<RideDocument>, // Inject RideModel
+  ) {}
+
+  handleConnection(client: Socket) {
+    // User is already authenticated and joined their room via AppGateway/WsGuard
+    const user = client.data.user as IUser;
+    if (user) {
+      this.logger.log(`Ride client connected: ${client.id}, User: ${user._id}`);
+    } else {
+      this.logger.warn(`Ride client connected without user data: ${client.id}`);
+      client.disconnect(true); // Disconnect if user data somehow missing
+    }
+  }
+
+  handleDisconnect(client: Socket) {
+    const user = client.data.user as IUser;
+    this.logger.log(
+      `Ride client disconnected: ${client.id}, User: ${user?._id || 'N/A'}`,
+    );
+  }
+
+  @SubscribeMessage('updateLocation')
+  async handleLocationUpdate(
+    @MessageBody() data: LocationUpdateDto,
+    @ConnectedSocket() client: Socket,
+  ): Promise<{ success: boolean }> {
+    const driver = client.data.user as IUser;
+    if (!driver)
+      throw new WsException('Authentication data missing on socket.');
+    // TODO: Add validation pipe for WebSocket DTOs if not configured globally
+
+    this.logger.debug(
+      `Received 'updateLocation' from driver ${driver._id} for ride ${data.rideId}`,
+    );
+
+    try {
+      // 1. Find Ride and verify driver and status
+      const ride = await this.rideModel
+        .findById(data.rideId)
+        .select('driver status');
+      if (!ride) {
+        this.logger.warn(
+          `Location update received for non-existent ride ${data.rideId}`,
+        );
+        throw new WsException('Ride not found.');
+      }
+      if (ride.driver.toString() !== driver._id) {
+        this.logger.warn(
+          `User ${driver._id} attempted to update location for ride ${data.rideId} they are not driving.`,
+        );
+        throw new WsException(
+          'Not authorized to update location for this ride.',
+        );
+      }
+      if (ride.status !== RideStatus.IN_PROGRESS) {
+        this.logger.warn(
+          `Location update received for ride ${data.rideId} not in progress (status: ${ride.status}).`,
+        );
+        // Decide whether to throw or just ignore
+        throw new WsException('Ride is not currently in progress.');
+      }
+
+      // 2. Prepare location data
+      const locationData = {
+        type: 'Point' as const,
+        coordinates: [data.lon, data.lat],
+      };
+      const updateTime = new Date();
+
+      // 3. Update Ride Document (optional, could also store in Redis)
+      await this.rideModel.updateOne(
+        { _id: data.rideId },
+        {
+          $set: {
+            currentLocation: locationData,
+            lastLocationUpdate: updateTime,
+          },
+        },
+      );
+      this.logger.debug(`Updated ride ${data.rideId} location in DB.`);
+
+      // 4. Broadcast location update to a room specific to the ride
+      const rideRoom = `ride_${data.rideId}`;
+      const payload = {
+        rideId: data.rideId,
+        lat: data.lat,
+        lon: data.lon,
+        timestamp: updateTime,
+      };
+      // Emit to all sockets in the room *except* the sender (the driver)
+      client.to(rideRoom).emit('locationUpdate', payload);
+      this.logger.debug(`Broadcasted location update to room ${rideRoom}`);
+
+      return { success: true };
+    } catch (error) {
+      this.logger.error(
+        `Error handling 'updateLocation' from ${driver._id} for ride ${data.rideId}: ${error.message}`,
+        error.stack,
+      );
+      client.emit(
+        'exception',
+        `Failed to update location: ${error.message || 'Server error'}`,
+      );
+      return { success: false };
+    }
+  }
+
+  // Passengers need to join the ride room when they view the ride or it starts
+  @SubscribeMessage('joinRideRoom')
+  handleJoinRoom(
+    @MessageBody() data: { rideId: string },
+    @ConnectedSocket() client: Socket,
+  ): void {
+    const user = client.data.user as IUser;
+    if (!user || !data.rideId) return; // Ignore if no user or rideId
+
+    // TODO: Add verification: Is this user actually part of this ride (driver or confirmed passenger)?
+    // This requires fetching booking/ride data which might be heavy here.
+    // Maybe do verification when ride starts or details are fetched via HTTP.
+
+    const roomName = `ride_${data.rideId}`;
+    client.join(roomName);
+    this.logger.log(`User ${user._id} joined room ${roomName}`);
+  }
+
+  @SubscribeMessage('leaveRideRoom')
+  handleLeaveRoom(
+    @MessageBody() data: { rideId: string },
+    @ConnectedSocket() client: Socket,
+  ): void {
+    const user = client.data.user as IUser;
+    if (!user || !data.rideId) return;
+
+    const roomName = `ride_${data.rideId}`;
+    client.leave(roomName);
+    this.logger.log(`User ${user._id} left room ${roomName}`);
+  }
+}
+````
+
+## File: src/modules/notification/notification.module.ts
+````typescript
+import { Module, Global } from '@nestjs/common';
+import { NotificationService } from './notification.service';
+import { SecretsModule } from 'src/global/secrets/module'; // Ensure secrets are available
+import { MongooseModule } from '@nestjs/mongoose';
+import { User, UserSchema } from '../user/schemas/user.schema';
+
+@Global() // Make service available globally without importing module explicitly
+@Module({
+  imports: [
+    SecretsModule,
+    MongooseModule.forFeature([{ name: User.name, schema: UserSchema }]),
+  ],
+  providers: [NotificationService],
+  exports: [NotificationService],
+})
+export class NotificationModule {}
+````
+
+## File: src/modules/notification/notification.service.ts
+````typescript
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import * as admin from 'firebase-admin';
+import { SecretsService } from '../../global/secrets/service';
+import * as fs from 'fs';
+import * as path from 'path';
+import { InjectModel } from '@nestjs/mongoose';
+import { Model } from 'mongoose';
+import { User } from '../user/schemas/user.schema';
+
+@Injectable()
+export class NotificationService implements OnModuleInit {
+  private readonly logger = new Logger(NotificationService.name);
+  private isFirebaseInitialized = false;
+
+  constructor(
+    @InjectModel(User.name) private userRepo: Model<User>,
+    private secretsService: SecretsService,
+  ) {}
+
+  onModuleInit() {
+    const { serviceAccountPath } = this.secretsService.firebase;
+    if (!serviceAccountPath) {
+      this.logger.error(
+        'Firebase Service Account Path not found. Cannot initialize Firebase Admin.',
+      );
+      return;
+    }
+
+    try {
+      // Resolve path relative to project root (adjust if needed)
+      const absolutePath = path.resolve(process.cwd(), serviceAccountPath);
+
+      if (!fs.existsSync(absolutePath)) {
+        this.logger.error(
+          `Firebase service account file not found at: ${absolutePath}`,
+        );
+        return;
+      }
+
+      const serviceAccount = JSON.parse(fs.readFileSync(absolutePath, 'utf8'));
+
+      admin.initializeApp({
+        credential: admin.credential.cert(serviceAccount),
+      });
+      this.isFirebaseInitialized = true;
+      this.logger.log('Firebase Admin initialized successfully.');
+    } catch (error) {
+      this.logger.error(
+        `Failed to initialize Firebase Admin: ${error.message}`,
+        error.stack,
+      );
+    }
+  }
+
+  private checkInitialized(): void {
+    if (!this.isFirebaseInitialized) {
+      this.logger.error('Firebase Admin SDK not initialized.');
+      // Optionally throw an error, but might be better to log and fail silently
+      // throw new InternalServerErrorException('Notification service is not available.');
+    }
+  }
+
+  // Send to specific tokens
+  async sendPushNotificationToTokens(
+    deviceTokens: string[],
+    title: string,
+    body: string,
+    data?: { [key: string]: string }, // Optional data payload
+  ): Promise<boolean> {
+    this.checkInitialized();
+    if (!deviceTokens || deviceTokens.length === 0) {
+      this.logger.warn('No device tokens provided for push notification.');
+      return false;
+    }
+
+    const message: admin.messaging.MulticastMessage = {
+      notification: { title, body },
+      tokens: deviceTokens,
+      data: data || {}, // Add custom data payload if provided
+      android: {
+        // Optional: Android specific config
+        priority: 'high',
+        notification: {
+          sound: 'default',
+          // channelId: 'your_channel_id' // Define notification channels on Android
+        },
+      },
+      apns: {
+        // Optional: Apple specific config
+        payload: {
+          aps: {
+            sound: 'default',
+            // badge: 1, // Example badge count
+          },
+        },
+      },
+    };
+
+    try {
+      this.logger.log(
+        `Sending push notification to ${deviceTokens.length} tokens. Title: ${title}`,
+      );
+      const response = await admin.messaging().sendEachForMulticast(message);
+      this.logger.log(
+        `Successfully sent message to ${response.successCount} devices`,
+      );
+      if (response.failureCount > 0) {
+        const failedTokens = [];
+        response.responses.forEach((resp, idx) => {
+          if (!resp.success) {
+            failedTokens.push(deviceTokens[idx]);
+            this.logger.error(
+              `Failed to send to token ${deviceTokens[idx]}: ${resp.error}`,
+            );
+            // TODO: Handle failed tokens (e.g., remove from user's deviceTokens array)
+          }
+        });
+        this.logger.warn(
+          `Failed to send to ${response.failureCount} devices. Failed tokens: ${failedTokens.join(', ')}`,
+        );
+      }
+      return response.successCount > 0; // Return true if at least one succeeded
+    } catch (error) {
+      this.logger.error(
+        `Error sending push notification: ${error.message}`,
+        error.stack,
+      );
+      return false;
+    }
+  }
+
+  async sendNotificationToUser(
+    userId: string,
+    title: string,
+    body: string,
+    data?: { [key: string]: string },
+  ) {
+    const user = await this.userRepo.findById(userId).select('deviceTokens');
+    if (user && user.deviceTokens && user.deviceTokens.length > 0) {
+      await this.sendPushNotificationToTokens(
+        user.deviceTokens,
+        title,
+        body,
+        data,
+      );
+    } else {
+      this.logger.warn(`User ${userId} not found or has no device tokens.`);
+    }
+  }
+}
+````
+
+## File: src/modules/user/dto/register-device.dto.ts
+````typescript
+import { ApiProperty } from '@nestjs/swagger';
+import { IsNotEmpty, IsString } from 'class-validator';
+
+export class RegisterDeviceDto {
+  @ApiProperty({ description: 'FCM device registration token' })
+  @IsString()
+  @IsNotEmpty()
+  deviceToken: string;
+}
+````
 
 ## File: src/core/constants/index.ts
 ````typescript
@@ -876,6 +1389,418 @@ import { TokenHelper } from './utils/token.utils';
 export class GlobalModule {}
 ````
 
+## File: src/modules/admin/dto/update-verification.dto.ts
+````typescript
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import {
+  IsEnum,
+  IsNotEmpty,
+  IsOptional,
+  IsString,
+  ValidateIf,
+} from 'class-validator';
+import { DriverVerificationStatus } from 'src/core/enums/user.enum';
+import { VehicleVerificationStatus } from 'src/core/enums/vehicle.enum';
+
+export class UpdateDriverVerificationDto {
+  @ApiProperty({
+    enum: [
+      DriverVerificationStatus.VERIFIED,
+      DriverVerificationStatus.REJECTED,
+    ],
+    description: 'New status for driver verification',
+  })
+  @IsEnum([
+    DriverVerificationStatus.VERIFIED,
+    DriverVerificationStatus.REJECTED,
+  ]) // Admin can only Verify or Reject
+  @IsNotEmpty()
+  status: DriverVerificationStatus.VERIFIED | DriverVerificationStatus.REJECTED;
+
+  @ApiPropertyOptional({
+    description: 'Reason for rejection (required if status is REJECTED)',
+  })
+  @IsOptional()
+  @ValidateIf((o) => o.status === DriverVerificationStatus.REJECTED) // Require reason only if rejecting
+  @IsNotEmpty({ message: 'Rejection reason is required when rejecting.' })
+  @IsString()
+  reason?: string;
+}
+
+export class UpdateVehicleVerificationDto {
+  @ApiProperty({
+    enum: [
+      VehicleVerificationStatus.VERIFIED,
+      VehicleVerificationStatus.REJECTED,
+    ],
+    description: 'New status for vehicle verification',
+  })
+  @IsEnum([
+    VehicleVerificationStatus.VERIFIED,
+    VehicleVerificationStatus.REJECTED,
+  ])
+  @IsNotEmpty()
+  status:
+    | VehicleVerificationStatus.VERIFIED
+    | VehicleVerificationStatus.REJECTED;
+
+  @ApiPropertyOptional({
+    description: 'Reason for rejection (required if status is REJECTED)',
+  })
+  @IsOptional()
+  @ValidateIf((o) => o.status === VehicleVerificationStatus.REJECTED)
+  @IsNotEmpty({ message: 'Rejection reason is required when rejecting.' })
+  @IsString()
+  reason?: string;
+}
+````
+
+## File: src/modules/admin/admin.controller.ts
+````typescript
+import {
+  Controller,
+  Get,
+  Patch,
+  Param,
+  Body,
+  UseGuards,
+  Logger,
+} from '@nestjs/common';
+import { AdminService } from './admin.service';
+import { AuthGuard } from '../../core/guards/authenticate.guard'; // Standard AuthGuard
+// import { RolesGuard } from '../../core/guards/roles.guard'; // Need a RolesGuard
+// import { Roles } from '../../core/decorators/roles.decorator'; // Need a Roles decorator
+import { User as CurrentUser } from '../../core/decorators/user.decorator'; // Decorator to get current user
+import { IUser } from 'src/core/interfaces';
+import {
+  UpdateDriverVerificationDto,
+  UpdateVehicleVerificationDto,
+} from './dto/update-verification.dto';
+import {
+  ApiTags,
+  ApiOperation,
+  ApiResponse,
+  ApiBearerAuth,
+  ApiParam,
+} from '@nestjs/swagger';
+import { User } from '../user/schemas/user.schema'; // Import schemas for response types
+import { Vehicle } from '../driver/schemas/vehicle.schema';
+import mongoose from 'mongoose';
+import { ErrorHelper } from 'src/core/helpers';
+
+@ApiTags('Admin - Verifications')
+@ApiBearerAuth()
+// @Roles(RoleNameEnum.Admin) // Apply Roles decorator when RolesGuard is implemented
+@UseGuards(AuthGuard) // Use AuthGuard first, then RolesGuard
+@Controller('admin/verifications')
+export class AdminController {
+  private readonly logger = new Logger(AdminController.name);
+
+  constructor(private readonly adminService: AdminService) {}
+
+  @Get('drivers/pending')
+  @ApiOperation({
+    summary: 'Get list of drivers pending verification (Admin only)',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'List of pending driver verifications.',
+    type: [User],
+  }) // Type hint
+  @ApiResponse({ status: 401, description: 'Unauthorized.' })
+  @ApiResponse({
+    status: 403,
+    description: 'Forbidden - User is not an Admin.',
+  })
+  async getPendingDrivers(): Promise<{ message: string; data: User[] }> {
+    this.logger.log('Request received for pending driver verifications');
+    const drivers = await this.adminService.getPendingDriverVerifications();
+    return {
+      message: 'Pending driver verifications fetched successfully.',
+      data: drivers.map((d) => d.toObject() as User),
+    };
+  }
+
+  @Get('vehicles/pending')
+  @ApiOperation({
+    summary: 'Get list of vehicles pending verification (Admin only)',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'List of pending vehicle verifications.',
+    type: [Vehicle],
+  })
+  @ApiResponse({ status: 401, description: 'Unauthorized.' })
+  @ApiResponse({
+    status: 403,
+    description: 'Forbidden - User is not an Admin.',
+  })
+  async getPendingVehicles(): Promise<{ message: string; data: Vehicle[] }> {
+    this.logger.log('Request received for pending vehicle verifications');
+    const vehicles = await this.adminService.getPendingVehicleVerifications();
+    return {
+      message: 'Pending vehicle verifications fetched successfully.',
+      data: vehicles.map((v) => v.toObject() as Vehicle),
+    };
+  }
+
+  @Patch('drivers/:userId/status')
+  @ApiOperation({ summary: 'Update driver verification status (Admin only)' })
+  @ApiParam({ name: 'userId', description: 'ID of the driver user to update' })
+  @ApiResponse({
+    status: 200,
+    description: 'Driver verification status updated.',
+    type: User,
+  })
+  @ApiResponse({
+    status: 400,
+    description: 'Bad Request - Invalid input or status transition.',
+  })
+  @ApiResponse({ status: 401, description: 'Unauthorized.' })
+  @ApiResponse({
+    status: 403,
+    description: 'Forbidden - User is not an Admin.',
+  })
+  @ApiResponse({ status: 404, description: 'Not Found - User not found.' })
+  async updateDriverStatus(
+    @CurrentUser() admin: IUser,
+    @Param('userId') userId: string,
+    @Body() updateDto: UpdateDriverVerificationDto,
+  ): Promise<{ message: string; data: User }> {
+    if (!mongoose.Types.ObjectId.isValid(userId)) {
+      ErrorHelper.BadRequestException('Invalid User ID format.');
+    }
+    this.logger.log(`Admin ${admin._id} updating driver ${userId} status`);
+    const updatedDriver =
+      await this.adminService.updateDriverVerificationStatus(
+        admin._id,
+        userId,
+        updateDto,
+      );
+    return {
+      message: 'Driver verification status updated successfully.',
+      data: updatedDriver.toObject() as User,
+    };
+  }
+
+  @Patch('vehicles/:vehicleId/status')
+  @ApiOperation({ summary: 'Update vehicle verification status (Admin only)' })
+  @ApiParam({ name: 'vehicleId', description: 'ID of the vehicle to update' })
+  @ApiResponse({
+    status: 200,
+    description: 'Vehicle verification status updated.',
+    type: Vehicle,
+  })
+  @ApiResponse({
+    status: 400,
+    description: 'Bad Request - Invalid input or status transition.',
+  })
+  @ApiResponse({ status: 401, description: 'Unauthorized.' })
+  @ApiResponse({
+    status: 403,
+    description: 'Forbidden - User is not an Admin.',
+  })
+  @ApiResponse({ status: 404, description: 'Not Found - Vehicle not found.' })
+  async updateVehicleStatus(
+    @CurrentUser() admin: IUser,
+    @Param('vehicleId') vehicleId: string,
+    @Body() updateDto: UpdateVehicleVerificationDto,
+  ): Promise<{ message: string; data: Vehicle }> {
+    if (!mongoose.Types.ObjectId.isValid(vehicleId)) {
+      ErrorHelper.BadRequestException('Invalid Vehicle ID format.');
+    }
+    this.logger.log(`Admin ${admin._id} updating vehicle ${vehicleId} status`);
+    const updatedVehicle =
+      await this.adminService.updateVehicleVerificationStatus(
+        admin._id,
+        vehicleId,
+        updateDto,
+      );
+    return {
+      message: 'Vehicle verification status updated successfully.',
+      data: updatedVehicle.toObject() as Vehicle,
+    };
+  }
+}
+````
+
+## File: src/modules/admin/admin.module.ts
+````typescript
+import { Module } from '@nestjs/common';
+import { AdminService } from './admin.service';
+import { AdminController } from './admin.controller';
+import { MongooseModule } from '@nestjs/mongoose';
+import { User, UserSchema } from '../user/schemas/user.schema';
+import { Vehicle, VehicleSchema } from '../driver/schemas/vehicle.schema';
+// Import AuthModule if guards depend on it and it's not global
+
+@Module({
+  imports: [
+    MongooseModule.forFeature([
+      { name: User.name, schema: UserSchema },
+      { name: Vehicle.name, schema: VehicleSchema },
+    ]),
+    // AuthModule, // If needed for guards
+  ],
+  providers: [AdminService],
+  controllers: [AdminController],
+})
+export class AdminModule {}
+````
+
+## File: src/modules/admin/admin.service.ts
+````typescript
+import { Injectable, Logger } from '@nestjs/common';
+import { InjectModel } from '@nestjs/mongoose';
+import { Model } from 'mongoose';
+import { User, UserDocument } from '../user/schemas/user.schema';
+import { Vehicle, VehicleDocument } from '../driver/schemas/vehicle.schema';
+import { DriverVerificationStatus, UserStatus } from 'src/core/enums/user.enum';
+import { VehicleVerificationStatus } from 'src/core/enums/vehicle.enum';
+import {
+  UpdateDriverVerificationDto,
+  UpdateVehicleVerificationDto,
+} from './dto/update-verification.dto';
+import { ErrorHelper } from 'src/core/helpers';
+
+@Injectable()
+export class AdminService {
+  private readonly logger = new Logger(AdminService.name);
+
+  constructor(
+    @InjectModel(User.name) private userModel: Model<UserDocument>,
+    @InjectModel(Vehicle.name) private vehicleModel: Model<VehicleDocument>,
+    // TODO: Inject NotificationService later
+  ) {}
+
+  // --- Get Pending Verifications ---
+
+  async getPendingDriverVerifications(): Promise<UserDocument[]> {
+    this.logger.log('Fetching pending driver verifications');
+    // Find users who have the DRIVER role and status PENDING_DRIVER_VERIFICATION
+    // Adjust query based on your exact status flow for document submission
+    return this.userModel
+      .find({
+        // 'roles.name': RoleNameEnum.Driver, // This requires querying populated roles or storing role name directly
+        driverVerificationStatus: DriverVerificationStatus.PENDING, // Assuming status is set to PENDING when docs are uploaded
+      })
+      .select(
+        'firstName lastName email driverLicenseFrontImageUrl driverLicenseBackImageUrl createdAt',
+      ) // Select relevant fields
+      .exec();
+  }
+
+  async getPendingVehicleVerifications(): Promise<VehicleDocument[]> {
+    this.logger.log('Fetching pending vehicle verifications');
+    return this.vehicleModel
+      .find({
+        vehicleVerificationStatus: VehicleVerificationStatus.PENDING,
+      })
+      .populate<{ driver: UserDocument }>('driver', 'firstName lastName email') // Show driver info
+      .select(
+        'make model year plateNumber vehicleRegistrationImageUrl vehicleInsuranceImageUrl proofOfOwnershipImageUrl createdAt',
+      ) // Select relevant fields
+      .exec();
+  }
+
+  // --- Update Verification Statuses ---
+
+  async updateDriverVerificationStatus(
+    adminUserId: string,
+    targetUserId: string,
+    dto: UpdateDriverVerificationDto,
+  ): Promise<UserDocument> {
+    this.logger.log(
+      `Admin ${adminUserId} updating verification status for driver ${targetUserId} to ${dto.status}`,
+    );
+
+    const driver = await this.userModel.findById(targetUserId);
+    if (!driver) {
+      ErrorHelper.NotFoundException(`User with ID ${targetUserId} not found.`);
+    }
+    // Add check: ensure target user actually IS a driver?
+
+    // Allow update only if current status is PENDING (or maybe REJECTED for re-verification)
+    const validPreviousStatuses = [
+      DriverVerificationStatus.PENDING,
+      DriverVerificationStatus.REJECTED,
+    ];
+    if (!validPreviousStatuses.includes(driver.driverVerificationStatus)) {
+      ErrorHelper.BadRequestException(
+        `Cannot update verification status from current state: ${driver.driverVerificationStatus}`,
+      );
+    }
+
+    driver.driverVerificationStatus = dto.status;
+    driver.driverRejectionReason =
+      dto.status === DriverVerificationStatus.REJECTED ? dto.reason : undefined;
+
+    // IMPORTANT: Update User's overall status if they are now fully verified
+    if (
+      dto.status === DriverVerificationStatus.VERIFIED &&
+      driver.status === UserStatus.PENDING_DRIVER_VERIFICATION
+    ) {
+      driver.status = UserStatus.ACTIVE;
+      this.logger.log(`Setting user ${targetUserId} status to ACTIVE.`);
+    } else if (dto.status === DriverVerificationStatus.REJECTED) {
+      // Optional: Change user status back if needed, e.g., to PENDING_DRIVER_VERIFICATION or keep as ACTIVE but rejected
+      // driver.status = UserStatus.PENDING_DRIVER_VERIFICATION;
+    }
+
+    await driver.save();
+
+    // TODO: Send notification to driver about status change (Phase 6)
+    // await this.notificationService.notifyDriverVerificationUpdate(driver, dto.status, dto.reason);
+
+    this.logger.log(
+      `Successfully updated driver ${targetUserId} verification status to ${dto.status}`,
+    );
+    return driver;
+  }
+
+  async updateVehicleVerificationStatus(
+    adminUserId: string,
+    vehicleId: string,
+    dto: UpdateVehicleVerificationDto,
+  ): Promise<VehicleDocument> {
+    this.logger.log(
+      `Admin ${adminUserId} updating verification status for vehicle ${vehicleId} to ${dto.status}`,
+    );
+
+    const vehicle = await this.vehicleModel.findById(vehicleId);
+    if (!vehicle) {
+      ErrorHelper.NotFoundException(`Vehicle with ID ${vehicleId} not found.`);
+    }
+
+    const validPreviousStatuses = [
+      VehicleVerificationStatus.PENDING,
+      VehicleVerificationStatus.REJECTED,
+    ];
+    if (!validPreviousStatuses.includes(vehicle.vehicleVerificationStatus)) {
+      ErrorHelper.BadRequestException(
+        `Cannot update verification status from current state: ${vehicle.vehicleVerificationStatus}`,
+      );
+    }
+
+    vehicle.vehicleVerificationStatus = dto.status;
+    vehicle.vehicleRejectionReason =
+      dto.status === VehicleVerificationStatus.REJECTED
+        ? dto.reason
+        : undefined;
+
+    await vehicle.save();
+
+    // TODO: Send notification to driver about status change (Phase 6)
+    // await this.notificationService.notifyVehicleVerificationUpdate(vehicle.driver, vehicle, dto.status, dto.reason);
+
+    this.logger.log(
+      `Successfully updated vehicle ${vehicleId} verification status to ${dto.status}`,
+    );
+    return vehicle;
+  }
+}
+````
+
 ## File: src/modules/auth/dto/auth-response.dto.ts
 ````typescript
 import { ApiProperty } from '@nestjs/swagger';
@@ -954,6 +1879,428 @@ export class VerifyPhoneOtpDto {
 }
 ````
 
+## File: src/modules/booking/dto/create-booking.dto.ts
+````typescript
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import {
+  IsInt,
+  IsMongoId,
+  IsNotEmpty,
+  IsOptional,
+  IsString,
+  Min,
+} from 'class-validator';
+
+export class CreateBookingDto {
+  @ApiProperty({
+    description: 'ID of the ride to book',
+    example: '605c72ef4e79a3a3e8f2d3b4',
+  })
+  @IsMongoId()
+  @IsNotEmpty()
+  rideId: string;
+
+  @ApiProperty({ description: 'Number of seats to book', example: 1 })
+  @IsInt()
+  @Min(1)
+  @IsNotEmpty()
+  seatsNeeded: number;
+
+  @ApiPropertyOptional({
+    description: 'Proposed or agreed pickup address/description',
+    example: 'Meet at Mobil Gas Station, Ikeja',
+  })
+  @IsOptional()
+  @IsString()
+  pickupAddress?: string;
+
+  @ApiPropertyOptional({
+    description: 'Proposed or agreed dropoff address/description',
+    example: 'UI Main Gate',
+  })
+  @IsOptional()
+  @IsString()
+  dropoffAddress?: string;
+}
+````
+
+## File: src/modules/booking/enums/booking-status.enum.ts
+````typescript
+export enum BookingStatus {
+  PENDING = 'PENDING', // Passenger requested, driver action needed
+  CONFIRMED = 'CONFIRMED', // Driver accepted, awaiting payment/start
+  CANCELLED_BY_PASSENGER = 'CANCELLED_BY_PASSENGER',
+  CANCELLED_BY_DRIVER = 'CANCELLED_BY_DRIVER',
+  COMPLETED = 'COMPLETED', // Ride finished for this booking
+  REJECTED = 'REJECTED', // Driver declined the request
+  NO_SHOW = 'NO_SHOW', // Passenger didn't show up (optional)
+}
+````
+
+## File: src/modules/booking/enums/payment-status.enum.ts
+````typescript
+export enum PaymentStatus {
+  PENDING = 'PENDING', // Awaiting payment initiation/completion
+  PAID = 'PAID', // Payment successful
+  FAILED = 'FAILED', // Payment attempt failed
+  REFUNDED = 'REFUNDED', // Payment was refunded
+  NOT_REQUIRED = 'NOT_REQUIRED', // For free rides or cash payment (if supported)
+}
+````
+
+## File: src/modules/booking/schemas/booking.schema.ts
+````typescript
+import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
+import mongoose, { Document } from 'mongoose';
+import { User } from '../../user/schemas/user.schema';
+import { Ride } from '../../rides/schemas/ride.schema';
+import { BookingStatus } from '../enums/booking-status.enum';
+import { PaymentStatus } from '../enums/payment-status.enum';
+
+export type BookingDocument = Booking & Document;
+
+@Schema({ timestamps: true, collection: 'bookings' })
+export class Booking {
+  @Prop({
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: true,
+    index: true,
+  })
+  passenger: User;
+
+  @Prop({
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: true,
+    index: true,
+  })
+  driver: User; // Denormalize for easier querying/access
+
+  @Prop({
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Ride',
+    required: true,
+    index: true,
+  })
+  ride: Ride;
+
+  @Prop({ type: Number, required: true, min: 1 })
+  seatsBooked: number;
+
+  @Prop({ type: Number, required: true, min: 0 })
+  totalPrice: number; // Calculated: pricePerSeat * seatsBooked
+
+  @Prop({
+    type: String,
+    enum: BookingStatus,
+    default: BookingStatus.PENDING,
+    index: true,
+  })
+  status: BookingStatus;
+
+  @Prop({ type: String, required: false }) // Can be finalized during confirmation
+  pickupAddress?: string;
+
+  @Prop({ type: String, required: false })
+  dropoffAddress?: string;
+
+  @Prop({ type: String, enum: PaymentStatus, default: PaymentStatus.PENDING })
+  paymentStatus: PaymentStatus;
+
+  @Prop({ type: String, index: true, sparse: true }) // Store payment gateway reference
+  transactionRef?: string;
+
+  // Optional fields for reviews/ratings
+  @Prop({ type: Boolean, default: false })
+  passengerRated: boolean;
+
+  @Prop({ type: Boolean, default: false })
+  driverRated: boolean;
+
+  // createdAt, updatedAt handled by timestamps: true
+}
+
+export const BookingSchema = SchemaFactory.createForClass(Booking);
+
+// Index for querying user's bookings
+BookingSchema.index({ passenger: 1, createdAt: -1 });
+BookingSchema.index({ driver: 1, ride: 1 });
+````
+
+## File: src/modules/communication/dto/send-message.dto.ts
+````typescript
+import { ApiProperty } from '@nestjs/swagger';
+import {
+  IsMongoId,
+  IsNotEmpty,
+  IsOptional,
+  IsString,
+  MaxLength,
+} from 'class-validator';
+
+export class SendMessageDto {
+  @ApiProperty({
+    description: 'ID of the recipient user',
+    example: '605c72ef4e79a3a3e8f2d3b4',
+  })
+  @IsMongoId()
+  @IsNotEmpty()
+  receiverId: string;
+
+  @ApiProperty({
+    description: 'The text content of the message',
+    maxLength: 1000,
+  })
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(1000)
+  content: string;
+
+  @ApiProperty({
+    description: 'Optional ID of the booking this message relates to',
+    example: '605c72ef4e79a3a3e8f2d3b5',
+    required: false,
+  })
+  @IsOptional()
+  @IsMongoId()
+  bookingId?: string;
+}
+````
+
+## File: src/modules/communication/schemas/message.schema.ts
+````typescript
+import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
+import mongoose, { Document } from 'mongoose';
+import { User } from '../../user/schemas/user.schema';
+import { Booking } from '../../booking/schemas/booking.schema'; // Optional link to booking
+
+export type MessageDocument = Message & Document;
+
+@Schema({ timestamps: true, collection: 'messages' })
+export class Message {
+  @Prop({
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: true,
+    index: true,
+  })
+  sender: User;
+
+  @Prop({
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: true,
+    index: true,
+  })
+  receiver: User;
+
+  @Prop({
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Booking',
+    required: false,
+    index: true,
+  })
+  booking?: Booking; // Optional: Link message to a specific booking context
+
+  @Prop({ type: String, required: true, trim: true, maxlength: 1000 })
+  content: string;
+
+  @Prop({ type: Date }) // Timestamp when the receiver read the message
+  readAt?: Date;
+
+  // createdAt, updatedAt handled by timestamps: true
+}
+
+export const MessageSchema = SchemaFactory.createForClass(Message);
+
+// Index for fetching chat history between two users
+MessageSchema.index({ sender: 1, receiver: 1, createdAt: -1 });
+// Index for fetching messages related to a booking
+MessageSchema.index({ booking: 1, createdAt: -1 });
+````
+
+## File: src/modules/communication/chat.gateway.ts
+````typescript
+import { Logger, UseGuards } from '@nestjs/common';
+import {
+  OnGatewayConnection,
+  OnGatewayDisconnect,
+  WebSocketGateway,
+  WebSocketServer,
+  SubscribeMessage,
+  MessageBody,
+  ConnectedSocket,
+  WsException,
+} from '@nestjs/websockets';
+import { Server, Socket } from 'socket.io';
+import { WsGuard } from '../../core/guards/ws.guard'; // Use the WS Guard
+import { InjectModel } from '@nestjs/mongoose';
+import { Model } from 'mongoose';
+import { Message, MessageDocument } from './schemas/message.schema';
+import { SendMessageDto } from './dto/send-message.dto';
+import { IUser } from 'src/core/interfaces'; // Assuming IUser is defined
+import mongoose from 'mongoose';
+
+// Use a different path or port if needed, ensure it doesn't conflict with AppGateway if kept separate
+// Or integrate this logic into AppGateway
+@WebSocketGateway({
+  cors: { origin: '*' },
+  // namespace: 'chat', // Optional: use a namespace
+  // path: '/api/communication/socket' // Example different path
+})
+@UseGuards(WsGuard) // Apply guard to the whole gateway (or individual handlers)
+export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
+  @WebSocketServer() server: Server; // Inject the server instance
+  private logger = new Logger(ChatGateway.name);
+
+  constructor(
+    @InjectModel(Message.name) private messageModel: Model<MessageDocument>,
+  ) {}
+
+  // Handle connection/disconnection if needed specifically for chat
+  handleConnection(client: Socket) {
+    // User is already authenticated and joined their room via AppGateway/WsGuard
+    const user = client.data.user as IUser;
+    if (user) {
+      this.logger.log(`Chat client connected: ${client.id}, User: ${user._id}`);
+    } else {
+      this.logger.warn(`Chat client connected without user data: ${client.id}`);
+      client.disconnect(true); // Disconnect if user data somehow missing
+    }
+  }
+
+  handleDisconnect(client: Socket) {
+    const user = client.data.user as IUser;
+    this.logger.log(
+      `Chat client disconnected: ${client.id}, User: ${user?._id || 'N/A'}`,
+    );
+  }
+
+  @SubscribeMessage('sendMessage')
+  async handleMessage(
+    @MessageBody() data: SendMessageDto,
+    @ConnectedSocket() client: Socket,
+  ): Promise<{ success: boolean; message?: MessageDocument }> {
+    // Acknowledge message receipt
+    const sender = client.data.user as IUser;
+    if (!sender) {
+      throw new WsException('Authentication data missing on socket.');
+    }
+
+    this.logger.log(
+      `Received 'sendMessage' from ${sender._id} to ${data.receiverId}`,
+    );
+
+    try {
+      // Basic validation (DTO validation happens via pipes if configured)
+      if (!data.receiverId || !data.content) {
+        throw new WsException('Missing receiverId or content.');
+      }
+      if (sender._id.toString() === data.receiverId) {
+        throw new WsException('Cannot send message to yourself.');
+      }
+
+      // Save message to DB
+      const newMessage = new this.messageModel({
+        sender: sender._id,
+        receiver: data.receiverId,
+        content: data.content,
+        booking: data.bookingId || undefined, // Link booking if provided
+      });
+      await newMessage.save();
+      this.logger.log(
+        `Message from ${sender._id} to ${data.receiverId} saved with ID ${newMessage._id}`,
+      );
+
+      // Emit message to the receiver's room (using their user ID as room name)
+      this.server.to(data.receiverId).emit('newMessage', newMessage.toObject()); // Send plain object
+      this.logger.log(`Emitted 'newMessage' to room ${data.receiverId}`);
+
+      // Acknowledge success back to the sender
+      return {
+        success: true,
+        message: newMessage.toObject() as MessageDocument,
+      };
+    } catch (error) {
+      this.logger.error(
+        `Error handling 'sendMessage' from ${sender._id}: ${error.message}`,
+        error.stack,
+      );
+      // Send error back to the sender
+      client.emit(
+        'exception',
+        `Failed to send message: ${error.message || 'Server error'}`,
+      );
+      return { success: false }; // Acknowledge failure
+    }
+  }
+
+  // Optional: Handle message read status
+  @SubscribeMessage('markAsRead')
+  async handleMarkAsRead(
+    @MessageBody() data: { messageId: string }, // Expect message ID
+    @ConnectedSocket() client: Socket,
+  ): Promise<{ success: boolean }> {
+    const currentUser = client.data.user as IUser;
+    if (!currentUser) {
+      throw new WsException('Authentication data missing on socket.');
+    }
+    if (!data.messageId || !mongoose.Types.ObjectId.isValid(data.messageId)) {
+      throw new WsException('Invalid messageId provided.');
+    }
+
+    try {
+      const result = await this.messageModel.updateOne(
+        { _id: data.messageId, receiver: currentUser._id, readAt: null }, // Find unread message for this user
+        { $set: { readAt: new Date() } },
+      );
+      if (result.modifiedCount > 0) {
+        this.logger.log(
+          `Message ${data.messageId} marked as read by user ${currentUser._id}`,
+        );
+        // Optional: notify sender that message was read?
+        return { success: true };
+      } else {
+        this.logger.log(
+          `Message ${data.messageId} not found, not receiver, or already read by ${currentUser._id}`,
+        );
+        return { success: false }; // No update happened
+      }
+    } catch (error) {
+      this.logger.error(
+        `Error marking message ${data.messageId} as read: ${error.message}`,
+        error.stack,
+      );
+      client.emit(
+        'exception',
+        `Failed to mark message as read: ${error.message || 'Server error'}`,
+      );
+      return { success: false };
+    }
+  }
+}
+````
+
+## File: src/modules/communication/communication.module.ts
+````typescript
+import { Module } from '@nestjs/common';
+import { ChatGateway } from './chat.gateway';
+import { MongooseModule } from '@nestjs/mongoose';
+import { Message, MessageSchema } from './schemas/message.schema';
+import { AppModule } from '../app.module';
+
+@Module({
+  imports: [
+    MongooseModule.forFeature([{ name: Message.name, schema: MessageSchema }]),
+    AppModule,
+  ],
+  providers: [ChatGateway], // Add ChatGateway
+  exports: [ChatGateway], // Export if needed
+})
+export class CommunicationModule {}
+````
+
 ## File: src/modules/config/config.module.ts
 ````typescript
 import { Module } from '@nestjs/common';
@@ -970,20 +2317,363 @@ import { Module } from '@nestjs/common';
 export class DatabaseModule {}
 ````
 
-## File: src/modules/driver/riders.module.ts
+## File: src/modules/driver/dto/driver-registration.dto.ts
 ````typescript
-import { Module } from '@nestjs/common';
+import { BaseRegistrationDto } from 'src/modules/auth/dto/base-registeration.dto';
 
-@Module({})
-export class RidersModule {}
+// For the initial user creation, driver-specific details like license and vehicle info
+// are usually collected *after* the account is created during an onboarding/verification flow.
+// Therefore, this DTO extends the base without additional required fields for registration itself.
+
+export class DriverRegistrationDto extends BaseRegistrationDto {}
 ````
 
-## File: src/modules/geolocation/geolocation.module.ts
+## File: src/modules/driver/dto/register-vehicle.dto.ts
+````typescript
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import {
+  IsArray,
+  IsInt,
+  IsNotEmpty,
+  IsOptional,
+  IsString,
+  Min,
+  Max,
+  MinLength,
+  MaxLength,
+  IsUppercase, // For plate number potentially
+  ArrayMaxSize,
+} from 'class-validator';
+
+export class RegisterVehicleDto {
+  @ApiProperty({ example: 'Toyota', description: 'Make of the vehicle' })
+  @IsString()
+  @IsNotEmpty()
+  @MinLength(2)
+  @MaxLength(50)
+  make: string;
+
+  @ApiProperty({ example: 'Camry', description: 'Model of the vehicle' })
+  @IsString()
+  @IsNotEmpty()
+  @MinLength(1)
+  @MaxLength(50)
+  model: string;
+
+  @ApiProperty({ example: 2018, description: 'Year of manufacture' })
+  @IsInt()
+  @Min(1980) // Adjust range as needed
+  @Max(new Date().getFullYear()) // Cannot be newer than current year
+  year: number;
+
+  @ApiProperty({ example: 'Blue', description: 'Color of the vehicle' })
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(30)
+  color: string;
+
+  @ApiProperty({
+    example: 'ABC123XY',
+    description: 'Vehicle plate number (unique)',
+  })
+  @IsString()
+  @IsNotEmpty()
+  @IsUppercase() // Optional: Enforce uppercase if desired
+  @MaxLength(15) // Adjust max length
+  plateNumber: string;
+
+  @ApiProperty({
+    example: 4,
+    description: 'Number of seats available for passengers (excluding driver)',
+  })
+  @IsInt()
+  @Min(1)
+  @Max(10) // Set a reasonable max
+  seatsAvailable: number;
+
+  @ApiPropertyOptional({
+    type: [String],
+    example: ['Air Conditioning', 'USB Port'],
+    description: 'List of vehicle features/amenities',
+  })
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  @ArrayMaxSize(10) // Limit number of features
+  features?: string[];
+}
+````
+
+## File: src/modules/driver/enums/vehicle-document-type.enum.ts
+````typescript
+export enum VehicleDocumentType {
+  REGISTRATION = 'REGISTRATION',
+  INSURANCE = 'INSURANCE',
+  PROOF_OF_OWNERSHIP = 'PROOF_OF_OWNERSHIP',
+  VEHICLE_PERMIT = 'VEHICLE_PERMIT',
+  ROADWORTHINESS = 'ROADWORTHINESS',
+}
+````
+
+## File: src/modules/driver/driver.module.ts
 ````typescript
 import { Module } from '@nestjs/common';
+import { MongooseModule } from '@nestjs/mongoose';
+import { DriverService } from './driver.service';
+import { DriverController } from './driver.controller';
+import { Vehicle, VehicleSchema } from './schemas/vehicle.schema';
+import { User, UserSchema } from '../user/schemas/user.schema'; // Needed to update User
+import { Role, roleSchema } from '../user/schemas/role.schema'; // Needed to check role
+import { AwsS3Module } from '../storage/s3-bucket.module';
 
-@Module({})
-export class GeolocationModule {}
+@Module({
+  imports: [
+    MongooseModule.forFeature([
+      { name: Vehicle.name, schema: VehicleSchema },
+      { name: User.name, schema: UserSchema }, // Import User schema
+      { name: Role.name, schema: roleSchema }, // Import Role schema
+    ]),
+    AwsS3Module.forRoot('authAwsSecret'),
+  ],
+  providers: [DriverService],
+  controllers: [DriverController],
+  exports: [DriverService], // Export if needed by other modules
+})
+export class DriverModule {}
+````
+
+## File: src/modules/geolocation/geolocation.service.ts
+````typescript
+import {
+  Injectable,
+  Logger,
+  InternalServerErrorException,
+  BadRequestException,
+} from '@nestjs/common';
+// Keep enum imports for other parts like TravelMode
+import {
+  Client,
+  DirectionsRequest,
+  GeocodeRequest,
+  ReverseGeocodeRequest,
+  LatLngLiteral,
+  TravelMode,
+} from '@googlemaps/google-maps-services-js';
+import { SecretsService } from '../../global/secrets/service';
+import { ErrorHelper } from 'src/core/helpers';
+
+// Interfaces remain the same
+export interface Coordinates {
+  lat: number;
+  lng: number;
+}
+export interface AddressComponents {
+  streetNumber?: string;
+  route?: string;
+  locality?: string;
+  administrativeAreaLevel1?: string;
+  country?: string;
+  postalCode?: string;
+  formattedAddress?: string;
+}
+export interface RouteInfo {
+  distanceMeters: number;
+  durationSeconds: number;
+}
+
+@Injectable()
+export class GeolocationService {
+  private readonly logger = new Logger(GeolocationService.name);
+  private googleMapsClient: Client | null = null;
+
+  constructor(private secretsService: SecretsService) {
+    const { apiKey } = this.secretsService.googleMaps;
+    if (apiKey) {
+      this.googleMapsClient = new Client({});
+    } else {
+      this.logger.error(
+        'Google Maps API Key not found. GeolocationService will not function.',
+      );
+    }
+  }
+
+  private checkClient(): void {
+    if (!this.googleMapsClient) {
+      this.logger.error(
+        'Google Maps client not initialized due to missing API key.',
+      );
+      throw new InternalServerErrorException(
+        'Geolocation service is not configured properly.',
+      );
+    }
+  }
+
+  async geocode(address: string): Promise<Coordinates | null> {
+    this.checkClient();
+    const params: GeocodeRequest['params'] = {
+      address: address,
+      key: this.secretsService.googleMaps.apiKey,
+      components: 'country:NG',
+    };
+
+    try {
+      this.logger.log(`Geocoding address: ${address}`);
+      const response = await this.googleMapsClient.geocode({ params });
+
+      if (response.data.status === 'OK' && response.data.results.length > 0) {
+        const location = response.data.results[0].geometry.location;
+        this.logger.log(
+          `Geocode successful for "${address}": ${JSON.stringify(location)}`,
+        );
+        return location;
+      } else {
+        this.logger.warn(
+          `Geocoding failed for address "${address}". Status: ${response.data.status}, Error: ${response.data.error_message}`,
+        );
+        if (response.data.status === 'ZERO_RESULTS') {
+          throw new BadRequestException(
+            `Could not find coordinates for the address: ${address}`,
+          );
+        }
+        throw new InternalServerErrorException(
+          `Geocoding failed with status: ${response.data.status}`,
+        );
+      }
+    } catch (error) {
+      if (
+        error instanceof BadRequestException ||
+        error instanceof InternalServerErrorException
+      ) {
+        throw error;
+      }
+      this.logger.error(
+        `Error calling Google Geocoding API for address "${address}": ${error.message}`,
+        error.stack,
+      );
+      ErrorHelper.InternalServerErrorException('Failed to perform geocoding.');
+    }
+  }
+
+  async reverseGeocode(
+    lat: number,
+    lng: number,
+  ): Promise<AddressComponents | null> {
+    this.checkClient();
+    const params: ReverseGeocodeRequest['params'] = {
+      latlng: { lat, lng },
+      key: this.secretsService.googleMaps.apiKey,
+    };
+
+    try {
+      this.logger.log(`Reverse geocoding coordinates: lat=${lat}, lng=${lng}`);
+      const response = await this.googleMapsClient.reverseGeocode({ params });
+
+      if (response.data.status === 'OK' && response.data.results.length > 0) {
+        const firstResult = response.data.results[0];
+        const components: AddressComponents = {
+          formattedAddress: firstResult.formatted_address,
+        };
+
+        // Cast component.types to string[] before using .includes with string literals
+        firstResult.address_components.forEach((component) => {
+          const types = component.types as string[]; // Cast here
+          if (types.includes('street_number'))
+            components.streetNumber = component.long_name;
+          if (types.includes('route')) components.route = component.long_name;
+          if (types.includes('locality'))
+            components.locality = component.long_name;
+          if (types.includes('administrative_area_level_1'))
+            components.administrativeAreaLevel1 = component.long_name;
+          if (types.includes('country'))
+            components.country = component.long_name;
+          if (types.includes('postal_code'))
+            components.postalCode = component.long_name;
+        });
+
+        this.logger.log(
+          `Reverse geocode successful for ${lat},${lng}: "${components.formattedAddress}"`,
+        );
+        return components;
+      } else {
+        this.logger.warn(
+          `Reverse geocoding failed for ${lat},${lng}. Status: ${response.data.status}, Error: ${response.data.error_message}`,
+        );
+        return null;
+      }
+    } catch (error) {
+      this.logger.error(
+        `Error calling Google Reverse Geocoding API for ${lat},${lng}: ${error.message}`,
+        error.stack,
+      );
+      ErrorHelper.InternalServerErrorException(
+        'Failed to perform reverse geocoding.',
+      );
+    }
+    return null;
+  }
+
+  async calculateRoute(
+    origin: LatLngLiteral,
+    destination: LatLngLiteral,
+    waypoints?: LatLngLiteral[],
+  ): Promise<RouteInfo | null> {
+    this.checkClient();
+    const params: DirectionsRequest['params'] = {
+      origin: origin,
+      destination: destination,
+      waypoints: waypoints,
+      key: this.secretsService.googleMaps.apiKey,
+      mode: TravelMode.driving, // Enum is correct here
+    };
+
+    try {
+      this.logger.log(
+        `Calculating route from ${JSON.stringify(origin)} to ${JSON.stringify(destination)}`,
+      );
+      const response = await this.googleMapsClient.directions({ params });
+
+      if (response.data.status === 'OK' && response.data.routes.length > 0) {
+        const route = response.data.routes[0];
+        if (route.legs.length > 0) {
+          let totalDistance = 0;
+          let totalDuration = 0;
+          route.legs.forEach((leg) => {
+            totalDistance += leg.distance?.value || 0;
+            totalDuration += leg.duration?.value || 0;
+          });
+
+          this.logger.log(
+            `Route calculation successful: Distance=${totalDistance}m, Duration=${totalDuration}s`,
+          );
+          return {
+            distanceMeters: totalDistance,
+            durationSeconds: totalDuration,
+          };
+        }
+      }
+
+      this.logger.warn(
+        `Route calculation failed. Status: ${response.data.status}, Error: ${response.data.error_message}`,
+      );
+      if (response.data.status === 'ZERO_RESULTS') {
+        throw new BadRequestException(
+          'Could not find a driving route between the specified locations.',
+        );
+      }
+      return null;
+    } catch (error) {
+      if (error instanceof BadRequestException) {
+        throw error;
+      }
+      this.logger.error(
+        `Error calling Google Directions API: ${error.message}`,
+        error.stack,
+      );
+      ErrorHelper.InternalServerErrorException('Failed to calculate route.');
+    }
+    return null;
+  }
+}
 ````
 
 ## File: src/modules/health/health.module.ts
@@ -2426,12 +4116,1102 @@ import { BaseRegistrationDto } from 'src/modules/auth/dto/base-registeration.dto
 export class PassengerRegistrationDto extends BaseRegistrationDto {}
 ````
 
-## File: src/modules/rides/rides.module.ts
+## File: src/modules/payment/payment.module.ts
 ````typescript
 import { Module } from '@nestjs/common';
+import { HttpModule } from '@nestjs/axios'; // Import HttpModule
+import { PaymentService } from './payment.service';
+import { WebhookController } from './webhook.controller';
+import { MongooseModule } from '@nestjs/mongoose';
+import { Booking, BookingSchema } from '../booking/schemas/booking.schema'; // Need BookingModel
+import { SecretsModule } from 'src/global/secrets/module';
 
-@Module({})
-export class RidesModule {}
+@Module({
+  imports: [
+    HttpModule, // Add HttpModule for making requests to Paystack
+    MongooseModule.forFeature([
+      { name: Booking.name, schema: BookingSchema }, // To update booking status
+    ]),
+    SecretsModule,
+  ],
+  providers: [PaymentService],
+  controllers: [WebhookController], // Webhook controller for Paystack callbacks
+  exports: [PaymentService], // Export service for BookingModule to use
+})
+export class PaymentModule {}
+````
+
+## File: src/modules/payment/payment.service.ts
+````typescript
+import { Injectable, Logger } from '@nestjs/common';
+import { HttpService } from '@nestjs/axios';
+import { SecretsService } from '../../global/secrets/service';
+import { AxiosError } from 'axios';
+import { firstValueFrom } from 'rxjs';
+import * as crypto from 'crypto'; // For webhook signature verification
+import { InjectModel } from '@nestjs/mongoose';
+import { Model } from 'mongoose';
+import { Booking, BookingDocument } from '../booking/schemas/booking.schema';
+import { PaymentStatus } from '../booking/enums/payment-status.enum';
+import { ErrorHelper } from 'src/core/helpers';
+
+// Define expected Paystack response structures (can be more detailed)
+interface PaystackInitializeResponse {
+  status: boolean;
+  message: string;
+  data: {
+    authorization_url: string;
+    access_code: string;
+    reference: string;
+  };
+}
+
+interface PaystackVerifyResponse {
+  status: boolean;
+  message: string;
+  data: {
+    status: 'success' | 'failed' | 'abandoned';
+    reference: string;
+    amount: number; // Amount is in kobo (smallest unit)
+    currency: string;
+    customer: {
+      email: string;
+    };
+    metadata?: {
+      // Include metadata if you send it
+      bookingId?: string;
+      userId?: string;
+    };
+    // ... other fields
+  };
+}
+
+@Injectable()
+export class PaymentService {
+  private readonly logger = new Logger(PaymentService.name);
+  private readonly paystackBaseUrl: string;
+  private readonly paystackSecretKey: string;
+  private readonly frontendCallbackUrl: string;
+
+  constructor(
+    private readonly httpService: HttpService,
+    private readonly secretsService: SecretsService,
+    @InjectModel(Booking.name) private bookingModel: Model<BookingDocument>,
+  ) {
+    const { secretKey, baseUrl, frontendCallbackUrl } =
+      this.secretsService.paystack;
+    this.paystackSecretKey = secretKey;
+    this.paystackBaseUrl = baseUrl;
+    this.frontendCallbackUrl = frontendCallbackUrl;
+
+    if (!this.paystackSecretKey) {
+      this.logger.error('Paystack Secret Key not configured!');
+      // Potentially throw error to prevent module initialization without key
+    }
+  }
+
+  private getAuthHeader() {
+    return { Authorization: `Bearer ${this.paystackSecretKey}` };
+  }
+
+  async initializeTransaction(
+    amountInKobo: number, // Paystack expects amount in smallest unit (kobo for NGN)
+    email: string,
+    bookingId: string,
+    userId: string,
+  ): Promise<{
+    authorization_url: string;
+    reference: string;
+    access_code: string;
+  }> {
+    const url = `${this.paystackBaseUrl}/transaction/initialize`;
+    // Generate a unique reference for this transaction
+    const reference = `RIDEBY-${bookingId}-${Date.now()}`;
+
+    const payload = {
+      email,
+      amount: amountInKobo, // Amount in kobo
+      currency: 'NGN', // Assuming Nigerian Naira
+      reference,
+      callback_url: this.frontendCallbackUrl, // Where Paystack redirects frontend
+      metadata: {
+        // Send custom data to identify transaction later
+        bookingId: bookingId,
+        userId: userId,
+        service: 'ride-by-booking',
+      },
+    };
+
+    try {
+      this.logger.log(
+        `Initializing Paystack transaction for booking ${bookingId} with ref ${reference}`,
+      );
+      const response = await firstValueFrom(
+        this.httpService.post<PaystackInitializeResponse>(url, payload, {
+          headers: this.getAuthHeader(),
+        }),
+      );
+
+      if (response.data.status && response.data.data?.authorization_url) {
+        this.logger.log(
+          `Paystack init successful for ref ${reference}. URL: ${response.data.data.authorization_url}`,
+        );
+        return response.data.data;
+      } else {
+        this.logger.error(
+          `Paystack init failed for ref ${reference}: ${response.data.message}`,
+        );
+        ErrorHelper.InternalServerErrorException(
+          `Payment initialization failed: ${response.data.message}`,
+        );
+      }
+    } catch (error) {
+      const axiosError = error as AxiosError;
+      this.logger.error(
+        `Error calling Paystack initialize API for ref ${reference}: ${axiosError.message}`,
+        axiosError.stack,
+      );
+      const errorMsg =
+        axiosError.response?.data?.['message'] ||
+        axiosError.message ||
+        'Payment service error';
+      ErrorHelper.InternalServerErrorException(
+        `Payment initialization error: ${errorMsg}`,
+      );
+    }
+  }
+
+  async verifyTransaction(
+    reference: string,
+  ): Promise<PaystackVerifyResponse['data'] | null> {
+    const url = `${this.paystackBaseUrl}/transaction/verify/${reference}`;
+    try {
+      this.logger.log(`Verifying Paystack transaction ref ${reference}`);
+      const response = await firstValueFrom(
+        this.httpService.get<PaystackVerifyResponse>(url, {
+          headers: this.getAuthHeader(),
+        }),
+      );
+
+      if (response.data.status) {
+        this.logger.log(
+          `Paystack verification status for ref ${reference}: ${response.data.data.status}`,
+        );
+        return response.data.data;
+      } else {
+        this.logger.warn(
+          `Paystack verify failed for ref ${reference}: ${response.data.message}`,
+        );
+        return null; // Or throw based on message? For webhooks, maybe return null.
+      }
+    } catch (error) {
+      const axiosError = error as AxiosError;
+      // Paystack often returns 404 for invalid reference, treat as failure
+      if (axiosError.response?.status === 404) {
+        this.logger.warn(
+          `Paystack transaction ref ${reference} not found or invalid.`,
+        );
+        return null;
+      }
+      this.logger.error(
+        `Error calling Paystack verify API for ref ${reference}: ${axiosError.message}`,
+        axiosError.stack,
+      );
+      // Don't throw here for webhooks, allow processing to continue if possible
+      return null;
+    }
+  }
+
+  verifyWebhookSignature(signature: string, rawBody: string): boolean {
+    if (!signature || !rawBody) {
+      this.logger.warn(
+        'Webhook verification failed: Missing signature or body.',
+      );
+      return false;
+    }
+    const hash = crypto
+      .createHmac('sha512', this.paystackSecretKey)
+      .update(rawBody) // Use the raw request body
+      .digest('hex');
+    const isValid = hash === signature;
+    if (!isValid) {
+      this.logger.warn(
+        `Webhook verification failed: Signature mismatch. Expected ${hash}, Got ${signature}`,
+      );
+    } else {
+      this.logger.log('Webhook signature verified successfully.');
+    }
+    return isValid;
+  }
+
+  async handleWebhook(eventPayload: any): Promise<void> {
+    const { event, data } = eventPayload;
+    const reference = data?.reference;
+
+    this.logger.log(
+      `Received Paystack webhook event: ${event} for reference: ${reference || 'N/A'}`,
+    );
+
+    if (!reference) {
+      this.logger.warn(
+        'Webhook payload missing transaction reference. Ignoring.',
+      );
+      return; // Cannot process without reference
+    }
+
+    // Process only relevant events (e.g., successful charge)
+    if (event === 'charge.success') {
+      // 1. Verify the transaction again with Paystack API for security
+      const verificationData = await this.verifyTransaction(reference);
+
+      if (!verificationData || verificationData.status !== 'success') {
+        this.logger.warn(
+          `Webhook event ${event} for ref ${reference} could not be verified or status is not 'success'. Ignoring.`,
+        );
+        return;
+      }
+
+      // 2. Extract necessary info (e.g., bookingId from metadata)
+      const bookingId = verificationData.metadata?.bookingId;
+      if (!bookingId) {
+        this.logger.warn(
+          `Webhook event ${event} for ref ${reference} missing bookingId in metadata. Cannot update booking.`,
+        );
+        return;
+      }
+
+      // 3. Update Booking Status
+      try {
+        const updatedBooking = await this.bookingModel.findOneAndUpdate(
+          {
+            _id: bookingId,
+            transactionRef: reference,
+            paymentStatus: PaymentStatus.PENDING,
+          }, // Ensure we update the correct pending booking
+          { $set: { paymentStatus: PaymentStatus.PAID } },
+          { new: true }, // Return the updated document
+        );
+
+        if (updatedBooking) {
+          this.logger.log(
+            `Booking ${bookingId} payment status updated to PAID via webhook for ref ${reference}.`,
+          );
+          // TODO: Trigger Notification to Driver/Passenger (Phase 6)
+          // await this.notificationService.notifyPaymentSuccess(updatedBooking);
+        } else {
+          this.logger.warn(
+            `Booking ${bookingId} not found or already processed for webhook ref ${reference}.`,
+          );
+        }
+      } catch (error) {
+        this.logger.error(
+          `Error updating booking ${bookingId} from webhook ref ${reference}: ${error.message}`,
+          error.stack,
+        );
+        // Consider retry logic or dead-letter queue for failed updates
+        ErrorHelper.InternalServerErrorException(
+          'Webhook processing failed for booking update.',
+        ); // Throw to signal error to Paystack (it might retry)
+      }
+    } else if (event === 'charge.failed') {
+      // Handle failed payment if needed (e.g., update status to FAILED)
+      const bookingId = data.metadata?.bookingId;
+      if (bookingId) {
+        await this.bookingModel.updateOne(
+          {
+            _id: bookingId,
+            transactionRef: reference,
+            paymentStatus: PaymentStatus.PENDING,
+          },
+          { $set: { paymentStatus: PaymentStatus.FAILED } },
+        );
+        this.logger.log(
+          `Booking ${bookingId} payment status updated to FAILED via webhook for ref ${reference}.`,
+        );
+        // TODO: Trigger Notification?
+      }
+    } else {
+      this.logger.log(`Ignoring Paystack webhook event type: ${event}`);
+    }
+  }
+}
+````
+
+## File: src/modules/payment/webhook.controller.ts
+````typescript
+import {
+  Controller,
+  Post,
+  Req,
+  RawBodyRequest,
+  Headers,
+  Logger,
+  HttpStatus,
+  HttpCode,
+} from '@nestjs/common';
+import { Request } from 'express';
+import { PaymentService } from './payment.service';
+import { ApiTags, ApiOperation, ApiResponse, ApiHeader } from '@nestjs/swagger';
+import { ErrorHelper } from 'src/core/helpers';
+
+@ApiTags('Webhooks')
+@Controller('webhooks')
+export class WebhookController {
+  private readonly logger = new Logger(WebhookController.name);
+
+  constructor(private readonly paymentService: PaymentService) {}
+
+  @Post('paystack')
+  @HttpCode(HttpStatus.OK) // Paystack expects 200 OK on success
+  @ApiOperation({ summary: 'Handle Paystack webhook events' })
+  @ApiHeader({
+    name: 'x-paystack-signature',
+    description: 'Paystack webhook signature',
+    required: true,
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Webhook received and processing acknowledged.',
+  })
+  @ApiResponse({
+    status: 400,
+    description: 'Bad Request - Invalid payload or signature.',
+  })
+  @ApiResponse({ status: 403, description: 'Forbidden - Invalid signature.' })
+  async handlePaystackWebhook(
+    @Headers('x-paystack-signature') signature: string,
+    @Req() req: RawBodyRequest<Request>, // Use RawBodyRequest to get raw body buffer
+  ): Promise<{ received: boolean }> {
+    // IMPORTANT: Ensure express.raw({ type: 'application/json' }) middleware is applied in main.ts
+    // for routes including '/webhook' to get the raw body.
+    if (!req.rawBody) {
+      this.logger.error(
+        'Raw body not available for webhook verification. Ensure raw body middleware is configured.',
+      );
+      ErrorHelper.BadRequestException('Webhook configuration error.');
+    }
+
+    const rawBodyString = req.rawBody.toString();
+    this.logger.log(
+      `Received Paystack webhook. Signature: ${signature ? 'Present' : 'Missing'}`,
+    );
+
+    // 1. Verify Signature
+    const isValid = this.paymentService.verifyWebhookSignature(
+      signature,
+      rawBodyString,
+    );
+    if (!isValid) {
+      this.logger.error('Invalid Paystack webhook signature received.');
+      ErrorHelper.ForbiddenException('Invalid webhook signature.'); // Use 403 for security failures
+    }
+
+    this.logger.log('Paystack webhook signature verified.');
+
+    // 2. Parse Payload (already parsed by default if JSON, but use rawBodyString if needed)
+    const payload = req.body; // Assuming express.json() ran AFTER express.raw()
+
+    // 3. Process Event Asynchronously (Recommended for resilience)
+    // You could push this to a Bull queue instead of processing directly
+    try {
+      await this.paymentService.handleWebhook(payload);
+    } catch (error) {
+      // Log the error, but still return 200 OK to Paystack to prevent retries for processing errors
+      // unless it's an error you want Paystack to retry (like temporary DB issue)
+      this.logger.error(
+        `Error processing Paystack webhook payload: ${error.message}`,
+        error.stack,
+      );
+      // Potentially throw specific errors if needed, but generally acknowledge receipt
+      // ErroHelper.InternalServerErrorException('Webhook processing failed.');
+    }
+
+    // 4. Acknowledge Receipt to Paystack
+    // Return 200 OK immediately even if background processing is ongoing
+    return { received: true };
+  }
+}
+````
+
+## File: src/modules/rating/dto/submit-rating.dto.ts
+````typescript
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import {
+  IsInt,
+  IsMongoId,
+  IsNotEmpty,
+  IsOptional,
+  IsString,
+  Max,
+  MaxLength,
+  Min,
+} from 'class-validator';
+
+export class SubmitRatingDto {
+  @ApiProperty({
+    description: 'ID of the completed booking being rated',
+    example: '605c72ef4e79a3a3e8f2d3b4',
+  })
+  @IsMongoId()
+  @IsNotEmpty()
+  bookingId: string;
+
+  @ApiProperty({ description: 'Rating score (1 to 5)', example: 5 })
+  @IsInt()
+  @Min(1)
+  @Max(5)
+  @IsNotEmpty()
+  score: number;
+
+  @ApiPropertyOptional({
+    description: 'Optional comment for the rating',
+    maxLength: 500,
+    example: 'Great ride!',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  comment?: string;
+}
+````
+
+## File: src/modules/rating/enums/role-rated-as.enum.ts
+````typescript
+export enum RoleRatedAs {
+  DRIVER = 'DRIVER',
+  PASSENGER = 'PASSENGER',
+}
+````
+
+## File: src/modules/rating/schemas/rating.schema.ts
+````typescript
+import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
+import mongoose, { Document } from 'mongoose';
+import { User } from '../../user/schemas/user.schema';
+import { Ride } from '../../rides/schemas/ride.schema';
+import { Booking } from '../../booking/schemas/booking.schema';
+import { RoleRatedAs } from '../enums/role-rated-as.enum';
+
+export type RatingDocument = Rating & Document;
+
+@Schema({ timestamps: true, collection: 'ratings' })
+export class Rating {
+  @Prop({
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: true,
+    index: true,
+  })
+  rater: User; // The user giving the rating
+
+  @Prop({
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: true,
+    index: true,
+  })
+  ratee: User; // The user being rated
+
+  @Prop({
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Ride',
+    required: true,
+    index: true,
+  })
+  ride: Ride;
+
+  @Prop({
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Booking',
+    required: true,
+    index: true,
+  })
+  booking: Booking;
+
+  @Prop({ type: String, enum: RoleRatedAs, required: true })
+  roleRatedAs: RoleRatedAs; // Was the ratee acting as a DRIVER or PASSENGER?
+
+  @Prop({ type: Number, required: true, min: 1, max: 5 })
+  score: number;
+
+  @Prop({ type: String, trim: true, maxlength: 500 })
+  comment?: string;
+
+  // createdAt handled by timestamps: true
+}
+
+export const RatingSchema = SchemaFactory.createForClass(Rating);
+
+// Index to prevent duplicate ratings for the same interaction
+RatingSchema.index({ rater: 1, booking: 1 }, { unique: true });
+// Index to fetch ratings received by a user
+RatingSchema.index({ ratee: 1, createdAt: -1 });
+````
+
+## File: src/modules/rating/rating.controller.ts
+````typescript
+import { Controller, Post, Body, UseGuards, Logger } from '@nestjs/common';
+import { RatingService } from './rating.service';
+import { SubmitRatingDto } from './dto/submit-rating.dto';
+import { AuthGuard } from '../../core/guards/authenticate.guard';
+import { User } from '../../core/decorators/user.decorator';
+import { IUser } from '../../core/interfaces/user/user.interface';
+import {
+  ApiTags,
+  ApiOperation,
+  ApiResponse,
+  ApiBearerAuth,
+} from '@nestjs/swagger';
+import { Rating } from './schemas/rating.schema'; // For response type hint
+
+@ApiTags('Ratings')
+@ApiBearerAuth()
+@UseGuards(AuthGuard)
+@Controller('ratings')
+export class RatingController {
+  private readonly logger = new Logger(RatingController.name);
+
+  constructor(private readonly ratingService: RatingService) {}
+
+  @Post()
+  @ApiOperation({ summary: 'Submit a rating for a completed booking' })
+  @ApiResponse({
+    status: 201,
+    description: 'Rating submitted successfully.',
+    type: Rating,
+  })
+  @ApiResponse({
+    status: 400,
+    description: 'Bad Request - Invalid input or booking not completed.',
+  })
+  @ApiResponse({ status: 401, description: 'Unauthorized.' })
+  @ApiResponse({
+    status: 403,
+    description: 'Forbidden - User not part of the booking.',
+  })
+  @ApiResponse({ status: 404, description: 'Not Found - Booking not found.' })
+  @ApiResponse({
+    status: 409,
+    description:
+      'Conflict - Rating already submitted for this booking by this user.',
+  })
+  async submitRating(
+    @User() rater: IUser,
+    @Body() submitRatingDto: SubmitRatingDto,
+  ): Promise<{ message: string; data: Rating }> {
+    this.logger.log(
+      `User ${rater._id} submitting rating for booking ${submitRatingDto.bookingId}`,
+    );
+    const newRating = await this.ratingService.submitRating(
+      rater._id,
+      submitRatingDto,
+    );
+    return {
+      message: 'Rating submitted successfully.',
+      data: newRating.toObject() as Rating,
+    };
+  }
+}
+````
+
+## File: src/modules/rating/rating.module.ts
+````typescript
+import { Module } from '@nestjs/common';
+import { MongooseModule } from '@nestjs/mongoose';
+import { RatingService } from './rating.service';
+import { RatingController } from './rating.controller';
+import { Rating, RatingSchema } from './schemas/rating.schema';
+import { Booking, BookingSchema } from '../booking/schemas/booking.schema'; // Need BookingModel
+import { User, UserSchema } from '../user/schemas/user.schema'; // Need UserModel
+
+@Module({
+  imports: [
+    MongooseModule.forFeature([
+      { name: Rating.name, schema: RatingSchema },
+      { name: Booking.name, schema: BookingSchema }, // To verify booking status/ownership
+      { name: User.name, schema: UserSchema }, // To update user average ratings
+    ]),
+  ],
+  providers: [RatingService],
+  controllers: [RatingController],
+  exports: [RatingService],
+})
+export class RatingModule {}
+````
+
+## File: src/modules/rating/rating.service.ts
+````typescript
+import { Injectable, Logger, HttpException } from '@nestjs/common';
+import { InjectModel } from '@nestjs/mongoose';
+import mongoose, { Model } from 'mongoose'; // Import ClientSession
+import { Rating, RatingDocument } from './schemas/rating.schema';
+import { Booking, BookingDocument } from '../booking/schemas/booking.schema';
+import { User, UserDocument } from '../user/schemas/user.schema';
+import { SubmitRatingDto } from './dto/submit-rating.dto';
+import { BookingStatus } from '../booking/enums/booking-status.enum';
+import { RoleRatedAs } from './enums/role-rated-as.enum';
+import { ErrorHelper } from 'src/core/helpers';
+
+@Injectable()
+export class RatingService {
+  private readonly logger = new Logger(RatingService.name);
+
+  constructor(
+    @InjectModel(Rating.name) private ratingModel: Model<RatingDocument>,
+    @InjectModel(Booking.name) private bookingModel: Model<BookingDocument>,
+    @InjectModel(User.name) private userModel: Model<UserDocument>,
+  ) {}
+
+  async submitRating(
+    raterId: string,
+    dto: SubmitRatingDto,
+  ): Promise<RatingDocument> {
+    this.logger.log(
+      `User ${raterId} attempting to submit rating for booking ${dto.bookingId}`,
+    );
+    if (!mongoose.Types.ObjectId.isValid(dto.bookingId)) {
+      ErrorHelper.BadRequestException('Invalid Booking ID format.');
+    }
+
+    const session = await this.ratingModel.db.startSession(); // Use transaction for rating + user update
+    session.startTransaction();
+
+    try {
+      // 1. Find the booking and verify rater involvement and booking status
+      const booking = await this.bookingModel
+        .findById(dto.bookingId)
+        .session(session);
+      if (!booking) {
+        ErrorHelper.NotFoundException(
+          `Booking with ID ${dto.bookingId} not found.`,
+        );
+      }
+
+      if (booking.status !== BookingStatus.COMPLETED) {
+        ErrorHelper.BadRequestException(
+          `Cannot rate a booking that is not completed (status: ${booking.status}).`,
+        );
+      }
+
+      let rateeId: string;
+      let roleRatedAs: RoleRatedAs;
+      let userUpdateFieldPrefix:
+        | 'averageRatingAsDriver'
+        | 'averageRatingAsPassenger';
+      let userUpdateCountField:
+        | 'totalRatingsAsDriver'
+        | 'totalRatingsAsPassenger';
+      let alreadyRatedField: 'passengerRated' | 'driverRated';
+
+      if (booking.passenger.toString() === raterId) {
+        // Passenger is rating the driver
+        rateeId = booking.driver.toString();
+        roleRatedAs = RoleRatedAs.DRIVER;
+        userUpdateFieldPrefix = 'averageRatingAsDriver';
+        userUpdateCountField = 'totalRatingsAsDriver';
+        alreadyRatedField = 'passengerRated';
+        if (booking.passengerRated) {
+          ErrorHelper.ConflictException(
+            'You have already rated the driver for this booking.',
+          );
+        }
+      } else if (booking.driver.toString() === raterId) {
+        // Driver is rating the passenger
+        rateeId = booking.passenger.toString();
+        roleRatedAs = RoleRatedAs.PASSENGER;
+        userUpdateFieldPrefix = 'averageRatingAsPassenger';
+        userUpdateCountField = 'totalRatingsAsPassenger';
+        alreadyRatedField = 'driverRated';
+        if (booking.driverRated) {
+          ErrorHelper.ConflictException(
+            'You have already rated the passenger for this booking.',
+          );
+        }
+      } else {
+        ErrorHelper.ForbiddenException(
+          'You were not part of this booking and cannot rate it.',
+        );
+      }
+
+      // 2. Check for existing rating (redundant due to unique index, but good practice)
+      const existingRating = await this.ratingModel
+        .findOne({ rater: raterId, booking: dto.bookingId })
+        .session(session);
+      if (existingRating) {
+        ErrorHelper.ConflictException(
+          'You have already submitted a rating for this booking.',
+        );
+      }
+
+      // 3. Create and Save the Rating
+      const newRating = new this.ratingModel({
+        rater: raterId,
+        ratee: rateeId,
+        ride: booking.ride,
+        booking: dto.bookingId,
+        roleRatedAs: roleRatedAs,
+        score: dto.score,
+        comment: dto.comment,
+      });
+      await newRating.save({ session });
+      this.logger.log(
+        `Rating ${newRating._id} created by ${raterId} for ${rateeId} (booking ${dto.bookingId})`,
+      );
+
+      // 4. Update the User's Average Rating (Synchronous for now)
+      const rateeUser = await this.userModel.findById(rateeId).session(session);
+      if (!rateeUser) {
+        // This should ideally not happen if refs are correct
+        ErrorHelper.InternalServerErrorException(
+          `User being rated (ID: ${rateeId}) not found.`,
+        );
+      }
+
+      const currentTotalScore =
+        (rateeUser[userUpdateFieldPrefix] || 0) *
+        (rateeUser[userUpdateCountField] || 0);
+      const newTotalRatings = (rateeUser[userUpdateCountField] || 0) + 1;
+      const newAverageRating =
+        (currentTotalScore + dto.score) / newTotalRatings;
+
+      await this.userModel.updateOne(
+        { _id: rateeId },
+        {
+          $set: { [userUpdateFieldPrefix]: newAverageRating },
+          $inc: { [userUpdateCountField]: 1 },
+        },
+        { session },
+      );
+      this.logger.log(`Updated average rating for user ${rateeId}`);
+
+      // 5. Mark rating as done on the booking
+      await this.bookingModel.updateOne(
+        { _id: dto.bookingId },
+        { $set: { [alreadyRatedField]: true } },
+        { session },
+      );
+
+      await session.commitTransaction();
+      return newRating;
+    } catch (error) {
+      await session.abortTransaction();
+      this.logger.error(
+        `Error submitting rating for booking ${dto.bookingId} by user ${raterId}: ${error.message}`,
+        error.stack,
+      );
+      if (error instanceof HttpException) throw error;
+      // Handle potential unique constraint violation on rating
+      if (
+        error.code === 11000 &&
+        error.message.includes('duplicate key error') &&
+        error.message.includes('ratings')
+      ) {
+        ErrorHelper.ConflictException(
+          'You have already submitted a rating for this booking.',
+        );
+      }
+      ErrorHelper.InternalServerErrorException('Failed to submit rating.');
+    } finally {
+      session.endSession();
+    }
+  }
+}
+````
+
+## File: src/modules/rides/dto/coordinates.dto.ts
+````typescript
+import { ApiProperty } from '@nestjs/swagger';
+import { IsLatitude, IsLongitude, IsNotEmpty } from 'class-validator';
+
+export class CoordinatesDto {
+  @ApiProperty({ example: 6.5244, description: 'Latitude' })
+  @IsLatitude()
+  @IsNotEmpty()
+  lat: number;
+
+  @ApiProperty({ example: 3.3792, description: 'Longitude' })
+  @IsLongitude()
+  @IsNotEmpty()
+  lon: number;
+}
+````
+
+## File: src/modules/rides/dto/create-ride.dto.ts
+````typescript
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { Type } from 'class-transformer';
+import {
+  IsArray,
+  IsDateString,
+  //   IsLatitude,
+  //   IsLongitude,
+  IsMongoId,
+  IsNotEmpty,
+  IsNumber,
+  IsOptional,
+  IsString,
+  Min,
+  ValidateNested,
+  ArrayMaxSize,
+} from 'class-validator';
+import { CoordinatesDto } from './coordinates.dto';
+
+export class CreateRideDto {
+  @ApiProperty({
+    description: 'ID of the vehicle to be used for the ride',
+    example: '605c72ef4e79a3a3e8f2d3b4',
+  })
+  @IsMongoId()
+  @IsNotEmpty()
+  vehicleId: string;
+
+  @ApiProperty({ description: 'Origin coordinates', type: CoordinatesDto })
+  @ValidateNested()
+  @Type(() => CoordinatesDto)
+  @IsNotEmpty()
+  origin: CoordinatesDto;
+
+  @ApiProperty({ description: 'Destination coordinates', type: CoordinatesDto })
+  @ValidateNested()
+  @Type(() => CoordinatesDto)
+  @IsNotEmpty()
+  destination: CoordinatesDto;
+
+  @ApiProperty({
+    description: 'User-friendly origin address',
+    example: '123 Main St, Ikeja, Lagos',
+  })
+  @IsString()
+  @IsNotEmpty()
+  originAddress: string;
+
+  @ApiProperty({
+    description: 'User-friendly destination address',
+    example: '456 University Rd, Ibadan',
+  })
+  @IsString()
+  @IsNotEmpty()
+  destinationAddress: string;
+
+  // Optional: Waypoints might be added later or via a separate update endpoint
+  // @ApiPropertyOptional({ description: 'Waypoint coordinates', type: [CoordinatesDto] })
+  // @IsOptional()
+  // @IsArray()
+  // @ValidateNested({ each: true })
+  // @Type(() => CoordinatesDto)
+  // waypoints?: CoordinatesDto[];
+
+  @ApiProperty({
+    description: 'Departure date and time (ISO 8601 format)',
+    example: '2025-08-15T09:00:00.000Z',
+  })
+  @IsDateString()
+  @IsNotEmpty()
+  departureTime: string; // Receive as string, convert to Date in service
+
+  @ApiProperty({
+    description: 'Price per seat in NGN (or smallest currency unit)',
+    example: 2500,
+  })
+  @IsNumber()
+  @Min(0) // Allow free rides? Or set Min(100)?
+  @IsNotEmpty()
+  pricePerSeat: number;
+
+  @ApiPropertyOptional({
+    type: [String],
+    example: ['No Smoking', 'Music allowed'],
+    description: 'List of ride preferences',
+  })
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  @ArrayMaxSize(10)
+  preferences?: string[];
+}
+````
+
+## File: src/modules/rides/dto/search-rides.dto.ts
+````typescript
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { Type } from 'class-transformer';
+import {
+  IsDateString,
+  IsInt,
+  IsNotEmpty,
+  IsOptional,
+  Min,
+  ValidateNested,
+} from 'class-validator';
+import { PaginationDto } from '../../../core/dto/page-options.dto'; // Adjust path
+import { CoordinatesDto } from './coordinates.dto';
+
+export class SearchRidesDto extends PaginationDto {
+  // Inherit pagination fields
+  @ApiProperty({
+    description: 'Origin coordinates for search',
+    type: CoordinatesDto,
+  })
+  @ValidateNested()
+  @Type(() => CoordinatesDto)
+  @IsNotEmpty()
+  origin: CoordinatesDto;
+
+  @ApiProperty({
+    description: 'Destination coordinates for search',
+    type: CoordinatesDto,
+  })
+  @ValidateNested()
+  @Type(() => CoordinatesDto)
+  @IsNotEmpty()
+  destination: CoordinatesDto;
+
+  @ApiProperty({
+    description: 'Desired departure date (YYYY-MM-DD format)',
+    example: '2025-08-15',
+  })
+  @IsDateString()
+  @IsNotEmpty()
+  departureDate: string; // We'll handle time range in the service
+
+  @ApiProperty({ description: 'Number of seats required', example: 1 })
+  @Type(() => Number) // Ensure transformation from query param string
+  @IsInt()
+  @Min(1)
+  @IsNotEmpty()
+  seatsNeeded: number;
+
+  @ApiPropertyOptional({
+    description:
+      'Maximum distance (in meters) from specified origin/destination points',
+    example: 5000,
+    default: 5000,
+  })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1000) // Minimum search radius
+  maxDistance?: number = 5000; // Default to 5km
+}
+````
+
+## File: src/modules/rides/enums/ride-status.enum.ts
+````typescript
+export enum RideStatus {
+  SCHEDULED = 'SCHEDULED', // Ride is planned but not started
+  IN_PROGRESS = 'IN_PROGRESS', // Ride has started
+  COMPLETED = 'COMPLETED', // Ride finished successfully
+  CANCELLED = 'CANCELLED', // Ride was cancelled (by driver or system)
+}
+````
+
+## File: src/modules/rides/interfaces/populated-ride.interface.ts
+````typescript
+import { BookingDocument } from '../../booking/schemas/booking.schema';
+import { RideDocument } from '../schemas/ride.schema';
+
+export interface PopulatedRideWithBookings
+  extends Omit<RideDocument, 'bookings'> {
+  bookings: BookingDocument[];
+}
+````
+
+## File: src/modules/rides/schemas/ride.schema.ts
+````typescript
+import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
+import mongoose, { Document } from 'mongoose';
+import { User } from '../../user/schemas/user.schema'; // Adjust path
+import { Vehicle } from '../../driver/schemas/vehicle.schema'; // Adjust path
+import { RideStatus } from '../enums/ride-status.enum';
+
+// Simple Point Schema for GeoJSON
+@Schema({ _id: false }) // No separate ID for point subdocuments
+class Point {
+  @Prop({ type: String, enum: ['Point'], required: true, default: 'Point' })
+  type: string;
+
+  @Prop({ type: [Number], required: true }) // [longitude, latitude]
+  coordinates: number[];
+}
+const PointSchema = SchemaFactory.createForClass(Point);
+
+export type RideDocument = Ride & Document;
+
+@Schema({ timestamps: true, collection: 'rides' })
+export class Ride {
+  @Prop({
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: true,
+    index: true,
+  })
+  driver: User;
+
+  @Prop({
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Vehicle',
+    required: true,
+    index: true,
+  })
+  vehicle: Vehicle;
+
+  @Prop({ type: PointSchema, required: true })
+  origin: Point;
+
+  @Prop({ type: PointSchema, required: true })
+  destination: Point;
+
+  @Prop({ type: [PointSchema], default: [] }) // Array of waypoints
+  waypoints?: Point[];
+
+  @Prop({ type: String, required: true })
+  originAddress: string; // User-friendly origin address
+
+  @Prop({ type: String, required: true })
+  destinationAddress: string; // User-friendly destination address
+
+  @Prop({ type: Date, required: true, index: true })
+  departureTime: Date;
+
+  @Prop({ type: Date }) // Can be calculated/updated
+  estimatedArrivalTime?: Date;
+
+  @Prop({ type: Number, required: true, min: 0 })
+  initialSeats: number; // Seats the vehicle had when ride was created
+
+  @Prop({ type: Number, required: true, min: 0 })
+  availableSeats: number; // Current available seats (decreases with bookings)
+
+  @Prop({ type: Number, required: true, min: 0 })
+  pricePerSeat: number;
+
+  @Prop({
+    type: String,
+    enum: RideStatus,
+    default: RideStatus.SCHEDULED,
+    index: true,
+  })
+  status: RideStatus;
+
+  @Prop({ type: [String], default: [] })
+  preferences?: string[]; // e.g., "No Smoking", "Pets Allowed"
+
+  @Prop({ type: mongoose.Schema.Types.ObjectId, ref: 'Booking', default: [] })
+  bookings: mongoose.Schema.Types.ObjectId[]; // Refs to Booking documents for this ride
+
+  @Prop({ type: PointSchema, required: false, index: '2dsphere' }) // Add geospatial index if querying by location
+  currentLocation?: Point;
+
+  @Prop({ type: Date })
+  lastLocationUpdate?: Date;
+}
+
+export const RideSchema = SchemaFactory.createForClass(Ride);
+
+// Geospatial index for efficient location-based searching
+RideSchema.index({ origin: '2dsphere', destination: '2dsphere' });
+// Optional: Index departure time for sorting/filtering
+RideSchema.index({ departureTime: 1 });
 ````
 
 ## File: src/modules/storage/constants/index.ts
@@ -2587,6 +5367,189 @@ export class AwsS3Service {
 }
 ````
 
+## File: src/modules/trip-sharing/trip-sharing.controller.ts
+````typescript
+import { Controller, Get, Param, Logger } from '@nestjs/common';
+import { TripSharingService } from './trip-sharing.service'; // Create this service
+import { ApiTags, ApiOperation, ApiResponse, ApiParam } from '@nestjs/swagger';
+import { ErrorHelper } from 'src/core/helpers';
+
+@ApiTags('Public - Trip Sharing')
+@Controller('trip')
+export class TripSharingController {
+  private readonly logger = new Logger(TripSharingController.name);
+
+  constructor(private readonly tripSharingService: TripSharingService) {}
+
+  @Get(':shareToken')
+  @ApiOperation({
+    summary: 'Get basic public status of a shared trip using a token',
+  })
+  @ApiParam({
+    name: 'shareToken',
+    description: 'The unique token from the share link',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Basic trip details.',
+    schema: {
+      /* Define limited DTO here */
+    },
+  })
+  @ApiResponse({
+    status: 404,
+    description: 'Not Found - Invalid or expired share token.',
+  })
+  @ApiResponse({ status: 500, description: 'Internal server error.' })
+  async getSharedTripStatus(
+    @Param('shareToken') shareToken: string,
+  ): Promise<{ message: string; data: any }> {
+    this.logger.log(
+      `Public request for trip status with token: ${shareToken.substring(0, 8)}...`,
+    );
+    const tripData =
+      await this.tripSharingService.getTripStatusByToken(shareToken);
+    if (!tripData) {
+      ErrorHelper.NotFoundException('Invalid or expired share link.');
+    }
+    return {
+      message: 'Trip status retrieved successfully.',
+      data: tripData, // Service should return limited data
+    };
+  }
+}
+````
+
+## File: src/modules/trip-sharing/trip-sharing.module.ts
+````typescript
+import { Module } from '@nestjs/common';
+import { TripSharingService } from './trip-sharing.service';
+import { TripSharingController } from './trip-sharing.controller';
+import { RedisModule } from '@nestjs-modules/ioredis'; // Needs Redis access
+import { MongooseModule } from '@nestjs/mongoose';
+import { Ride, RideSchema } from '../rides/schemas/ride.schema';
+import { SecretsService } from 'src/global/secrets/service'; // Needed for Redis config
+
+@Module({
+  imports: [
+    // Configure Redis specifically for this module or rely on global
+    RedisModule.forRootAsync({
+      useFactory: ({ userSessionRedis }: SecretsService) => ({
+        // Reuse userSessionRedis config or create separate one
+        type: 'single',
+        url: `redis://${userSessionRedis.REDIS_USER}:${userSessionRedis.REDIS_PASSWORD}@${userSessionRedis.REDIS_HOST}:${userSessionRedis.REDIS_PORT}`,
+      }),
+      inject: [SecretsService],
+    }),
+    MongooseModule.forFeature([
+      { name: Ride.name, schema: RideSchema }, // Need RideModel
+    ]),
+  ],
+  providers: [TripSharingService],
+  controllers: [TripSharingController],
+})
+export class TripSharingModule {}
+````
+
+## File: src/modules/trip-sharing/trip-sharing.service.ts
+````typescript
+import { Injectable, Logger } from '@nestjs/common';
+import { InjectRedis } from '@nestjs-modules/ioredis';
+import Redis from 'ioredis';
+import { InjectModel } from '@nestjs/mongoose';
+import { Model } from 'mongoose';
+import { Ride, RideDocument } from '../rides/schemas/ride.schema';
+import { UserDocument } from '../user/schemas/user.schema';
+import { VehicleDocument } from '../driver/schemas/vehicle.schema';
+import { ErrorHelper } from 'src/core/helpers';
+import { RideStatus } from '../rides/enums/ride-status.enum';
+
+@Injectable()
+export class TripSharingService {
+  private readonly logger = new Logger(TripSharingService.name);
+  private readonly shareTokenPrefix = 'share_ride:';
+
+  constructor(
+    @InjectRedis() private readonly redisClient: Redis,
+    @InjectModel(Ride.name) private rideModel: Model<RideDocument>,
+  ) {}
+
+  async getTripStatusByToken(token: string): Promise<object | null> {
+    const redisKey = `${this.shareTokenPrefix}${token}`;
+    let rideId: string | null = null;
+
+    try {
+      rideId = await this.redisClient.get(redisKey);
+      if (!rideId) {
+        this.logger.warn(`Share token ${token} not found or expired in Redis.`);
+        return null;
+      }
+    } catch (error) {
+      this.logger.error(
+        `Redis error fetching share token ${token}: ${error.message}`,
+        error.stack,
+      );
+      ErrorHelper.InternalServerErrorException(
+        'Error retrieving trip information.',
+      );
+    }
+
+    try {
+      const ride = await this.rideModel
+        .findById(rideId)
+        .select(
+          'status originAddress destinationAddress estimatedArrivalTime driver vehicle',
+        ) // Select fields
+        .populate<{ driver: UserDocument }>('driver', 'firstName avatar') // Limited driver info
+        .populate<{ vehicle: VehicleDocument }>(
+          'vehicle',
+          'make model color plateNumber',
+        ); // Limited vehicle info
+
+      if (!ride || ride.status !== RideStatus.IN_PROGRESS) {
+        // Only show in-progress rides publicly
+        this.logger.warn(
+          `Ride ${rideId} for token ${token} not found or not in progress.`,
+        );
+        // Optionally delete expired/invalid token from Redis
+        // await this.redisClient.del(redisKey);
+        return null;
+      }
+
+      // Construct the limited public data object
+      const publicData = {
+        status: ride.status,
+        origin: ride.originAddress,
+        destination: ride.destinationAddress,
+        estimatedArrival: ride.estimatedArrivalTime,
+        driver: {
+          firstName: ride.driver?.firstName,
+          avatar: ride.driver?.avatar,
+        },
+        vehicle: {
+          make: ride.vehicle?.make,
+          model: ride.vehicle?.model,
+          color: ride.vehicle?.color,
+          plateNumber: ride.vehicle?.plateNumber, // Decide if plate number is too sensitive
+        },
+        // TODO: Add current location if available (from Phase 6 tracking)
+        // currentLocation: ride.currentLocation
+      };
+
+      return publicData;
+    } catch (error) {
+      this.logger.error(
+        `Error fetching ride ${rideId} for share token ${token}: ${error.message}`,
+        error.stack,
+      );
+      ErrorHelper.InternalServerErrorException(
+        'Error retrieving trip details.',
+      );
+    }
+  }
+}
+````
+
 ## File: src/modules/twilio/twiio.module.ts
 ````typescript
 import { Module } from '@nestjs/common';
@@ -2601,118 +5564,55 @@ import { SecretsModule } from '../../global/secrets/module';
 export class TwilioModule {}
 ````
 
-## File: src/modules/twilio/twilio.service.ts
+## File: src/modules/user/dto/emergency-contact.dto.ts
 ````typescript
-import { Injectable, Logger } from '@nestjs/common';
-import { Twilio } from 'twilio';
-import { SecretsService } from '../../global/secrets/service';
-import { error } from 'console';
+import { ApiProperty } from '@nestjs/swagger';
+import { Type } from 'class-transformer';
+import {
+  ArrayMaxSize,
+  ArrayMinSize,
+  IsArray,
+  IsNotEmpty,
+  IsPhoneNumber,
+  IsString,
+  MaxLength,
+  ValidateNested,
+} from 'class-validator';
 
-@Injectable()
-export class TwilioService {
-  private readonly logger = new Logger(TwilioService.name);
-  private twilioClient: Twilio;
+class EmergencyContactItemDto {
+  @ApiProperty({ description: "Contact's full name", example: 'Jane Doe' })
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(100)
+  name: string;
 
-  constructor(private secretsService: SecretsService) {
-    const { TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN } =
-      this.secretsService.twilio;
-    if (TWILIO_ACCOUNT_SID && TWILIO_AUTH_TOKEN) {
-      this.twilioClient = new Twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
-    } else {
-      this.logger.error(
-        'Twilio credentials not found. TwilioService will not function.',
-      );
-      this.logger.debug(error);
-    }
-  }
+  @ApiProperty({
+    description: "Contact's phone number (Nigerian format)",
+    example: '+2348012345678',
+  })
+  @IsPhoneNumber('NG', {
+    message:
+      'Please provide a valid Nigerian phone number for the emergency contact.',
+  })
+  @IsNotEmpty()
+  phone: string;
+}
 
-  //   async sendSms(to: string, body: string): Promise<boolean> {
-  //     const { phoneNumber } = this.secretsService.twilio;
-  //     if (!this.twilioClient || !phoneNumber) {
-  //       this.logger.error(
-  //         'Twilio client not initialized or phone number missing. Cannot send SMS.',
-  //       );
-  //       // Depending on requirements, you might throw an error or just return false
-  //       throw new Error('SMS service is not configured properly.');
-  //       // return false;
-  //     }
-
-  //     try {
-  //       const message = await this.twilioClient.messages.create({
-  //         body,
-  //         from: phoneNumber,
-  //         to, // Ensure 'to' number is in E.164 format (e.g., +23480...)
-  //       });
-  //       this.logger.log(`SMS sent successfully to ${to}, SID: ${message.sid}`);
-  //       return true;
-  //     } catch (error) {
-  //       this.logger.error(
-  //         `Failed to send SMS to ${to}: ${error.message}`,
-  //         error.stack,
-  //       );
-  //       // Rethrow or handle specific Twilio errors (e.g., invalid number format)
-  //       throw new Error(`Failed to send verification code: ${error.message}`);
-  //       // return false;
-  //     }
-  //   }
-
-  // --- Optional: If using Twilio Verify Service ---
-
-  async sendVerificationToken(
-    to: string,
-    channel: 'sms' | 'call',
-  ): Promise<boolean> {
-    const { TWILIO_VERIFY_SERVICE_SID } = this.secretsService.twilio;
-    if (!this.twilioClient || !TWILIO_VERIFY_SERVICE_SID) {
-      this.logger.error('Twilio client or Verify Service SID missing.');
-      throw new Error('Verification service is not configured properly.');
-    }
-    try {
-      const verification = await this.twilioClient.verify.v2
-        .services(TWILIO_VERIFY_SERVICE_SID)
-        .verifications.create({ to, channel });
-      this.logger.log(
-        `Verification sent to ${to}, Status: ${verification.status}`,
-      );
-      return verification.status === 'pending';
-    } catch (error) {
-      this.logger.error(
-        `Failed to send verification to ${to}: ${error.message}`,
-        error.stack,
-      );
-      throw new Error(`Failed to send verification code: ${error.message}`);
-    }
-  }
-
-  async checkVerificationToken(to: string, code: string): Promise<boolean> {
-    const { TWILIO_VERIFY_SERVICE_SID } = this.secretsService.twilio;
-    if (!this.twilioClient || !TWILIO_VERIFY_SERVICE_SID) {
-      this.logger.error('Twilio client or Verify Service SID missing.');
-      throw new Error('Verification service is not configured properly.');
-    }
-    try {
-      const verificationCheck = await this.twilioClient.verify.v2
-        .services(TWILIO_VERIFY_SERVICE_SID)
-        .verificationChecks.create({ to, code });
-      this.logger.log(
-        `Verification check for ${to}, Status: ${verificationCheck.status}`,
-      );
-      return verificationCheck.status === 'approved';
-    } catch (error) {
-      // Twilio might return a 404 for incorrect code, handle gracefully
-      if (error.status === 404) {
-        this.logger.warn(
-          `Verification check failed for ${to}: Incorrect code or expired.`,
-        );
-        return false;
-      }
-      this.logger.error(
-        `Failed to check verification for ${to}: ${error.message}`,
-        error.stack,
-      );
-      throw new Error(`Failed to verify code: ${error.message}`);
-    }
-  }
+export class UpdateEmergencyContactsDto {
+  @ApiProperty({
+    description: 'List of emergency contacts (maximum 3)',
+    type: [EmergencyContactItemDto], // Array of the nested DTO
+    minItems: 0, // Allow empty array to clear contacts
+    maxItems: 3, // Set maximum contacts
+  })
+  @IsArray()
+  @ValidateNested({ each: true }) // Validate each item in the array
+  @ArrayMinSize(0)
+  @ArrayMaxSize(3, {
+    message: 'You can add a maximum of 3 emergency contacts.',
+  })
+  @Type(() => EmergencyContactItemDto) // Important for nested validation
+  contacts: EmergencyContactItemDto[];
 }
 ````
 
@@ -2799,128 +5699,99 @@ export class Token extends Document {
 export const TokenSchema = SchemaFactory.createForClass(Token);
 ````
 
-## File: src/modules/user/user.module.ts
+## File: src/modules/user/user.controller.ts
 ````typescript
-import { Module } from '@nestjs/common';
-import { UserService } from './user.service';
-import { MongooseModule } from '@nestjs/mongoose';
-import { Token, TokenSchema } from './schemas/token.schema';
-import { UserSchema, User } from './schemas/user.schema';
-import { roleSchema, Role } from './schemas/role.schema';
+import {
+  ApiBearerAuth,
+  ApiOperation,
+  ApiResponse,
+  ApiTags,
+  ApiBody,
+} from '@nestjs/swagger';
+import {
+  Patch,
+  Controller,
+  UseGuards,
+  Logger,
+  Body,
+  Delete,
+  Post,
+} from '@nestjs/common'; // Import Patch
+import { UpdateEmergencyContactsDto } from '../user/dto/emergency-contact.dto'; // Import DTO
+import { UserService } from '../user/user.service'; // Import UserService
+import { AuthGuard } from 'src/core/guards';
+import { IUser } from 'src/core/interfaces';
+import { User } from 'src/core/decorators';
+import { RegisterDeviceDto } from '../user/dto/register-device.dto';
 
-@Module({
-  imports: [
-    MongooseModule.forFeature([
-      { name: Token.name, schema: TokenSchema },
-      { name: User.name, schema: UserSchema },
-      { name: Role.name, schema: roleSchema },
-    ]),
-  ],
-  providers: [UserService],
-  exports: [UserService],
-})
-export class UserModule {}
-````
-
-## File: src/modules/user/user.service.ts
-````typescript
-import { Injectable, Logger } from '@nestjs/common';
-import { InjectModel } from '@nestjs/mongoose';
-import { Model } from 'mongoose';
-import { DateHelper, ErrorHelper } from 'src/core/helpers';
-import { IPassenger, IDriver } from 'src/core/interfaces';
-import { TokenHelper } from 'src/global/utils/token.utils';
-import { UserSessionService } from 'src/global/user-session/service';
-import { Token } from './schemas/token.schema';
-import { User } from './schemas/user.schema';
-
-@Injectable()
-export class UserService {
-  private logger = new Logger(UserService.name);
+@ApiTags('User') // Modify tag if adding profile endpoints
+@Controller('user')
+export class UserController {
+  private readonly logger = new Logger(UserController.name);
   constructor(
-    @InjectModel(Token.name) private tokenRepo: Model<Token>,
-    private tokenHelper: TokenHelper,
-    private userSessionService: UserSessionService,
-    @InjectModel(User.name) private userRepo: Model<User>,
+    private userService: UserService, // Inject UserService
   ) {}
 
-  async generateOtpCode(
-    user: IDriver | IPassenger,
-    options = {
-      numberOnly: true,
-      length: 4,
-    },
-    expirationTimeInMinutes = 15,
-  ): Promise<string> {
-    let code = '';
+  // ... (existing auth endpoints) ...
 
-    if (options.numberOnly) {
-      code = this.tokenHelper.generateRandomNumber(options.length);
-    } else {
-      code = this.tokenHelper.generateRandomString(options.length);
-    }
-
-    this.logger.debug('Generating OTP code for user: ', user._id);
-    this.logger.debug('OTP code: ', code);
-
-    await this.tokenRepo.findOneAndDelete({ user: user?._id, isUsed: false });
-
-    await this.tokenRepo.create({
-      user: user._id,
-      code,
-      expirationTime: DateHelper.addToCurrent({
-        minutes: expirationTimeInMinutes,
-      }),
-    });
-
-    return code;
-  }
-
-  async verifyOtpCode(
-    user: IDriver | IPassenger,
-    code: string,
-    message?: string,
-  ): Promise<boolean> {
-    const otp = await this.tokenRepo.findOne({
-      user: user._id,
-      code,
-      isUsed: false,
-    });
-
-    if (!otp) {
-      ErrorHelper.BadRequestException('Invalid code');
-    }
-
-    if (DateHelper.isAfter(new Date(), otp.expirationTime)) {
-      ErrorHelper.BadRequestException(
-        message ||
-          "This code has expired. You can't change your password using this link",
-      );
-    }
-
-    await otp.deleteOne();
-
-    return true;
-  }
-
-  async logout(userId: string) {
-    await this.userSessionService.delete(userId);
-
+  @Patch('/profile/emergency-contacts') // Use PATCH for updates
+  @UseGuards(AuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: "Update the logged-in user's emergency contacts" })
+  @ApiResponse({
+    status: 200,
+    description: 'Emergency contacts updated successfully.' /* type: User? */,
+  })
+  @ApiResponse({
+    status: 400,
+    description: 'Bad Request - Invalid input data.',
+  })
+  @ApiResponse({ status: 401, description: 'Unauthorized.' })
+  @ApiResponse({ status: 404, description: 'Not Found - User not found.' })
+  async updateEmergencyContacts(
+    @User() currentUser: IUser,
+    @Body() updateDto: UpdateEmergencyContactsDto,
+  ): Promise<{ message: string; data?: any }> {
+    // Return success message
+    this.logger.log(`User ${currentUser._id} updating emergency contacts.`);
+    await this.userService.updateEmergencyContacts(currentUser._id, updateDto);
     return {
-      success: true,
+      message: 'Emergency contacts updated successfully.',
+      // Optionally return updated contacts or user profile snippet
     };
   }
 
-  async getUser(userId: string): Promise<User> {
-    try {
-      const user = await this.userRepo.findById(userId);
-      if (!user) {
-        ErrorHelper.BadRequestException('User does not exists');
-      }
-      return user;
-    } catch (error) {
-      ErrorHelper.BadRequestException(error);
-    }
+  @Post('devices/register')
+  @UseGuards(AuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Register a device token for push notifications' })
+  @ApiResponse({ status: 200, description: 'Device registered successfully.' })
+  @ApiResponse({ status: 401, description: 'Unauthorized.' })
+  @ApiResponse({ status: 400, description: 'Bad Request - Missing token.' })
+  async registerDevice(
+    @User() currentUser: IUser,
+    @Body() dto: RegisterDeviceDto,
+  ): Promise<{ message: string }> {
+    await this.userService.addDeviceToken(currentUser._id, dto.deviceToken);
+    return { message: 'Device registered successfully.' };
+  }
+
+  @Delete('devices/unregister') // Use DELETE method
+  @UseGuards(AuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Unregister a device token for push notifications' })
+  @ApiResponse({
+    status: 200,
+    description: 'Device unregistered successfully.',
+  })
+  @ApiResponse({ status: 401, description: 'Unauthorized.' })
+  @ApiBody({ type: RegisterDeviceDto }) // Reuse DTO for body structure
+  async unregisterDevice(
+    @User() currentUser: IUser,
+    @Body() dto: RegisterDeviceDto, // Get token from body
+  ): Promise<{ message: string }> {
+    await this.userService.removeDeviceToken(currentUser._id, dto.deviceToken);
+    return { message: 'Device unregistered successfully.' };
   }
 }
 ````
@@ -2980,60 +5851,6 @@ export class AppGateway implements OnGatewayConnection, OnGatewayDisconnect {
     }
   }
 }
-````
-
-## File: src/modules/app.module.ts
-````typescript
-import { Module } from '@nestjs/common';
-import { AuthGuard } from 'src/core/guards';
-import { WsGuard } from 'src/core/guards/ws.guard';
-import { AppGateway } from './app.gateway';
-
-@Module({
-  providers: [AppGateway, WsGuard, AuthGuard],
-  imports: [],
-})
-export class AppModule {}
-````
-
-## File: src/modules/main.module.ts
-````typescript
-import { Module } from '@nestjs/common';
-import { ConfigModule } from '@nestjs/config';
-import { DatabaseModule } from './database/database.module';
-import { RidesModule } from './rides/rides.module';
-import { GeolocationModule } from './geolocation/geolocation.module';
-import { RidersModule } from './driver/riders.module';
-import { AuthModule } from './auth/auth.module';
-import { UserModule } from './user/user.module';
-import { MongooseModule } from '@nestjs/mongoose';
-import { SecretsModule } from '../global/secrets/module';
-import { SecretsService } from '../global/secrets/service';
-import { AppModule } from './app.module';
-import { GlobalModule } from 'src/global/global.module';
-@Module({
-  imports: [
-    GlobalModule,
-    DatabaseModule,
-    ConfigModule,
-    AuthModule,
-    UserModule,
-    RidesModule,
-    RidersModule,
-    GeolocationModule,
-    AppModule,
-    MongooseModule.forRootAsync({
-      imports: [SecretsModule],
-      inject: [SecretsService],
-      useFactory: (secretsService: SecretsService) => ({
-        uri: secretsService.MONGO_URI,
-      }),
-    }),
-  ],
-  controllers: [],
-  providers: [],
-})
-export class MainModule {}
 ````
 
 ## File: test/jest-e2e.json
@@ -3136,6 +5953,8 @@ pids
 
 # Diagnostic reports (https://nodejs.org/api/report.html)
 report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
+
+/config/firebase-service-account.json
 ````
 
 ## File: .prettierrc
@@ -3725,15 +6544,918 @@ export * from './auth.dto';
 export * from './update-user.dto';
 ````
 
-## File: src/modules/driver/dto/driver-regidtration.dto.ts
+## File: src/modules/booking/booking.controller.ts
 ````typescript
-import { BaseRegistrationDto } from 'src/modules/auth/dto/base-registeration.dto';
+import {
+  Controller,
+  Post,
+  Body,
+  UseGuards,
+  Logger,
+  Get,
+  Param,
+  Patch,
+  Query,
+} from '@nestjs/common';
+import { BookingService } from './booking.service';
+import { CreateBookingDto } from './dto/create-booking.dto';
+import { AuthGuard } from '../../core/guards/authenticate.guard';
+import { User } from '../../core/decorators/user.decorator';
+import { IUser } from '../../core/interfaces/user/user.interface';
+import {
+  ApiTags,
+  ApiOperation,
+  ApiResponse,
+  ApiBearerAuth,
+  ApiQuery,
+} from '@nestjs/swagger';
+import { Booking } from './schemas/booking.schema'; // For response type hint
+import mongoose from 'mongoose';
+import { ErrorHelper } from 'src/core/helpers';
+import { PaginationDto, PaginationResultDto } from 'src/core/dto';
 
-// For the initial user creation, driver-specific details like license and vehicle info
-// are usually collected *after* the account is created during an onboarding/verification flow.
-// Therefore, this DTO extends the base without additional required fields for registration itself.
+@ApiTags('Bookings')
+@ApiBearerAuth()
+@UseGuards(AuthGuard) // All booking actions require authentication
+@Controller()
+export class BookingController {
+  private readonly logger = new Logger(BookingController.name);
 
-export class DriverRegistrationDto extends BaseRegistrationDto {}
+  constructor(private readonly bookingService: BookingService) {}
+
+  @Post()
+  @ApiOperation({ summary: 'Request to book a ride (Passenger only)' })
+  @ApiResponse({
+    status: 201,
+    description: 'Booking request submitted successfully.',
+    type: Booking,
+  })
+  @ApiResponse({
+    status: 400,
+    description:
+      'Bad Request - Invalid input, ride not bookable, not enough seats, etc.',
+  })
+  @ApiResponse({ status: 401, description: 'Unauthorized.' })
+  @ApiResponse({
+    status: 404,
+    description: 'Not Found - Ride or Passenger not found.',
+  })
+  @ApiResponse({
+    status: 409,
+    description: 'Conflict - Passenger already booked this ride.',
+  })
+  async requestBooking(
+    @User() passenger: IUser, // Get authenticated passenger
+    @Body() createBookingDto: CreateBookingDto,
+  ): Promise<{ message: string; data: Booking }> {
+    this.logger.log(
+      `Passenger ${passenger._id} requesting booking for ride ${createBookingDto.rideId}`,
+    );
+    const newBooking = await this.bookingService.requestBooking(
+      passenger._id,
+      createBookingDto,
+    );
+    return {
+      message: 'Booking request submitted successfully.',
+      data: newBooking.toObject() as Booking,
+    };
+  }
+
+  @Get('/driver/rides/:rideId/bookings') // Prefix with /driver
+  @ApiOperation({
+    summary: 'Get booking requests for a specific ride (Driver only)',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'List of bookings for the ride.',
+    type: [Booking],
+  })
+  @ApiResponse({ status: 401, description: 'Unauthorized.' })
+  @ApiResponse({
+    status: 403,
+    description: 'Forbidden - User is not the driver of this ride.',
+  })
+  @ApiResponse({ status: 404, description: 'Not Found - Ride not found.' })
+  async getRideBookings(
+    @User() driver: IUser,
+    @Param('rideId') rideId: string,
+  ): Promise<{ message: string; data: Booking[] }> {
+    if (!mongoose.Types.ObjectId.isValid(rideId)) {
+      ErrorHelper.BadRequestException('Invalid Ride ID format.');
+    }
+    this.logger.log(
+      `Driver ${driver._id} fetching bookings for ride ${rideId}`,
+    );
+    const bookings = await this.bookingService.getRideBookings(
+      driver._id,
+      rideId,
+    );
+    return {
+      message: 'Bookings fetched successfully.',
+      data: bookings.map((b) => b.toObject() as Booking), // Return plain objects
+    };
+  }
+
+  @Patch('/driver/bookings/:bookingId/confirm') // Prefix with /driver
+  @ApiOperation({ summary: 'Confirm a pending booking request (Driver only)' })
+  @ApiResponse({
+    status: 200,
+    description: 'Booking confirmed successfully.',
+    type: Booking,
+  })
+  @ApiResponse({
+    status: 400,
+    description: 'Bad Request - Booking not pending or not enough seats.',
+  })
+  @ApiResponse({ status: 401, description: 'Unauthorized.' })
+  @ApiResponse({
+    status: 403,
+    description: 'Forbidden - User is not the driver.',
+  })
+  @ApiResponse({
+    status: 404,
+    description: 'Not Found - Booking or Ride not found.',
+  })
+  @ApiResponse({
+    status: 409,
+    description: 'Conflict - Seats became unavailable.',
+  })
+  async confirmBooking(
+    @User() driver: IUser,
+    @Param('bookingId') bookingId: string,
+  ): Promise<{ message: string; data: Booking }> {
+    if (!mongoose.Types.ObjectId.isValid(bookingId)) {
+      ErrorHelper.BadRequestException('Invalid Booking ID format.');
+    }
+    this.logger.log(`Driver ${driver._id} confirming booking ${bookingId}`);
+    const confirmedBooking = await this.bookingService.confirmBooking(
+      driver._id,
+      bookingId,
+    );
+    return {
+      message: 'Booking confirmed successfully.',
+      data: confirmedBooking.toObject() as Booking,
+    };
+  }
+
+  @Patch('/driver/bookings/:bookingId/reject') // Prefix with /driver
+  @ApiOperation({ summary: 'Reject a pending booking request (Driver only)' })
+  @ApiResponse({
+    status: 200,
+    description: 'Booking rejected successfully.',
+    type: Booking,
+  })
+  @ApiResponse({
+    status: 400,
+    description: 'Bad Request - Booking not pending.',
+  })
+  @ApiResponse({ status: 401, description: 'Unauthorized.' })
+  @ApiResponse({
+    status: 403,
+    description: 'Forbidden - User is not the driver.',
+  })
+  @ApiResponse({ status: 404, description: 'Not Found - Booking not found.' })
+  async rejectBooking(
+    @User() driver: IUser,
+    @Param('bookingId') bookingId: string,
+  ): Promise<{ message: string; data: Booking }> {
+    if (!mongoose.Types.ObjectId.isValid(bookingId)) {
+      ErrorHelper.BadRequestException('Invalid Booking ID format.');
+    }
+    this.logger.log(`Driver ${driver._id} rejecting booking ${bookingId}`);
+    const rejectedBooking = await this.bookingService.rejectBooking(
+      driver._id,
+      bookingId,
+    );
+    return {
+      message: 'Booking rejected successfully.',
+      data: rejectedBooking.toObject() as Booking,
+    };
+  }
+
+  @Get('/passenger/bookings') // Prefix with /passenger
+  @ApiOperation({ summary: 'Get bookings made by the logged-in passenger' })
+  @ApiQuery({ name: 'page', type: Number, required: false, example: 1 })
+  @ApiQuery({ name: 'limit', type: Number, required: false, example: 10 })
+  @ApiQuery({
+    name: 'order',
+    enum: ['ASC', 'DESC'],
+    required: false,
+    example: 'DESC',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'List of passenger bookings.',
+    type: PaginationResultDto<Booking>,
+  })
+  @ApiResponse({ status: 401, description: 'Unauthorized.' })
+  async getMyBookings(
+    @User() passenger: IUser,
+    @Query() paginationDto: PaginationDto, // Accept pagination query params
+  ): Promise<PaginationResultDto<Booking>> {
+    // Return paginated result
+    this.logger.log(`Passenger ${passenger._id} fetching their bookings`);
+    return await this.bookingService.getMyBookings(
+      passenger._id,
+      paginationDto,
+    );
+    // TransformInterceptor handles formatting
+  }
+
+  @Patch('/passenger/bookings/:bookingId/cancel') // Prefix with /passenger
+  @ApiOperation({ summary: 'Cancel a booking made by the logged-in passenger' })
+  @ApiResponse({
+    status: 200,
+    description: 'Booking cancelled successfully.',
+    type: Booking,
+  })
+  @ApiResponse({
+    status: 400,
+    description: 'Bad Request - Booking cannot be cancelled.',
+  })
+  @ApiResponse({ status: 401, description: 'Unauthorized.' })
+  @ApiResponse({
+    status: 403,
+    description: 'Forbidden - Not the owner of the booking.',
+  })
+  @ApiResponse({ status: 404, description: 'Not Found - Booking not found.' })
+  async cancelBooking(
+    @User() passenger: IUser,
+    @Param('bookingId') bookingId: string,
+  ): Promise<{ message: string; data: Booking }> {
+    if (!mongoose.Types.ObjectId.isValid(bookingId)) {
+      ErrorHelper.BadRequestException('Invalid Booking ID format.');
+    }
+    this.logger.log(
+      `Passenger ${passenger._id} cancelling booking ${bookingId}`,
+    );
+    const cancelledBooking = await this.bookingService.cancelBooking(
+      passenger._id,
+      bookingId,
+    );
+    return {
+      message: 'Booking cancelled successfully.',
+      data: cancelledBooking.toObject() as Booking,
+    };
+  }
+
+  @Post('/passenger/bookings/:bookingId/pay') // Prefix with /passenger
+  @ApiOperation({
+    summary: 'Initiate payment for a confirmed booking (Passenger only)',
+  })
+  @ApiResponse({
+    status: 200,
+    description:
+      'Payment initialized successfully. Returns Paystack authorization data.',
+    schema: {
+      properties: {
+        authorization_url: { type: 'string' },
+        access_code: { type: 'string' },
+        reference: { type: 'string' },
+      },
+    },
+  })
+  @ApiResponse({
+    status: 400,
+    description: 'Bad Request - Booking not confirmable or already paid.',
+  })
+  @ApiResponse({ status: 401, description: 'Unauthorized.' })
+  @ApiResponse({
+    status: 403,
+    description: 'Forbidden - Not the owner of the booking.',
+  })
+  @ApiResponse({ status: 404, description: 'Not Found - Booking not found.' })
+  @ApiResponse({ status: 500, description: 'Payment service error.' })
+  async initiateBookingPayment(
+    @User() passenger: IUser,
+    @Param('bookingId') bookingId: string,
+  ): Promise<{ message: string; data: any }> {
+    // Return structure matches TransformInterceptor
+    if (!mongoose.Types.ObjectId.isValid(bookingId)) {
+      ErrorHelper.BadRequestException('Invalid Booking ID format.');
+    }
+    this.logger.log(
+      `Passenger ${passenger._id} initiating payment for booking ${bookingId}`,
+    );
+    const paymentData = await this.bookingService.initiateBookingPayment(
+      passenger._id,
+      bookingId,
+    );
+    return {
+      message:
+        'Payment initialized successfully. Redirect user to authorization URL.',
+      data: paymentData, // Contains { authorization_url, reference, access_code }
+    };
+  }
+
+  @Patch('/driver/bookings/:bookingId/complete') // Prefix with /driver
+  @ApiOperation({ summary: 'Mark a booking as completed (Driver only)' })
+  @ApiResponse({
+    status: 200,
+    description: 'Booking marked as completed.',
+    type: Booking,
+  })
+  @ApiResponse({
+    status: 400,
+    description: 'Bad Request - Booking not in a completable state.',
+  })
+  @ApiResponse({ status: 401, description: 'Unauthorized.' })
+  @ApiResponse({ status: 403, description: 'Forbidden - Not the driver.' })
+  @ApiResponse({ status: 404, description: 'Not Found - Booking not found.' })
+  async completeBooking(
+    @User() driver: IUser,
+    @Param('bookingId') bookingId: string,
+  ): Promise<{ message: string; data: Booking }> {
+    if (!mongoose.Types.ObjectId.isValid(bookingId)) {
+      ErrorHelper.BadRequestException('Invalid Booking ID format.');
+    }
+    this.logger.log(`Driver ${driver._id} completing booking ${bookingId}`);
+    const completedBooking = await this.bookingService.completeBookingByDriver(
+      driver._id,
+      bookingId,
+    );
+    return {
+      message: 'Booking marked as completed.',
+      data: completedBooking.toObject() as Booking,
+    };
+  }
+}
+````
+
+## File: src/modules/booking/booking.module.ts
+````typescript
+import { Module } from '@nestjs/common';
+import { MongooseModule } from '@nestjs/mongoose';
+import { BookingService } from './booking.service';
+import { BookingController } from './booking.controller';
+import { Booking, BookingSchema } from './schemas/booking.schema';
+import { Ride, RideSchema } from '../rides/schemas/ride.schema'; // Need RideModel
+import { User, UserSchema } from '../user/schemas/user.schema'; // Need UserModel
+import { PaymentModule } from '../payment/payment.module';
+// Import RidesModule or Service if needed for direct calls (e.g., check availability)
+
+@Module({
+  imports: [
+    MongooseModule.forFeature([
+      { name: Booking.name, schema: BookingSchema },
+      { name: Ride.name, schema: RideSchema }, // Provide RideModel
+      { name: User.name, schema: UserSchema }, // Provide UserModel
+    ]),
+    // RidesModule, // If needed
+    PaymentModule,
+  ],
+  providers: [BookingService],
+  controllers: [BookingController],
+  exports: [BookingService], // Export if needed
+})
+export class BookingModule {}
+````
+
+## File: src/modules/booking/booking.service.ts
+````typescript
+import { Injectable, Logger, HttpException } from '@nestjs/common';
+import { InjectModel } from '@nestjs/mongoose';
+import mongoose, { Model } from 'mongoose';
+import { Booking, BookingDocument } from './schemas/booking.schema';
+import { Ride, RideDocument } from '../rides/schemas/ride.schema';
+import { User, UserDocument } from '../user/schemas/user.schema';
+import { CreateBookingDto } from './dto/create-booking.dto';
+import { BookingStatus } from './enums/booking-status.enum';
+import { RideStatus } from '../rides/enums/ride-status.enum';
+import { ErrorHelper } from 'src/core/helpers';
+import { PaymentStatus } from './enums/payment-status.enum';
+import { PaginationDto, PaginationResultDto } from 'src/core/dto';
+import { PaymentService } from '../payment/payment.service';
+import { NotificationService } from '../notification/notification.service';
+
+@Injectable()
+export class BookingService {
+  private readonly logger = new Logger(BookingService.name);
+
+  constructor(
+    @InjectModel(Booking.name) private bookingModel: Model<Booking>,
+    @InjectModel(Ride.name) private rideModel: Model<RideDocument>,
+    @InjectModel(User.name) private userModel: Model<User>,
+    private readonly notificationService: NotificationService,
+    private readonly paymentService: PaymentService,
+  ) {}
+
+  async requestBooking(
+    passengerId: string,
+    dto: CreateBookingDto,
+  ): Promise<BookingDocument> {
+    this.logger.log(
+      `Passenger ${passengerId} requesting booking for ride ${dto.rideId}`,
+    );
+
+    // 1. Validate Passenger Exists (although AuthGuard does this, good practice)
+    const passenger = await this.userModel.findById(passengerId);
+    if (!passenger) {
+      ErrorHelper.NotFoundException('Passenger user not found.'); // Should not happen if AuthGuard is used
+    }
+
+    // 2. Validate Ride Exists and is Suitable
+    const ride = await this.rideModel.findById(dto.rideId);
+    if (!ride) {
+      ErrorHelper.NotFoundException(`Ride with ID ${dto.rideId} not found.`);
+    }
+    if (ride.status !== RideStatus.SCHEDULED) {
+      ErrorHelper.BadRequestException(
+        'This ride is not available for booking (already started, completed, or cancelled).',
+      );
+    }
+    if (ride.driver.toString() === passengerId) {
+      ErrorHelper.BadRequestException(
+        'You cannot book a ride you are driving.',
+      );
+    }
+    if (ride.availableSeats < dto.seatsNeeded) {
+      ErrorHelper.BadRequestException(
+        `Not enough seats available. Only ${ride.availableSeats} left.`,
+      );
+    }
+
+    // 3. Check if Passenger Already Booked This Ride
+    const existingBooking = await this.bookingModel.findOne({
+      passenger: passengerId,
+      ride: dto.rideId,
+      status: {
+        $nin: [
+          BookingStatus.CANCELLED_BY_DRIVER,
+          BookingStatus.CANCELLED_BY_PASSENGER,
+          BookingStatus.REJECTED,
+        ],
+      }, // Check active/pending bookings
+    });
+    if (existingBooking) {
+      ErrorHelper.ConflictException(
+        'You have already requested or booked this ride.',
+      );
+    }
+
+    // 4. Prepare Booking Data
+    const totalPrice = ride.pricePerSeat * dto.seatsNeeded;
+    const bookingData = {
+      passenger: passengerId,
+      driver: ride.driver, // Store driver ID from ride
+      ride: dto.rideId,
+      seatsBooked: dto.seatsNeeded,
+      totalPrice: totalPrice,
+      status: BookingStatus.PENDING, // Initial status
+      paymentStatus:
+        totalPrice > 0 ? PaymentStatus.PENDING : PaymentStatus.NOT_REQUIRED, // Set payment status
+      pickupAddress: dto.pickupAddress, // Optional proposed address
+      dropoffAddress: dto.dropoffAddress,
+    };
+
+    // 5. Create and Save Booking
+    try {
+      const newBooking = new this.bookingModel(bookingData);
+      await newBooking.save();
+      this.logger.log(
+        `Booking ${newBooking._id} created successfully for ride ${dto.rideId} by passenger ${passengerId}`,
+      );
+
+      try {
+        const driver = await this.userModel
+          .findById(ride.driver)
+          .select('deviceTokens');
+
+        await this.notificationService.sendNotificationToUser(
+          driver._id.toString(),
+          'New Booking Request',
+          `Passenger ${passenger.firstName} wants to book ${newBooking.seatsBooked} seat(s) on your ride.`,
+          { bookingId: newBooking._id.toString(), type: 'BOOKING_REQUEST' },
+        );
+      } catch (notificationError) {
+        this.logger.error(
+          `Failed to send booking request notification to driver ${ride.driver}: ${notificationError.message}`,
+        );
+      }
+
+      return newBooking;
+    } catch (error) {
+      this.logger.error(
+        `Error creating booking for ride ${dto.rideId}: ${error.message}`,
+        error.stack,
+      );
+      ErrorHelper.InternalServerErrorException(
+        'Failed to create booking request.',
+      );
+    }
+  }
+
+  // --- Methods for Driver and Passenger booking management will be added below ---
+  async getRideBookings(
+    driverId: string,
+    rideId: string,
+  ): Promise<BookingDocument[]> {
+    this.logger.log(`Driver ${driverId} fetching bookings for ride ${rideId}`);
+    if (!mongoose.Types.ObjectId.isValid(rideId)) {
+      ErrorHelper.BadRequestException('Invalid Ride ID format.');
+    }
+
+    // Verify the ride exists and the user is the driver
+    const ride = await this.rideModel.findById(rideId).select('driver'); // Select only driver field
+    if (!ride) {
+      ErrorHelper.NotFoundException(`Ride with ID ${rideId} not found.`);
+    }
+    if (ride.driver.toString() !== driverId) {
+      ErrorHelper.ForbiddenException('You are not the driver of this ride.');
+    }
+
+    // Fetch bookings for this ride, populate passenger details
+    const bookings = await this.bookingModel
+      .find({ ride: rideId, driver: driverId })
+      .populate<{ passenger: UserDocument }>({
+        path: 'passenger',
+        select: 'firstName lastName avatar phoneNumber', // Select needed passenger info
+      })
+      .sort({ createdAt: -1 }) // Sort by newest first
+      .exec();
+
+    return bookings;
+  }
+
+  async confirmBooking(
+    driverId: string,
+    bookingId: string,
+  ): Promise<BookingDocument> {
+    this.logger.log(
+      `Driver ${driverId} attempting to confirm booking ${bookingId}`,
+    );
+    if (!mongoose.Types.ObjectId.isValid(bookingId)) {
+      ErrorHelper.BadRequestException('Invalid Booking ID format.');
+    }
+
+    const session = await this.bookingModel.db.startSession(); // Start mongoose session for transaction
+    session.startTransaction();
+
+    try {
+      // 1. Find Booking within session, verify driver and status
+      const booking = await this.bookingModel
+        .findById(bookingId)
+        .session(session);
+      if (!booking) {
+        ErrorHelper.NotFoundException(
+          `Booking with ID ${bookingId} not found.`,
+        );
+      }
+      if (booking.driver.toString() !== driverId) {
+        ErrorHelper.ForbiddenException(
+          'You cannot confirm a booking for a ride you are not driving.',
+        );
+      }
+      if (booking.status !== BookingStatus.PENDING) {
+        ErrorHelper.BadRequestException(
+          `Booking is not in PENDING state (current state: ${booking.status}).`,
+        );
+      }
+
+      // 2. Find Ride within session, verify seats
+      const ride = await this.rideModel.findById(booking.ride).session(session);
+      if (!ride) {
+        // Should not happen if booking exists, but good check
+        ErrorHelper.NotFoundException(
+          `Associated ride ${booking.ride} not found.`,
+        );
+      }
+      if (ride.availableSeats < booking.seatsBooked) {
+        ErrorHelper.BadRequestException(
+          `Not enough seats available on the ride to confirm this booking (needed: ${booking.seatsBooked}, available: ${ride.availableSeats}).`,
+        );
+      }
+
+      // 3. Update Ride: Decrease available seats (atomic operation within transaction)
+      const rideUpdateResult = await this.rideModel.updateOne(
+        { _id: ride._id, availableSeats: { $gte: booking.seatsBooked } }, // Ensure seats didn't change concurrently
+        { $inc: { availableSeats: -booking.seatsBooked } },
+        { session },
+      );
+
+      if (rideUpdateResult.modifiedCount === 0) {
+        // This means the seats were likely taken by another concurrent confirmation
+        ErrorHelper.ConflictException(
+          'Seats became unavailable while confirming. Please refresh.',
+        );
+      }
+
+      // 4. Update Booking Status
+      booking.status = BookingStatus.CONFIRMED;
+      // Optionally update pickup/dropoff if driver agrees/modifies them
+      await booking.save({ session }); // Save booking changes within session
+
+      // TODO: Trigger Payment Initiation (Phase 3)
+      // if (booking.totalPrice > 0) {
+      //      await this.paymentService.initializeTransactionForBooking(booking);
+      // }
+
+      // TODO: Trigger Notification to Passenger (Phase 6)
+      // await this.notificationService.notifyPassengerBookingConfirmed(booking.passenger, booking);
+
+      await session.commitTransaction(); // Commit transaction if all steps succeed
+      this.logger.log(
+        `Booking ${bookingId} confirmed successfully by driver ${driverId}.`,
+      );
+      return booking;
+    } catch (error) {
+      await session.abortTransaction(); // Rollback on any error
+      this.logger.error(
+        `Error confirming booking ${bookingId}: ${error.message}`,
+        error.stack,
+      );
+      // Rethrow specific exceptions or a generic one
+      if (error instanceof HttpException) throw error;
+      ErrorHelper.InternalServerErrorException('Failed to confirm booking.');
+    } finally {
+      session.endSession(); // Always end the session
+    }
+  }
+
+  async rejectBooking(
+    driverId: string,
+    bookingId: string,
+  ): Promise<BookingDocument> {
+    this.logger.log(
+      `Driver ${driverId} attempting to reject booking ${bookingId}`,
+    );
+    if (!mongoose.Types.ObjectId.isValid(bookingId)) {
+      ErrorHelper.BadRequestException('Invalid Booking ID format.');
+    }
+
+    const booking = await this.bookingModel.findById(bookingId);
+
+    if (!booking) {
+      ErrorHelper.NotFoundException(`Booking with ID ${bookingId} not found.`);
+    }
+    if (booking.driver.toString() !== driverId) {
+      ErrorHelper.ForbiddenException(
+        'You cannot reject a booking for a ride you are not driving.',
+      );
+    }
+    if (booking.status !== BookingStatus.PENDING) {
+      ErrorHelper.BadRequestException(
+        `Booking is not in PENDING state (current state: ${booking.status}). Cannot reject.`,
+      );
+    }
+
+    booking.status = BookingStatus.REJECTED; // Use REJECTED instead of CANCELLED_BY_DRIVER for clarity
+    await booking.save();
+
+    this.logger.log(
+      `Booking ${bookingId} rejected successfully by driver ${driverId}.`,
+    );
+
+    // TODO: Trigger Notification to Passenger (Phase 6)
+    // await this.notificationService.notifyPassengerBookingRejected(booking.passenger, booking);
+
+    return booking;
+  }
+
+  async getMyBookings(
+    passengerId: string,
+    paginationDto: PaginationDto,
+  ): Promise<PaginationResultDto<BookingDocument>> {
+    this.logger.log(`Passenger ${passengerId} fetching their bookings.`);
+    const { limit, page, order } = paginationDto;
+    const skip = paginationDto.skip;
+
+    const conditions = { passenger: passengerId };
+
+    const query = this.bookingModel
+      .find(conditions)
+      .populate<{ driver: UserDocument }>({
+        path: 'driver',
+        select: 'firstName lastName avatar',
+      })
+      .populate<{ ride: RideDocument }>({
+        path: 'ride',
+        select:
+          'originAddress destinationAddress departureTime status pricePerSeat', // Select key ride info
+        populate: { path: 'vehicle', select: 'make model color' }, // Populate nested vehicle info
+      })
+      .sort({ createdAt: order === 'ASC' ? 1 : -1 })
+      .skip(skip)
+      .limit(limit);
+
+    const [results, totalCount] = await Promise.all([
+      query.exec(),
+      this.bookingModel.countDocuments(conditions),
+    ]);
+
+    return new PaginationResultDto(results, totalCount, { page, limit });
+  }
+
+  async cancelBooking(
+    passengerId: string,
+    bookingId: string,
+  ): Promise<BookingDocument> {
+    this.logger.log(
+      `Passenger ${passengerId} attempting to cancel booking ${bookingId}`,
+    );
+    if (!mongoose.Types.ObjectId.isValid(bookingId)) {
+      ErrorHelper.BadRequestException('Invalid Booking ID format.');
+    }
+
+    const session = await this.bookingModel.db.startSession();
+    session.startTransaction();
+
+    try {
+      // 1. Find booking, verify passenger owns it and check status
+      const booking = await this.bookingModel
+        .findById(bookingId)
+        .session(session);
+      if (!booking) {
+        ErrorHelper.NotFoundException(
+          `Booking with ID ${bookingId} not found.`,
+        );
+      }
+      if (booking.passenger.toString() !== passengerId) {
+        ErrorHelper.ForbiddenException(
+          'You can only cancel your own bookings.',
+        );
+      }
+
+      // Define cancellable statuses
+      const cancellableStatuses = [
+        BookingStatus.PENDING,
+        BookingStatus.CONFIRMED,
+      ];
+      if (!cancellableStatuses.includes(booking.status)) {
+        ErrorHelper.BadRequestException(
+          `Cannot cancel booking with status ${booking.status}.`,
+        );
+      }
+
+      const wasConfirmed = booking.status === BookingStatus.CONFIRMED;
+
+      // 2. Update Booking Status
+      booking.status = BookingStatus.CANCELLED_BY_PASSENGER;
+      await booking.save({ session });
+
+      // 3. If booking was confirmed, increment available seats on ride
+      if (wasConfirmed) {
+        const rideUpdateResult = await this.rideModel.updateOne(
+          { _id: booking.ride },
+          { $inc: { availableSeats: booking.seatsBooked } }, // Increment seats back
+          { session },
+        );
+        // Log if ride wasn't found or not updated, but maybe don't fail the cancellation
+        if (rideUpdateResult.modifiedCount === 0) {
+          this.logger.warn(
+            `Could not increment seats for ride ${booking.ride} during cancellation of booking ${bookingId}. Ride might be deleted or status changed.`,
+          );
+        } else {
+          this.logger.log(
+            `Incremented available seats for ride ${booking.ride} by ${booking.seatsBooked}.`,
+          );
+        }
+      }
+
+      // TODO: Handle Refunds if payment was made (Phase 3)
+      // if (wasConfirmed && booking.paymentStatus === PaymentStatus.PAID) {
+      //      await this.paymentService.processRefundForBooking(booking);
+      // }
+
+      // TODO: Trigger Notification to Driver (Phase 6)
+      // await this.notificationService.notifyDriverBookingCancelled(booking.driver, booking);
+
+      await session.commitTransaction();
+      this.logger.log(
+        `Booking ${bookingId} cancelled successfully by passenger ${passengerId}.`,
+      );
+      return booking;
+    } catch (error) {
+      await session.abortTransaction();
+      this.logger.error(
+        `Error cancelling booking ${bookingId}: ${error.message}`,
+        error.stack,
+      );
+      if (error instanceof HttpException) throw error;
+      ErrorHelper.InternalServerErrorException('Failed to cancel booking.');
+    } finally {
+      session.endSession();
+    }
+  }
+
+  async initiateBookingPayment(
+    passengerId: string,
+    bookingId: string,
+  ): Promise<{
+    authorization_url: string;
+    reference: string;
+    access_code: string;
+  }> {
+    this.logger.log(
+      `Passenger ${passengerId} initiating payment for booking ${bookingId}`,
+    );
+    if (!mongoose.Types.ObjectId.isValid(bookingId)) {
+      ErrorHelper.BadRequestException('Invalid Booking ID format.');
+    }
+
+    // 1. Find booking and verify ownership and status
+    const booking = await this.bookingModel
+      .findById(bookingId)
+      .populate<{ passenger: UserDocument }>('passenger', 'email'); // Populate passenger email
+
+    if (!booking) {
+      ErrorHelper.NotFoundException(`Booking with ID ${bookingId} not found.`);
+    }
+    if (booking.passenger._id.toString() !== passengerId) {
+      ErrorHelper.ForbiddenException('You can only pay for your own bookings.');
+    }
+    // Allow payment only if CONFIRMED and PENDING payment
+    if (booking.status !== BookingStatus.CONFIRMED) {
+      ErrorHelper.BadRequestException(
+        `Booking must be confirmed by the driver before payment (current status: ${booking.status}).`,
+      );
+    }
+    if (booking.paymentStatus !== PaymentStatus.PENDING) {
+      // Allow retrying FAILED? For now, only PENDING.
+      ErrorHelper.BadRequestException(
+        `Payment for this booking is not pending (current status: ${booking.paymentStatus}).`,
+      );
+    }
+    if (booking.totalPrice <= 0) {
+      ErrorHelper.BadRequestException('This booking does not require payment.');
+    }
+
+    // 2. Call Payment Service to initialize transaction
+    try {
+      // Convert NGN price to kobo for Paystack
+      const amountInKobo = Math.round(booking.totalPrice * 100);
+      const paymentData = await this.paymentService.initializeTransaction(
+        amountInKobo,
+        booking.passenger.email, // Use passenger's email
+        bookingId,
+        passengerId,
+      );
+
+      // 3. Store transaction reference on the booking (important for webhook matching)
+      await this.bookingModel.updateOne(
+        { _id: bookingId },
+        { $set: { transactionRef: paymentData.reference } },
+      );
+      this.logger.log(
+        `Stored Paystack reference ${paymentData.reference} for booking ${bookingId}`,
+      );
+
+      return paymentData; // Return { authorization_url, reference, access_code }
+    } catch (error) {
+      this.logger.error(
+        `Error initiating payment for booking ${bookingId}: ${error.message}`,
+        error.stack,
+      );
+      // Rethrow the error from PaymentService or a generic one
+      if (error instanceof HttpException) throw error;
+      ErrorHelper.InternalServerErrorException('Failed to initiate payment.');
+    }
+  }
+
+  async completeBookingByDriver(
+    driverId: string,
+    bookingId: string,
+  ): Promise<BookingDocument> {
+    this.logger.log(
+      `Driver ${driverId} attempting to mark booking ${bookingId} as completed.`,
+    );
+    if (!mongoose.Types.ObjectId.isValid(bookingId)) {
+      ErrorHelper.BadRequestException('Invalid Booking ID format.');
+    }
+
+    // 1. Find booking, verify driver and status
+    const booking = await this.bookingModel.findById(bookingId);
+    if (!booking) {
+      ErrorHelper.NotFoundException(`Booking with ID ${bookingId} not found.`);
+    }
+    if (booking.driver.toString() !== driverId) {
+      ErrorHelper.ForbiddenException(
+        'You can only complete bookings for rides you are driving.',
+      );
+    }
+    // Allow completion only if CONFIRMED (or potentially IN_PROGRESS if you add that status)
+    if (booking.status !== BookingStatus.CONFIRMED) {
+      ErrorHelper.BadRequestException(
+        `Booking must be confirmed to be marked as completed (current status: ${booking.status}).`,
+      );
+    }
+
+    // Optionally: Check if Ride departureTime has passed significantly
+
+    // 2. Update Status
+    booking.status = BookingStatus.COMPLETED;
+    await booking.save();
+
+    this.logger.log(
+      `Booking ${bookingId} marked as COMPLETED by driver ${driverId}.`,
+    );
+
+    // TODO: Trigger Notification to Passenger (Phase 6)
+    // TODO: Check if all bookings for the ride are completed/cancelled, then update Ride status (maybe background job)
+
+    return booking;
+  }
+}
 ````
 
 ## File: src/modules/driver/schemas/vehicle.schema.ts
@@ -3815,6 +7537,443 @@ export class Vehicle {
 }
 
 export const VehicleSchema = SchemaFactory.createForClass(Vehicle);
+````
+
+## File: src/modules/driver/driver.controller.ts
+````typescript
+import {
+  Controller,
+  Post,
+  Body,
+  UseGuards,
+  Logger,
+  Param,
+  UploadedFile,
+  UseInterceptors,
+  ParseEnumPipe,
+  Get,
+} from '@nestjs/common';
+import { DriverService } from './driver.service';
+import { RegisterVehicleDto } from './dto/register-vehicle.dto';
+import { AuthGuard } from '../../core/guards/authenticate.guard';
+import { User } from '../../core/decorators/user.decorator';
+import { IUser } from '../../core/interfaces/user/user.interface';
+import { FileInterceptor } from '@nestjs/platform-express';
+import {
+  ApiTags,
+  ApiOperation,
+  ApiResponse,
+  ApiBearerAuth,
+  ApiConsumes,
+  ApiBody,
+} from '@nestjs/swagger';
+import { Vehicle } from './schemas/vehicle.schema'; // Import for response type
+import { VehicleDocumentType } from './enums/vehicle-document-type.enum';
+import { ErrorHelper } from 'src/core/helpers';
+
+@ApiTags('Driver')
+@ApiBearerAuth() // Requires JWT token
+@UseGuards(AuthGuard) // Protect all routes in this controller
+@Controller('driver') // Base path for vehicle-related driver actions
+export class DriverController {
+  private readonly logger = new Logger(DriverController.name);
+
+  constructor(private readonly driverService: DriverService) {}
+
+  @Post('vehicles/register')
+  @ApiOperation({ summary: 'Register a new vehicle for the logged-in driver' })
+  @ApiResponse({
+    status: 201,
+    description: 'Vehicle registered successfully.',
+    type: Vehicle,
+  }) // Use the schema class for response type hint
+  @ApiResponse({
+    status: 400,
+    description: 'Bad Request - Invalid input data.',
+  })
+  @ApiResponse({ status: 401, description: 'Unauthorized - Invalid token.' })
+  @ApiResponse({
+    status: 403,
+    description: 'Forbidden - User is not a driver.',
+  })
+  @ApiResponse({
+    status: 409,
+    description: 'Conflict - Plate number already exists.',
+  })
+  async registerVehicle(
+    @User() driver: IUser, // Get authenticated user from decorator
+    @Body() registerVehicleDto: RegisterVehicleDto,
+  ): Promise<{ message: string; data: Vehicle }> {
+    // Adjust return type for standard response
+    this.logger.log(
+      `Received request to register vehicle from driver ID: ${driver._id}`,
+    );
+    const newVehicle = await this.driverService.registerVehicle(
+      driver._id,
+      registerVehicleDto,
+    );
+    return {
+      message: 'Vehicle registered successfully.',
+      data: newVehicle.toObject() as Vehicle, // Convert Mongoose doc to plain object
+    };
+  }
+
+  @Post(':vehicleId/documents')
+  @UseInterceptors(FileInterceptor('documentFile')) // 'documentFile' is the field name in the form-data
+  @ApiOperation({ summary: 'Upload a document for a specific vehicle' })
+  @ApiConsumes('multipart/form-data') // Specify content type for file upload
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        documentFile: {
+          // Must match FileInterceptor field name
+          type: 'string',
+          format: 'binary',
+          description:
+            'The vehicle document file (e.g., registration, insurance).',
+        },
+        documentType: {
+          type: 'string',
+          enum: Object.values(VehicleDocumentType), // Use enum values for Swagger
+          description: 'The type of document being uploaded.',
+        },
+        // Optionally add other fields like insuranceExpiryDate here if needed
+      },
+      required: ['documentFile', 'documentType'], // Mark required fields
+    },
+  })
+  @ApiResponse({
+    status: 201,
+    description: 'Document uploaded successfully.',
+    type: Vehicle,
+  })
+  @ApiResponse({
+    status: 400,
+    description:
+      'Bad Request - Missing file, invalid type, or invalid vehicle ID.',
+  })
+  @ApiResponse({ status: 401, description: 'Unauthorized.' })
+  @ApiResponse({
+    status: 403,
+    description: 'Forbidden - Driver does not own vehicle.',
+  })
+  @ApiResponse({ status: 404, description: 'Not Found - Vehicle not found.' })
+  async uploadVehicleDocument(
+    @User() driver: IUser,
+    @Param('vehicleId') vehicleId: string, // Use @Param for path parameters
+    @UploadedFile() file: Express.Multer.File, // Get the uploaded file
+    @Body(
+      'documentType',
+      new ParseEnumPipe(VehicleDocumentType, {
+        // Validate documentType against enum
+        exceptionFactory: () =>
+          ErrorHelper.BadRequestException('Invalid document type specified.'),
+      }),
+    )
+    documentType: VehicleDocumentType,
+  ): Promise<{ message: string; data: Vehicle }> {
+    if (!file) {
+      ErrorHelper.BadRequestException('Document file is required.');
+    }
+    this.logger.log(
+      `Received request to upload ${documentType} for vehicle ${vehicleId} from driver ${driver._id}`,
+    );
+    const updatedVehicle = await this.driverService.uploadVehicleDocument(
+      driver._id,
+      vehicleId,
+      file,
+      documentType,
+    );
+    return {
+      message: `${documentType} uploaded successfully.`,
+      data: updatedVehicle.toObject() as Vehicle,
+    };
+  }
+
+  @Get('profile-status')
+  @ApiOperation({
+    summary: "Get the logged-in driver's profile and verification status",
+  })
+  @ApiResponse({
+    status: 200,
+    description:
+      'Driver profile and status retrieved.' /* type: User - define a specific Response DTO */,
+  })
+  @ApiResponse({ status: 401, description: 'Unauthorized.' })
+  @ApiResponse({
+    status: 403,
+    description: 'Forbidden - User is not a driver.',
+  }) // Should be caught by role check in service/guard
+  @ApiResponse({ status: 404, description: 'Not Found - Driver not found.' })
+  async getDriverProfileStatus(
+    @User() driver: IUser,
+  ): Promise<{ message: string; data: any }> {
+    // Use 'any' or create specific DTO
+    this.logger.log(`Fetching profile status for driver ${driver._id}`);
+    const profileData = await this.driverService.getDriverProfileAndStatus(
+      driver._id,
+    );
+    return {
+      message: 'Driver profile and status fetched successfully.',
+      data: profileData, // Return the selected data
+    };
+  }
+}
+````
+
+## File: src/modules/driver/driver.service.ts
+````typescript
+import { Injectable, Logger } from '@nestjs/common';
+import { InjectModel } from '@nestjs/mongoose';
+import { Model } from 'mongoose';
+import { Vehicle, VehicleDocument } from './schemas/vehicle.schema';
+import { User, UserDocument } from '../user/schemas/user.schema'; // Verify path
+import { RoleNameEnum } from '../../core/interfaces/user/role.interface';
+import { RegisterVehicleDto } from './dto/register-vehicle.dto';
+import { ErrorHelper } from 'src/core/helpers'; // Use ErrorHelper for consistency
+import { AwsS3Service } from '../storage/s3-bucket.service'; // Import S3 Service
+import { VehicleDocumentType } from './enums/vehicle-document-type.enum';
+import { VehicleVerificationStatus } from 'src/core/enums/vehicle.enum';
+
+@Injectable()
+export class DriverService {
+  private readonly logger = new Logger(DriverService.name);
+
+  constructor(
+    @InjectModel(Vehicle.name) private vehicleModel: Model<VehicleDocument>,
+    @InjectModel(User.name) private userModel: Model<UserDocument>,
+    private readonly awsS3Service: AwsS3Service,
+  ) {}
+
+  async registerVehicle(
+    driverId: string,
+    dto: RegisterVehicleDto,
+  ): Promise<VehicleDocument> {
+    this.logger.log(
+      `Attempting to register vehicle for driver ID: ${driverId}`,
+    );
+
+    // 1. Verify User is a Driver
+    const driver = await this.userModel.findById(driverId).populate('roles');
+    if (!driver) {
+      this.logger.warn(`Driver not found for ID: ${driverId}`);
+      ErrorHelper.NotFoundException('Driver user not found.');
+    }
+    const isDriverRole = driver.roles.some(
+      (role) => role.name === RoleNameEnum.Driver,
+    );
+    if (!isDriverRole) {
+      this.logger.warn(`User ${driverId} does not have DRIVER role.`);
+      ErrorHelper.ForbiddenException('User is not registered as a driver.');
+    }
+
+    // 2. Check for duplicate plate number (case-insensitive suggested)
+    const plateUpper = dto.plateNumber.toUpperCase();
+    const existingVehicle = await this.vehicleModel.findOne({
+      plateNumber: plateUpper,
+    });
+    if (existingVehicle) {
+      this.logger.warn(
+        `Vehicle with plate number ${plateUpper} already exists.`,
+      );
+      ErrorHelper.ConflictException(
+        `Vehicle with plate number ${dto.plateNumber} already exists.`,
+      );
+    }
+
+    // 3. Create and Save Vehicle
+    try {
+      const newVehicle = new this.vehicleModel({
+        ...dto,
+        plateNumber: plateUpper, // Store uppercase
+        driver: driverId, // Link to the driver user
+        // vehicleVerificationStatus defaults to NOT_SUBMITTED via schema
+      });
+      await newVehicle.save();
+      this.logger.log(
+        `Vehicle ${newVehicle._id} created successfully for driver ${driverId}.`,
+      );
+
+      // 4. Update User's vehicles array
+      await this.userModel.findByIdAndUpdate(driverId, {
+        $push: { vehicles: newVehicle._id },
+      });
+      this.logger.log(`Updated driver ${driverId}'s vehicle list.`);
+
+      return newVehicle; // Return the saved document
+    } catch (error) {
+      this.logger.error(
+        `Error registering vehicle for driver ${driverId}: ${error.message}`,
+        error.stack,
+      );
+      if (error.code === 11000) {
+        // Handle potential race condition for unique index
+        ErrorHelper.ConflictException(
+          `Vehicle with plate number ${dto.plateNumber} already exists.`,
+        );
+      }
+      ErrorHelper.InternalServerErrorException('Failed to register vehicle.');
+    }
+  }
+
+  async uploadVehicleDocument(
+    driverId: string,
+    vehicleId: string,
+    file: Express.Multer.File,
+    documentType: VehicleDocumentType,
+  ): Promise<VehicleDocument> {
+    this.logger.log(
+      `Attempting to upload document type ${documentType} for vehicle ${vehicleId} by driver ${driverId}`,
+    );
+
+    if (!file) {
+      ErrorHelper.BadRequestException('Document file is required.');
+    }
+
+    // 1. Find vehicle and verify ownership
+    const vehicle = await this.vehicleModel.findById(vehicleId);
+    if (!vehicle) {
+      ErrorHelper.NotFoundException(`Vehicle with ID ${vehicleId} not found.`);
+    }
+    // Ensure the driver owns this vehicle - Use .toString() for ObjectId comparison
+    if (vehicle.driver.toString() !== driverId) {
+      this.logger.warn(
+        `Driver ${driverId} attempted to upload document for vehicle ${vehicleId} they don't own.`,
+      );
+      ErrorHelper.ForbiddenException(
+        'You are not authorized to modify this vehicle.',
+      );
+    }
+
+    // 2. Upload to S3
+    let fileUrl: string;
+    try {
+      // Define a structured key/filename for S3
+      const s3FileName = `vehicle-documents/${driverId}/${vehicleId}/${documentType}-${Date.now()}-${file.originalname}`;
+      fileUrl = await this.awsS3Service.uploadAttachment(file, s3FileName);
+      this.logger.log(`Document uploaded to S3: ${fileUrl}`);
+    } catch (error) {
+      this.logger.error(
+        `Failed to upload vehicle document to S3: ${error.message}`,
+        error.stack,
+      );
+      ErrorHelper.InternalServerErrorException('Failed to upload document.');
+    }
+
+    // 3. Determine which field to update
+    let updateField: string;
+    switch (documentType) {
+      case VehicleDocumentType.REGISTRATION:
+        updateField = 'vehicleRegistrationImageUrl';
+        break;
+      case VehicleDocumentType.INSURANCE:
+        updateField = 'vehicleInsuranceImageUrl';
+        break;
+      case VehicleDocumentType.PROOF_OF_OWNERSHIP:
+        updateField = 'proofOfOwnershipImageUrl';
+        break;
+      case VehicleDocumentType.ROADWORTHINESS:
+        updateField = 'roadworthinessImageUrl';
+        break;
+      // Add cases for other document types if needed
+      default:
+        this.logger.error(`Invalid document type provided: ${documentType}`);
+        ErrorHelper.BadRequestException('Invalid document type specified.');
+    }
+
+    // 4. Update Vehicle Document in DB
+    try {
+      // Update the specific field and potentially the status if it wasn't already PENDING or VERIFIED
+      const updateData: Partial<Vehicle> = { [updateField]: fileUrl };
+      if (
+        vehicle.vehicleVerificationStatus ===
+          VehicleVerificationStatus.NOT_SUBMITTED ||
+        vehicle.vehicleVerificationStatus === VehicleVerificationStatus.REJECTED
+      ) {
+        // Optionally set to PENDING automatically on first upload or re-upload after rejection
+        // updateData.vehicleVerificationStatus = VehicleVerificationStatus.PENDING;
+        // More robust logic might check if ALL required docs are present before setting PENDING.
+        // For now, just upload the URL. Verification status change can be manual via admin or a separate trigger.
+      }
+
+      const updatedVehicle = await this.vehicleModel.findByIdAndUpdate(
+        vehicleId,
+        { $set: updateData },
+        { new: true }, // Return the updated document
+      );
+
+      if (!updatedVehicle) {
+        // Should not happen if findById worked, but good practice
+        ErrorHelper.NotFoundException(
+          `Vehicle with ID ${vehicleId} disappeared during update.`,
+        );
+      }
+
+      this.logger.log(
+        `Updated vehicle ${vehicleId} with document URL for type ${documentType}.`,
+      );
+      return updatedVehicle;
+    } catch (error) {
+      this.logger.error(
+        `Failed to update vehicle ${vehicleId} in DB after S3 upload: ${error.message}`,
+        error.stack,
+      );
+      // Consider attempting to delete the uploaded S3 file on DB update failure (compensation logic)
+      ErrorHelper.InternalServerErrorException(
+        'Failed to save document information.',
+      );
+    }
+  }
+  async getDriverProfileAndStatus(
+    driverId: string,
+  ): Promise<Partial<UserDocument>> {
+    this.logger.log(`Fetching profile and status for driver ${driverId}`);
+    const driver = await this.userModel
+      .findById(driverId)
+      .select('+driverVerificationStatus +driverRejectionReason +status') // Explicitly select status fields if needed
+      .populate<{ vehicles: VehicleDocument[] }>({
+        // Populate vehicles with status
+        path: 'vehicles',
+        select:
+          'make model year plateNumber vehicleVerificationStatus vehicleRejectionReason',
+      });
+
+    if (!driver) {
+      ErrorHelper.NotFoundException('Driver user not found.');
+    }
+    // Add role check if necessary, though AuthGuard likely implies user exists
+    // const isDriverRole = driver.roles.some(role => role.name === RoleNameEnum.Driver);
+    // if (!isDriverRole) { throw new ForbiddenException('User is not a driver.'); }
+
+    // Return relevant profile info + verification statuses
+    return {
+      _id: driver._id,
+      firstName: driver.firstName,
+      lastName: driver.lastName,
+      email: driver.email,
+      avatar: driver.avatar,
+      status: driver.status,
+      driverVerificationStatus: driver.driverVerificationStatus,
+      driverRejectionReason: driver.driverRejectionReason,
+      vehicles: driver.vehicles,
+    };
+  }
+}
+````
+
+## File: src/modules/geolocation/geolocation.module.ts
+````typescript
+import { Module } from '@nestjs/common';
+import { GeolocationService } from './geolocation.service';
+import { SecretsModule } from 'src/global/secrets/module';
+
+@Module({
+  imports: [SecretsModule],
+  providers: [GeolocationService],
+  exports: [GeolocationService],
+})
+export class GeolocationModule {}
 ````
 
 ## File: src/modules/mail/enums/index.ts
@@ -4137,6 +8296,358 @@ export class MailService {
 }
 ````
 
+## File: src/modules/rides/rides.controller.ts
+````typescript
+import {
+  Controller,
+  Post,
+  Body,
+  UseGuards,
+  Logger,
+  Get,
+  Query,
+  Param,
+  Patch,
+} from '@nestjs/common';
+import { RidesService } from './rides.service';
+import { CreateRideDto } from './dto/create-ride.dto';
+import { AuthGuard } from '../../core/guards/authenticate.guard';
+import { User } from '../../core/decorators/user.decorator';
+import { IUser } from '../../core/interfaces/user/user.interface';
+import {
+  ApiTags,
+  ApiOperation,
+  ApiResponse,
+  ApiBearerAuth,
+  ApiQuery,
+} from '@nestjs/swagger';
+import { Ride } from './schemas/ride.schema';
+import { SearchRidesDto } from './dto/search-rides.dto';
+import { PaginationResultDto } from 'src/core/dto';
+import mongoose from 'mongoose';
+import { ErrorHelper } from 'src/core/helpers';
+
+@ApiTags('Rides')
+@Controller('rides')
+export class RidesController {
+  private readonly logger = new Logger(RidesController.name);
+
+  constructor(private readonly ridesService: RidesService) {}
+
+  @Post()
+  @UseGuards(AuthGuard) // Ensure user is logged in
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Create a new ride offer (Driver only)' })
+  @ApiResponse({
+    status: 201,
+    description: 'Ride created successfully.',
+    type: Ride,
+  })
+  @ApiResponse({
+    status: 400,
+    description: 'Bad Request - Invalid input data.',
+  })
+  @ApiResponse({ status: 401, description: 'Unauthorized - Invalid token.' })
+  @ApiResponse({
+    status: 403,
+    description:
+      'Forbidden - User is not a verified driver or vehicle/driver is invalid.',
+  })
+  @ApiResponse({
+    status: 404,
+    description: 'Not Found - Driver or Vehicle not found.',
+  })
+  async createRide(
+    @User() driver: IUser, // Get authenticated user (should have DRIVER role)
+    @Body() createRideDto: CreateRideDto,
+  ): Promise<{ message: string; data: Ride }> {
+    // Standard response structure
+    this.logger.log(
+      `Received request to create ride from driver ID: ${driver._id}`,
+    );
+    const newRide = await this.ridesService.createRide(
+      driver._id,
+      createRideDto,
+    );
+    return {
+      message: 'Ride created successfully.',
+      data: newRide.toObject() as Ride, // Return plain object
+    };
+  }
+
+  @Get('/search')
+  @UseGuards(AuthGuard) // Require login to search? Or make public? Assuming logged in for now.
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Search for available rides' })
+  // Add ApiQuery decorators for Swagger documentation of query parameters
+  @ApiQuery({
+    name: 'origin[lat]',
+    type: Number,
+    required: true,
+    description: 'Origin latitude',
+  })
+  @ApiQuery({
+    name: 'origin[lon]',
+    type: Number,
+    required: true,
+    description: 'Origin longitude',
+  })
+  @ApiQuery({
+    name: 'destination[lat]',
+    type: Number,
+    required: true,
+    description: 'Destination latitude',
+  })
+  @ApiQuery({
+    name: 'destination[lon]',
+    type: Number,
+    required: true,
+    description: 'Destination longitude',
+  })
+  @ApiQuery({
+    name: 'departureDate',
+    type: String,
+    required: true,
+    example: '2025-08-15',
+    description: 'Departure date (YYYY-MM-DD)',
+  })
+  @ApiQuery({
+    name: 'seatsNeeded',
+    type: Number,
+    required: true,
+    example: 1,
+    description: 'Number of seats required',
+  })
+  @ApiQuery({
+    name: 'maxDistance',
+    type: Number,
+    required: false,
+    example: 5000,
+    description: 'Max search radius in meters',
+  })
+  @ApiQuery({ name: 'page', type: Number, required: false, example: 1 })
+  @ApiQuery({ name: 'limit', type: Number, required: false, example: 10 })
+  @ApiQuery({
+    name: 'order',
+    enum: ['ASC', 'DESC'],
+    required: false,
+    example: 'DESC',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'List of matching rides found.',
+    type: PaginationResultDto<Ride>,
+  }) // Hint response type
+  @ApiResponse({
+    status: 400,
+    description: 'Bad Request - Invalid query parameters.',
+  })
+  @ApiResponse({ status: 401, description: 'Unauthorized.' })
+  async searchRides(
+    @Query() searchRidesDto: SearchRidesDto, // Use @Query to bind query params to DTO
+  ): Promise<PaginationResultDto<Ride>> {
+    // Return type matches service
+    this.logger.log(
+      `Searching rides with criteria: ${JSON.stringify(searchRidesDto)}`,
+    );
+    // searchRidesDto will have pagination fields inherited
+    return await this.ridesService.searchRides(searchRidesDto);
+    // TransformInterceptor will format the final response
+  }
+
+  // --- New Get Ride By ID Endpoint ---
+  @Get(':rideId')
+  @UseGuards(AuthGuard) // Or make public if needed
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Get details of a specific ride' })
+  @ApiResponse({ status: 200, description: 'Ride details found.', type: Ride })
+  @ApiResponse({
+    status: 400,
+    description: 'Bad Request - Invalid Ride ID format.',
+  })
+  @ApiResponse({ status: 401, description: 'Unauthorized.' })
+  @ApiResponse({ status: 404, description: 'Not Found - Ride not found.' })
+  async getRideById(
+    @Param('rideId') rideId: string,
+  ): Promise<{ message: string; data: Ride }> {
+    if (!mongoose.Types.ObjectId.isValid(rideId)) {
+      ErrorHelper.BadRequestException('Invalid Ride ID format.');
+    }
+    this.logger.log(`Fetching ride details for ID: ${rideId}`);
+    const ride = await this.ridesService.getRideById(rideId);
+    return {
+      message: 'Ride details fetched successfully.',
+      data: ride.toObject() as Ride,
+    };
+  }
+
+  @Patch(':rideId/start') // New endpoint
+  @UseGuards(AuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Start a scheduled ride (Driver only)' })
+  @ApiResponse({
+    status: 200,
+    description: 'Ride started successfully.',
+    type: Ride,
+  })
+  @ApiResponse({
+    status: 400,
+    description: 'Bad Request - Ride cannot be started.',
+  })
+  @ApiResponse({ status: 401, description: 'Unauthorized.' })
+  @ApiResponse({ status: 403, description: 'Forbidden - Not the driver.' })
+  @ApiResponse({ status: 404, description: 'Not Found - Ride not found.' })
+  async startRide(
+    @User() driver: IUser,
+    @Param('rideId') rideId: string,
+  ): Promise<{ message: string; data: Ride }> {
+    if (!mongoose.Types.ObjectId.isValid(rideId)) {
+      ErrorHelper.BadRequestException('Invalid Ride ID format.');
+    }
+    this.logger.log(`Driver ${driver._id} starting ride ${rideId}`);
+    const startedRide = await this.ridesService.startRide(driver._id, rideId);
+    return {
+      message: 'Ride started successfully.',
+      data: startedRide.toObject() as Ride,
+    };
+  }
+
+  // Endpoint for GET /rides/:rideId/share-link (to be added)
+  // Public endpoint GET /trip/:shareToken (to be added in a separate controller/module)
+  @Get(':rideId/share-link')
+  @UseGuards(AuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Generate a shareable link/token for an in-progress ride',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Share token generated successfully.',
+    schema: {
+      properties: {
+        shareToken: { type: 'string' },
+        expiresAt: { type: 'string', format: 'date-time' },
+      },
+    },
+  })
+  @ApiResponse({
+    status: 400,
+    description: 'Bad Request - Ride not in progress.',
+  })
+  @ApiResponse({ status: 401, description: 'Unauthorized.' })
+  @ApiResponse({
+    status: 403,
+    description: 'Forbidden - User not on this ride.',
+  })
+  @ApiResponse({ status: 404, description: 'Not Found - Ride not found.' })
+  async getShareLink(
+    @User() currentUser: IUser,
+    @Param('rideId') rideId: string,
+  ): Promise<{
+    message: string;
+    data: { shareToken: string; expiresAt: Date };
+  }> {
+    if (!mongoose.Types.ObjectId.isValid(rideId)) {
+      ErrorHelper.BadRequestException('Invalid Ride ID format.');
+    }
+    this.logger.log(
+      `User ${currentUser._id} requesting share link for ride ${rideId}`,
+    );
+    const result = await this.ridesService.generateShareLink(
+      rideId,
+      currentUser._id,
+    );
+    return {
+      message: 'Share link generated successfully.',
+      data: result,
+    };
+  }
+}
+````
+
+## File: src/modules/twilio/twilio.service.ts
+````typescript
+import { Injectable, Logger } from '@nestjs/common';
+import { Twilio } from 'twilio';
+import { SecretsService } from '../../global/secrets/service';
+import { error } from 'console';
+
+@Injectable()
+export class TwilioService {
+  private readonly logger = new Logger(TwilioService.name);
+  private twilioClient: Twilio;
+
+  constructor(private secretsService: SecretsService) {
+    const { TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN } =
+      this.secretsService.twilio;
+    if (TWILIO_ACCOUNT_SID && TWILIO_AUTH_TOKEN) {
+      this.twilioClient = new Twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
+    } else {
+      this.logger.error(
+        'Twilio credentials not found. TwilioService will not function.',
+      );
+      this.logger.debug(error);
+    }
+  }
+
+  async sendVerificationToken(
+    to: string,
+    channel: 'sms' | 'call',
+  ): Promise<boolean> {
+    const { TWILIO_VERIFY_SERVICE_SID } = this.secretsService.twilio;
+    if (!this.twilioClient || !TWILIO_VERIFY_SERVICE_SID) {
+      this.logger.error('Twilio client or Verify Service SID missing.');
+      throw new Error('Verification service is not configured properly.');
+    }
+    try {
+      const verification = await this.twilioClient.verify.v2
+        .services(TWILIO_VERIFY_SERVICE_SID)
+        .verifications.create({ to, channel });
+      this.logger.log(
+        `Verification sent to ${to}, Status: ${verification.status}`,
+      );
+      return verification.status === 'pending';
+    } catch (error) {
+      this.logger.error(
+        `Failed to send verification to ${to}: ${error.message}`,
+        error.stack,
+      );
+      throw new Error(`Failed to send verification code: ${error.message}`);
+    }
+  }
+
+  async checkVerificationToken(to: string, code: string): Promise<boolean> {
+    const { TWILIO_VERIFY_SERVICE_SID } = this.secretsService.twilio;
+    if (!this.twilioClient || !TWILIO_VERIFY_SERVICE_SID) {
+      this.logger.error('Twilio client or Verify Service SID missing.');
+      throw new Error('Verification service is not configured properly.');
+    }
+    try {
+      const verificationCheck = await this.twilioClient.verify.v2
+        .services(TWILIO_VERIFY_SERVICE_SID)
+        .verificationChecks.create({ to, code });
+      this.logger.log(
+        `Verification check for ${to}, Status: ${verificationCheck.status}`,
+      );
+      return verificationCheck.status === 'approved';
+    } catch (error) {
+      // Twilio might return a 404 for incorrect code, handle gracefully
+      if (error.status === 404) {
+        this.logger.warn(
+          `Verification check failed for ${to}: Incorrect code or expired.`,
+        );
+        return false;
+      }
+      this.logger.error(
+        `Failed to check verification for ${to}: ${error.message}`,
+        error.stack,
+      );
+      throw new Error(`Failed to verify code: ${error.message}`);
+    }
+  }
+}
+````
+
 ## File: src/modules/user/schemas/user.schema.ts
 ````typescript
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
@@ -4269,9 +8780,235 @@ export class User {
 
   @Prop({ type: Number, default: 0, min: 0 })
   totalRatingsAsPassenger: number; // Total number of ratings received as passenger
+
+  @Prop({ type: [String], default: [], index: true }) // Array to store FCM registration tokens
+  deviceTokens: string[];
 }
 
 export const UserSchema = SchemaFactory.createForClass(User);
+````
+
+## File: src/modules/user/user.module.ts
+````typescript
+import { Module } from '@nestjs/common';
+import { UserService } from './user.service';
+import { MongooseModule } from '@nestjs/mongoose';
+import { Token, TokenSchema } from './schemas/token.schema';
+import { UserSchema, User } from './schemas/user.schema';
+import { roleSchema, Role } from './schemas/role.schema';
+import { UserController } from './user.controller';
+
+@Module({
+  imports: [
+    MongooseModule.forFeature([
+      { name: Token.name, schema: TokenSchema },
+      { name: User.name, schema: UserSchema },
+      { name: Role.name, schema: roleSchema },
+    ]),
+  ],
+  providers: [UserService],
+  controllers: [UserController],
+  exports: [UserService],
+})
+export class UserModule {}
+````
+
+## File: src/modules/user/user.service.ts
+````typescript
+import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { InjectModel } from '@nestjs/mongoose';
+import { Model } from 'mongoose';
+import { DateHelper, ErrorHelper } from 'src/core/helpers';
+import { IPassenger, IDriver } from 'src/core/interfaces';
+import { TokenHelper } from 'src/global/utils/token.utils';
+import { UserSessionService } from 'src/global/user-session/service';
+import { Token } from './schemas/token.schema';
+import { User } from './schemas/user.schema';
+import { UpdateEmergencyContactsDto } from './dto/emergency-contact.dto';
+import { UserDocument } from './schemas/user.schema';
+
+@Injectable()
+export class UserService {
+  private logger = new Logger(UserService.name);
+  constructor(
+    @InjectModel(Token.name) private tokenRepo: Model<Token>,
+    private tokenHelper: TokenHelper,
+    private userSessionService: UserSessionService,
+    @InjectModel(User.name) private userRepo: Model<User>,
+  ) {}
+
+  async generateOtpCode(
+    user: IDriver | IPassenger,
+    options = {
+      numberOnly: true,
+      length: 4,
+    },
+    expirationTimeInMinutes = 15,
+  ): Promise<string> {
+    let code = '';
+
+    if (options.numberOnly) {
+      code = this.tokenHelper.generateRandomNumber(options.length);
+    } else {
+      code = this.tokenHelper.generateRandomString(options.length);
+    }
+
+    this.logger.debug('Generating OTP code for user: ', user._id);
+    this.logger.debug('OTP code: ', code);
+
+    await this.tokenRepo.findOneAndDelete({ user: user?._id, isUsed: false });
+
+    await this.tokenRepo.create({
+      user: user._id,
+      code,
+      expirationTime: DateHelper.addToCurrent({
+        minutes: expirationTimeInMinutes,
+      }),
+    });
+
+    return code;
+  }
+
+  async verifyOtpCode(
+    user: IDriver | IPassenger,
+    code: string,
+    message?: string,
+  ): Promise<boolean> {
+    const otp = await this.tokenRepo.findOne({
+      user: user._id,
+      code,
+      isUsed: false,
+    });
+
+    if (!otp) {
+      ErrorHelper.BadRequestException('Invalid code');
+    }
+
+    if (DateHelper.isAfter(new Date(), otp.expirationTime)) {
+      ErrorHelper.BadRequestException(
+        message ||
+          "This code has expired. You can't change your password using this link",
+      );
+    }
+
+    await otp.deleteOne();
+
+    return true;
+  }
+
+  async logout(userId: string) {
+    await this.userSessionService.delete(userId);
+
+    return {
+      success: true,
+    };
+  }
+
+  async getUser(userId: string): Promise<User> {
+    try {
+      const user = await this.userRepo.findById(userId);
+      if (!user) {
+        ErrorHelper.BadRequestException('User does not exists');
+      }
+      return user;
+    } catch (error) {
+      ErrorHelper.BadRequestException(error);
+    }
+  }
+  async updateEmergencyContacts(
+    userId: string,
+    dto: UpdateEmergencyContactsDto,
+  ): Promise<UserDocument> {
+    this.logger.log(`Updating emergency contacts for user ${userId}`);
+
+    // DTO validation is handled by the ValidationPipe
+
+    try {
+      const updatedUser = await this.userRepo.findByIdAndUpdate(
+        userId,
+        { $set: { emergencyContacts: dto.contacts } }, // Directly set the array
+        { new: true, runValidators: true }, // Return updated doc, run schema validation
+      );
+
+      if (!updatedUser) {
+        ErrorHelper.NotFoundException(`User with ID ${userId} not found.`);
+      }
+
+      this.logger.log(`Emergency contacts updated for user ${userId}`);
+      // Don't return the full user object usually, maybe just success or limited fields
+      return updatedUser; // For now, return updated user
+    } catch (error) {
+      this.logger.error(
+        `Error updating emergency contacts for user ${userId}: ${error.message}`,
+        error.stack,
+      );
+      if (error instanceof NotFoundException) throw error;
+      ErrorHelper.InternalServerErrorException(
+        'Failed to update emergency contacts.',
+      );
+    }
+  }
+
+  async addDeviceToken(userId: string, deviceToken: string): Promise<boolean> {
+    this.logger.log(`Adding device token for user ${userId}`);
+    try {
+      // Use $addToSet to avoid duplicate tokens for the same user
+      const result = await this.userRepo.updateOne(
+        { _id: userId },
+        { $addToSet: { deviceTokens: deviceToken } },
+      );
+      this.logger.log(
+        `Device token add result for user ${userId}: Modified ${result.modifiedCount}`,
+      );
+      return result.modifiedCount > 0 || result.matchedCount > 0; // Return true if matched or modified
+    } catch (error) {
+      this.logger.error(
+        `Error adding device token for user ${userId}: ${error.message}`,
+        error.stack,
+      );
+      ErrorHelper.InternalServerErrorException('Failed to register device.');
+    }
+  }
+
+  async removeDeviceToken(
+    userId: string,
+    deviceToken: string,
+  ): Promise<boolean> {
+    this.logger.log(`Removing device token for user ${userId}`);
+    try {
+      // Use $pull to remove a specific token
+      const result = await this.userRepo.updateOne(
+        { _id: userId },
+        { $pull: { deviceTokens: deviceToken } },
+      );
+      this.logger.log(
+        `Device token remove result for user ${userId}: Modified ${result.modifiedCount}`,
+      );
+      return result.modifiedCount > 0;
+    } catch (error) {
+      this.logger.error(
+        `Error removing device token for user ${userId}: ${error.message}`,
+        error.stack,
+      );
+      ErrorHelper.InternalServerErrorException('Failed to unregister device.');
+    }
+  }
+}
+````
+
+## File: src/modules/app.module.ts
+````typescript
+import { Module } from '@nestjs/common';
+import { AuthGuard } from 'src/core/guards';
+import { WsGuard } from 'src/core/guards/ws.guard';
+import { AppGateway } from './app.gateway';
+
+@Module({
+  providers: [AppGateway, WsGuard, AuthGuard],
+  exports: [AuthGuard],
+  imports: [],
+})
+export class AppModule {}
 ````
 
 ## File: test/app.e2e-spec.ts
@@ -4506,6 +9243,7 @@ export class PaginationResultDto<T> {
 ````typescript
 export * from './authenticate.guard';
 export * from './ws.guard';
+export * from './role.guards';
 ````
 
 ## File: src/core/interfaces/user/index.ts
@@ -4517,8 +9255,10 @@ export * from './role.interface';
 ## File: src/core/interfaces/user/user.interface.ts
 ````typescript
 /* eslint-disable @typescript-eslint/no-explicit-any */
+import { Types } from 'mongoose';
 import { UserGender } from 'src/core/enums/user.enum';
 import { UserStatus } from 'src/core/enums/user.enum';
+import { Role } from 'src/modules/user/schemas/role.schema';
 
 export interface IUser {
   _id?: string;
@@ -4534,6 +9274,7 @@ export interface IUser {
   createdAt?: Date;
   lastSeen?: Date;
   status?: UserStatus;
+  roles?: Types.ObjectId[] | Role[]; // Array of ObjectId or string
 }
 
 export interface IUser {
@@ -4626,86 +9367,6 @@ export type envType =
   | 'dev'
   | 'prod'
   | 'develop';
-````
-
-## File: src/global/secrets/service.ts
-````typescript
-import { Injectable } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
-
-@Injectable()
-export class SecretsService extends ConfigService {
-  constructor() {
-    super();
-  }
-
-  NODE_ENV = this.get<string>('NODE_ENV');
-  PORT = this.get('PORT');
-  MONGO_URI = this.get('MONGO_URI');
-
-  get mailSecret() {
-    return {
-      MAIL_USERNAME: this.get('MAIL_USERNAME'),
-      MAIL_PASSWORD: this.get('MAIL_PASSWORD'),
-      MAIL_HOST: this.get('MAIL_HOST'),
-      MAIL_PORT: this.get('MAIL_PORT'),
-      SENDER_EMAIL: this.get<string>('SENDER_EMAIL', ''),
-      NAME: this.get<string>('NAME', ''),
-    };
-  }
-
-  get googleSecret() {
-    return {
-      GOOGLE_CLIENT_ID: this.get('GOOGLE_CLIENT_ID'),
-      GOOGLE_CLIENT_SECRET: this.get('GOOGLE_CLIENT_SECRET'),
-    };
-  }
-
-  get jwtSecret() {
-    return {
-      JWT_SECRET: this.get('APP_SECRET'),
-      JWT_EXPIRES_IN: this.get('ACCESS_TOKEN_EXPIRES', '14d'),
-    };
-  }
-
-  get database() {
-    return {
-      host: this.get('MONGO_HOST'),
-      user: this.get('MONGO_ROOT_USERNAME'),
-      pass: this.get('MONGO_ROOT_PASSWORD'),
-    };
-  }
-
-  get userSessionRedis() {
-    return {
-      REDIS_HOST: this.get('REDIS_HOST'),
-      REDIS_USER: this.get('REDIS_USERNAME'),
-      REDIS_PASSWORD: this.get('REDIS_PASSWORD'),
-      REDIS_PORT: this.get('REDIS_PORT'),
-    };
-  }
-
-  get authAwsSecret() {
-    return {
-      AWS_REGION: this.get('AWS_REGION', 'eu-west-2'),
-      AWS_ACCESS_KEY_ID: this.get('AWS_ACCESS_KEY_ID', 'AKIA36G3JG4TMYVGM6G2'),
-      AWS_SECRET_ACCESS_KEY: this.get(
-        'AWS_SECRET_ACCESS_KEY',
-        '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',
-      ),
-      AWS_S3_BUCKET_NAME: this.get('AWS_S3_BUCKET_NAME', 'traveazi-prod-sess'),
-    };
-  }
-
-  get twilio() {
-    return {
-      TWILIO_ACCOUNT_SID: this.get('TWILIO_ACCOUNT_SID'),
-      TWILIO_AUTH_TOKEN: this.get('TWILIO_AUTH_TOKEN'),
-      TWILIO_PHONE_NUMBER: this.get('TWILIO_PHONE_NUMBER'),
-      TWILIO_VERIFY_SERVICE_SID: this.get('TWILIO_VERIFY_SERVICE_SID'),
-    };
-  }
-}
 ````
 
 ## File: src/global/user-session/module.ts
@@ -5009,68 +9670,409 @@ export class MailController {
 }
 ````
 
-## File: src/main.ts
+## File: src/modules/rides/rides.module.ts
 ````typescript
-import { NestFactory } from '@nestjs/core';
-import * as express from 'express';
-import { MainModule } from './modules/main.module';
-import { SecretsService } from './global/secrets/service';
-import * as cookieParser from 'cookie-parser';
-import { ValidationPipe } from '@nestjs/common';
-import { HttpExceptionFilter } from './core/filters';
-import { LoggerInterceptor, TransformInterceptor } from './core/interceptors';
+import { Module } from '@nestjs/common';
 import { MongooseModule } from '@nestjs/mongoose';
-import { RedisIoAdapter } from './core/adpater';
-import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
+import { RidesService } from './rides.service';
+import { RidesController } from './rides.controller';
+import { Ride, RideSchema } from './schemas/ride.schema';
+import { Vehicle, VehicleSchema } from '../driver/schemas/vehicle.schema'; // Need VehicleModel
+import { User, UserSchema } from '../user/schemas/user.schema'; // Need UserModel
+import { GeolocationModule } from '../geolocation/geolocation.module';
 
-async function bootstrap() {
-  const app = await NestFactory.create(MainModule, {
-    bufferLogs: true,
-    cors: true,
-  });
+@Module({
+  imports: [
+    MongooseModule.forFeature([
+      { name: Ride.name, schema: RideSchema },
+      { name: Vehicle.name, schema: VehicleSchema }, // Provide VehicleModel
+      { name: User.name, schema: UserSchema }, // Provide UserModel
+    ]),
+    GeolocationModule,
+  ],
+  providers: [RidesService],
+  controllers: [RidesController],
+  exports: [RidesService], // Export if needed
+})
+export class RidesModule {}
+````
 
-  const { PORT, MONGO_URI } = app.get<SecretsService>(SecretsService);
+## File: src/modules/rides/rides.service.ts
+````typescript
+import { Injectable, Logger } from '@nestjs/common';
+import { InjectModel } from '@nestjs/mongoose';
+import mongoose, { Model } from 'mongoose';
+import { Ride, RideDocument } from './schemas/ride.schema';
+import { Vehicle, VehicleDocument } from '../driver/schemas/vehicle.schema';
+import { User, UserDocument } from '../user/schemas/user.schema';
+import { CreateRideDto } from './dto/create-ride.dto';
+import { RoleNameEnum } from '../../core/interfaces/user/role.interface';
+import { RideStatus } from './enums/ride-status.enum';
+import { ErrorHelper } from 'src/core/helpers';
+import { VehicleVerificationStatus } from 'src/core/enums/vehicle.enum';
+import { DriverVerificationStatus, UserStatus } from 'src/core/enums/user.enum';
+import { SearchRidesDto } from './dto/search-rides.dto';
+import { PaginationResultDto } from 'src/core/dto';
+import {
+  GeolocationService,
+  Coordinates,
+} from '../geolocation/geolocation.service';
+import { v4 as uuidv4 } from 'uuid'; // For generating unique tokens
+import { InjectRedis } from '@nestjs-modules/ioredis'; // Assuming Redis for storing tokens
+import Redis from 'ioredis';
+import { BookingStatus } from '../booking/enums/booking-status.enum';
+import { PopulatedRideWithBookings } from './interfaces/populated-ride.interface';
 
-  app.use(cookieParser());
-  app.use(
-    (
-      req: express.Request,
-      res: express.Response,
-      next: express.NextFunction,
-    ): void => {
-      if (req.originalUrl.includes('/webhook')) {
-        express.raw({ type: 'application/json' })(req, res, next);
+@Injectable()
+export class RidesService {
+  private readonly logger = new Logger(RidesService.name);
+
+  constructor(
+    @InjectModel(Ride.name) private rideModel: Model<RideDocument>,
+    @InjectModel(Vehicle.name) private vehicleModel: Model<VehicleDocument>,
+    @InjectModel(User.name) private userModel: Model<UserDocument>,
+    @InjectRedis() private readonly redisClient: Redis,
+    private readonly geolocationService: GeolocationService,
+  ) {}
+
+  async createRide(
+    driverId: string,
+    dto: CreateRideDto,
+  ): Promise<RideDocument> {
+    this.logger.log(`Attempting to create ride for driver ID: ${driverId}`);
+
+    // 1. Validate Driver
+    const driver = await this.userModel.findById(driverId).populate('roles');
+    if (!driver) {
+      ErrorHelper.NotFoundException('Driver user not found.');
+    }
+    const isDriverRole = driver.roles.some(
+      (role) => role.name === RoleNameEnum.Driver,
+    );
+    if (!isDriverRole) {
+      ErrorHelper.ForbiddenException('User is not registered as a driver.');
+    }
+    // Optional: Check driver status (e.g., must be ACTIVE and VERIFIED)
+
+    if (
+      driver.status !== UserStatus.ACTIVE ||
+      driver.driverVerificationStatus !== DriverVerificationStatus.VERIFIED
+    ) {
+      ErrorHelper.ForbiddenException(
+        'Driver account is not active or verified.',
+      );
+    }
+
+    // 2. Validate Vehicle
+    const vehicle = await this.vehicleModel.findById(dto.vehicleId);
+    if (!vehicle) {
+      ErrorHelper.NotFoundException(
+        `Vehicle with ID ${dto.vehicleId} not found.`,
+      );
+    }
+    if (vehicle.driver.toString() !== driverId) {
+      ErrorHelper.ForbiddenException(
+        'You cannot create a ride with a vehicle you do not own.',
+      );
+    }
+    // Optional: Check vehicle verification status (strict check)
+    if (
+      vehicle.vehicleVerificationStatus !== VehicleVerificationStatus.VERIFIED
+    ) {
+      ErrorHelper.ForbiddenException(
+        `Vehicle ${vehicle.plateNumber} is not verified.`,
+      );
+    }
+
+    // 3. Validate Departure Time (must be in the future)
+    const departureDateTime = new Date(dto.departureTime);
+    if (isNaN(departureDateTime.getTime()) || departureDateTime <= new Date()) {
+      ErrorHelper.BadRequestException(
+        'Departure time must be a valid date in the future.',
+      );
+    }
+
+    const originCoords: Coordinates = {
+      lat: dto.origin.lat,
+      lng: dto.origin.lon,
+    };
+    const destCoords: Coordinates = {
+      lat: dto.destination.lat,
+      lng: dto.destination.lon,
+    };
+
+    let estimatedArrivalTime: Date | undefined = undefined;
+    try {
+      const routeInfo = await this.geolocationService.calculateRoute(
+        originCoords,
+        destCoords,
+      );
+      if (routeInfo && routeInfo.durationSeconds > 0) {
+        const departureDateTime = new Date(dto.departureTime);
+        // Add duration (in seconds) to departure time
+        estimatedArrivalTime = new Date(
+          departureDateTime.getTime() + routeInfo.durationSeconds * 1000,
+        );
+        this.logger.log(
+          `Estimated arrival time calculated: ${estimatedArrivalTime?.toISOString()}`,
+        );
       } else {
-        express.json()(req, res, next);
+        this.logger.warn(
+          `Could not calculate route duration for ride creation by ${driverId}. Skipping arrival time estimation.`,
+        );
       }
-    },
-  );
+    } catch (geoError) {
+      // Log the error but don't necessarily fail ride creation if route calc fails
+      this.logger.warn(
+        `Geolocation error during route calculation for ride creation by ${driverId}: ${geoError.message}`,
+      );
+    }
 
-  app.useGlobalPipes(new ValidationPipe());
-  app.useGlobalFilters(new HttpExceptionFilter());
-  app.useGlobalInterceptors(
-    new LoggerInterceptor(),
-    new TransformInterceptor(),
-  );
+    // 4. Prepare Ride Data
+    const rideData = {
+      driver: driverId,
+      vehicle: dto.vehicleId,
+      origin: {
+        type: 'Point' as const, // Ensure type is literal 'Point'
+        coordinates: [dto.origin.lon, dto.origin.lat],
+      },
+      destination: {
+        type: 'Point' as const,
+        coordinates: [dto.destination.lon, dto.destination.lat],
+      },
+      originAddress: dto.originAddress,
+      destinationAddress: dto.destinationAddress,
+      departureTime: new Date(dto.departureTime), // Convert string to Date
+      estimatedArrivalTime: estimatedArrivalTime, // Add calculated time
+      pricePerSeat: dto.pricePerSeat,
+      initialSeats: vehicle.seatsAvailable, // Seats from verified vehicle
+      availableSeats: vehicle.seatsAvailable, // Initially same as vehicle
+      status: RideStatus.SCHEDULED,
+      preferences: dto.preferences || [],
+      // waypoints: dto.waypoints?.map(wp => ({ type: 'Point', coordinates: [wp.lon, wp.lat] })) || [], // If waypoints are added
+    };
 
-  MongooseModule.forRoot(MONGO_URI);
+    // 5. Create and Save Ride
+    try {
+      const newRide = new this.rideModel(rideData);
+      await newRide.save();
+      this.logger.log(
+        `Ride ${newRide._id} created successfully by driver ${driverId}.`,
+      );
+      return newRide;
+    } catch (error) {
+      this.logger.error(
+        `Error creating ride for driver ${driverId}: ${error.message}`,
+        error.stack,
+      );
+      ErrorHelper.InternalServerErrorException('Failed to create ride.');
+    }
+  }
 
-  app.setGlobalPrefix('api');
-  app.useWebSocketAdapter(new RedisIoAdapter(app));
+  async searchRides(
+    dto: SearchRidesDto,
+  ): Promise<PaginationResultDto<RideDocument>> {
+    const {
+      origin,
+      //   destination,
+      departureDate,
+      seatsNeeded,
+      maxDistance,
+      limit,
+      page,
+      order,
+    } = dto;
+    const skip = dto.skip; // Use getter from PaginationDto
 
-  // Setup Swagger
-  const config = new DocumentBuilder()
-    .setTitle('Ride-By API')
-    .setDescription('The Ride-By API documentation')
-    .setVersion('1.0')
-    .addBearerAuth()
-    .build();
-  const document = SwaggerModule.createDocument(app, config);
-  SwaggerModule.setup('api/docs', app, document);
+    // 1. Define Date Range for Departure
+    // Search for rides on the specific date (from 00:00:00 to 23:59:59)
+    const startOfDay = new Date(departureDate);
+    startOfDay.setUTCHours(0, 0, 0, 0);
 
-  await app.listen(PORT);
+    const endOfDay = new Date(departureDate);
+    endOfDay.setUTCHours(23, 59, 59, 999);
+
+    // 2. Construct Query Conditions
+    const conditions: mongoose.FilterQuery<RideDocument> = {
+      status: RideStatus.SCHEDULED,
+      availableSeats: { $gte: seatsNeeded },
+      departureTime: {
+        $gte: startOfDay,
+        $lte: endOfDay,
+      },
+      // Geospatial query for origin
+      origin: {
+        $nearSphere: {
+          $geometry: {
+            type: 'Point',
+            coordinates: [origin.lon, origin.lat],
+          },
+          $maxDistance: maxDistance, // Max distance in meters
+        },
+      },
+      // We can filter destination after initial results or add another $nearSphere if performance allows
+      // For simplicity, let's filter destination primarily after getting potential origins
+    };
+
+    // 3. Execute Query with Population and Pagination
+    try {
+      const query = this.rideModel
+        .find(conditions)
+        .populate<{ driver: UserDocument }>({
+          // Populate driver with selected fields
+          path: 'driver',
+          select:
+            'firstName lastName avatar averageRatingAsDriver totalRatingsAsDriver', // Only public fields
+        })
+        .populate<{ vehicle: VehicleDocument }>({
+          // Populate vehicle with selected fields
+          path: 'vehicle',
+          select: 'make model year color features', // Only public fields
+        })
+        .sort({ departureTime: order === 'ASC' ? 1 : -1 }) // Sort by departure time
+        .skip(skip)
+        .limit(limit);
+
+      const [results, totalCount] = await Promise.all([
+        query.exec(),
+        this.rideModel.countDocuments(conditions), // Get total count matching conditions
+      ]);
+
+      // Optional: Further filter by destination distance if needed (less efficient than DB query)
+      // const filteredResults = results.filter(ride => { ... check destination distance ... });
+
+      this.logger.log(
+        `Found ${totalCount} rides matching criteria, returning page ${page}.`,
+      );
+
+      return new PaginationResultDto(results, totalCount, { page, limit });
+    } catch (error) {
+      this.logger.error(`Error searching rides: ${error.message}`, error.stack);
+      ErrorHelper.InternalServerErrorException('Failed to search for rides.');
+    }
+  }
+
+  // --- New getRideById method ---
+  async getRideById(rideId: string): Promise<RideDocument> {
+    if (!mongoose.Types.ObjectId.isValid(rideId)) {
+      ErrorHelper.BadRequestException('Invalid Ride ID format.');
+    }
+
+    const ride = await this.rideModel
+      .findById(rideId)
+      .populate<{ driver: UserDocument }>({
+        path: 'driver',
+        select:
+          'firstName lastName avatar averageRatingAsDriver totalRatingsAsDriver',
+      })
+      .populate<{ vehicle: VehicleDocument }>({
+        path: 'vehicle',
+        select: 'make model year color features plateNumber seatsAvailable', // Include plateNumber/seats for detail view
+      })
+      .exec();
+
+    if (!ride) {
+      ErrorHelper.NotFoundException(`Ride with ID ${rideId} not found.`);
+    }
+
+    return ride;
+  }
+
+  async startRide(driverId: string, rideId: string): Promise<RideDocument> {
+    this.logger.log(`Driver ${driverId} attempting to start ride ${rideId}`);
+    if (!mongoose.Types.ObjectId.isValid(rideId)) {
+      ErrorHelper.BadRequestException('Invalid Ride ID format.');
+    }
+
+    // 1. Find Ride, verify driver and status
+    const ride = await this.rideModel.findById(rideId);
+    if (!ride) {
+      ErrorHelper.NotFoundException(`Ride with ID ${rideId} not found.`);
+    }
+    if (ride.driver.toString() !== driverId) {
+      ErrorHelper.ForbiddenException(
+        'You can only start rides you are driving.',
+      );
+    }
+    if (ride.status !== RideStatus.SCHEDULED) {
+      ErrorHelper.BadRequestException(
+        `Ride cannot be started (current status: ${ride.status}).`,
+      );
+    }
+    // Optional: Check if departure time is reasonably close
+
+    // 2. Update Status
+    ride.status = RideStatus.IN_PROGRESS;
+    await ride.save();
+
+    this.logger.log(
+      `Ride ${rideId} started successfully by driver ${driverId}.`,
+    );
+
+    // TODO: Trigger Notification to confirmed Passengers (Phase 6)
+    // await this.notificationService.notifyPassengersRideStarted(ride);
+
+    return ride;
+  }
+
+  async generateShareLink(
+    rideId: string,
+    userId: string,
+  ): Promise<{ shareToken: string; expiresAt: Date }> {
+    this.logger.log(`User ${userId} requesting share link for ride ${rideId}`);
+    // 1. Find Ride and verify status is IN_PROGRESS
+    const ride = await this.rideModel
+      .findById(rideId)
+      .populate<PopulatedRideWithBookings>({
+        path: 'bookings',
+        select: 'passenger status',
+      });
+
+    if (!ride) ErrorHelper.NotFoundException(`Ride ${rideId} not found.`);
+    if (ride.status !== RideStatus.IN_PROGRESS) {
+      ErrorHelper.BadRequestException(
+        'Can only share rides that are currently in progress.',
+      );
+    }
+
+    // 2. Verify requesting user is the driver or a confirmed passenger
+    const isDriver = ride.driver.toString() === userId;
+    const isConfirmedPassenger = ride.bookings.some(
+      (booking) =>
+        booking.passenger.toString() === userId &&
+        booking.status === BookingStatus.CONFIRMED,
+    );
+
+    if (!isDriver && !isConfirmedPassenger) {
+      ErrorHelper.ForbiddenException(
+        'You are not authorized to share this ride.',
+      );
+    }
+
+    // 3. Generate unique token
+    const shareToken = uuidv4(); // Simple unique token
+    const expirySeconds = 4 * 60 * 60; // Example: 4 hours expiry
+    const redisKey = `share_ride:${shareToken}`;
+    const expiresAt = new Date(Date.now() + expirySeconds * 1000);
+
+    // 4. Store token in Redis with Ride ID and expiry
+    try {
+      await this.redisClient.set(redisKey, rideId, 'EX', expirySeconds);
+      this.logger.log(
+        `Generated share token ${shareToken} for ride ${rideId}, expires in ${expirySeconds}s`,
+      );
+      return { shareToken, expiresAt };
+    } catch (error) {
+      this.logger.error(
+        `Failed to store share token in Redis for ride ${rideId}: ${error.message}`,
+        error.stack,
+      );
+      ErrorHelper.InternalServerErrorException(
+        'Failed to generate share link.',
+      );
+    }
+  }
 }
-bootstrap();
 ````
 
 ## File: nest-cli.json
@@ -5179,6 +10181,256 @@ export class LoginDto {
 }
 ````
 
+## File: src/main.ts
+````typescript
+import { NestFactory } from '@nestjs/core';
+import * as express from 'express';
+import { MainModule } from './modules/main.module';
+import { SecretsService } from './global/secrets/service';
+import * as cookieParser from 'cookie-parser';
+import { ValidationPipe } from '@nestjs/common';
+import { HttpExceptionFilter } from './core/filters';
+import { LoggerInterceptor, TransformInterceptor } from './core/interceptors';
+import { MongooseModule } from '@nestjs/mongoose';
+import { RedisIoAdapter } from './core/adpater';
+import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
+
+async function bootstrap() {
+  const app = await NestFactory.create(MainModule, {
+    bufferLogs: true,
+    cors: true,
+  });
+
+  const { PORT, MONGO_URI } = app.get<SecretsService>(SecretsService);
+
+  app.use(cookieParser());
+  app.use(
+    (
+      req: express.Request,
+      res: express.Response,
+      next: express.NextFunction,
+    ): void => {
+      if (req.originalUrl.includes('/webhook')) {
+        express.raw({ type: 'application/json' })(req, res, next);
+      } else {
+        express.json()(req, res, next);
+      }
+    },
+  );
+
+  app.useGlobalPipes(new ValidationPipe());
+  app.useGlobalFilters(new HttpExceptionFilter());
+  app.useGlobalInterceptors(
+    new LoggerInterceptor(),
+    new TransformInterceptor(),
+  );
+
+  MongooseModule.forRoot(MONGO_URI);
+
+  app.setGlobalPrefix('api');
+  app.useWebSocketAdapter(new RedisIoAdapter(app));
+
+  // Setup Swagger
+  const config = new DocumentBuilder()
+    .setTitle('TavEazi API')
+    .setDescription('The TravEazi API documentation')
+    .setVersion('1.0')
+    .addBearerAuth()
+    .build();
+  const document = SwaggerModule.createDocument(app, config);
+  SwaggerModule.setup('api/docs', app, document);
+
+  await app.listen(PORT);
+}
+bootstrap();
+````
+
+## File: src/global/secrets/service.ts
+````typescript
+import { Injectable, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+
+@Injectable()
+export class SecretsService extends ConfigService {
+  private readonly logger = new Logger(SecretsService.name);
+  constructor() {
+    super();
+  }
+
+  NODE_ENV = this.get<string>('NODE_ENV');
+  PORT = this.get('PORT');
+  MONGO_URI = this.get('MONGO_URI');
+
+  get mailSecret() {
+    return {
+      MAIL_USERNAME: this.get('MAIL_USERNAME'),
+      MAIL_PASSWORD: this.get('MAIL_PASSWORD'),
+      MAIL_HOST: this.get('MAIL_HOST'),
+      MAIL_PORT: this.get('MAIL_PORT'),
+      SENDER_EMAIL: this.get<string>('SENDER_EMAIL', ''),
+      NAME: this.get<string>('NAME', ''),
+    };
+  }
+
+  get googleSecret() {
+    return {
+      GOOGLE_CLIENT_ID: this.get('GOOGLE_CLIENT_ID'),
+      GOOGLE_CLIENT_SECRET: this.get('GOOGLE_CLIENT_SECRET'),
+    };
+  }
+
+  get jwtSecret() {
+    return {
+      JWT_SECRET: this.get('APP_SECRET'),
+      JWT_EXPIRES_IN: this.get('ACCESS_TOKEN_EXPIRES', '14d'),
+    };
+  }
+
+  get database() {
+    return {
+      host: this.get('MONGO_HOST'),
+      user: this.get('MONGO_ROOT_USERNAME'),
+      pass: this.get('MONGO_ROOT_PASSWORD'),
+    };
+  }
+
+  get userSessionRedis() {
+    return {
+      REDIS_HOST: this.get('REDIS_HOST'),
+      REDIS_USER: this.get('REDIS_USERNAME'),
+      REDIS_PASSWORD: this.get('REDIS_PASSWORD'),
+      REDIS_PORT: this.get('REDIS_PORT'),
+    };
+  }
+
+  get authAwsSecret() {
+    return {
+      AWS_REGION: this.get('AWS_REGION', 'eu-west-2'),
+      AWS_ACCESS_KEY_ID: this.get('AWS_ACCESS_KEY_ID', 'AKIA36G3JG4TMYVGM6G2'),
+      AWS_SECRET_ACCESS_KEY: this.get(
+        'AWS_SECRET_ACCESS_KEY',
+        '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',
+      ),
+      AWS_S3_BUCKET_NAME: this.get('AWS_S3_BUCKET_NAME', 'traveazi-prod-sess'),
+    };
+  }
+
+  get twilio() {
+    return {
+      TWILIO_ACCOUNT_SID: this.get('TWILIO_ACCOUNT_SID'),
+      TWILIO_AUTH_TOKEN: this.get('TWILIO_AUTH_TOKEN'),
+      TWILIO_PHONE_NUMBER: this.get('TWILIO_PHONE_NUMBER'),
+      TWILIO_VERIFY_SERVICE_SID: this.get('TWILIO_VERIFY_SERVICE_SID'),
+    };
+  }
+
+  get paystack() {
+    const secretKey = this.get<string>('PAYSTACK_SECRET_KEY');
+    const publicKey = this.get<string>('PAYSTACK_PUBLIC_KEY');
+    const baseUrl = this.get<string>(
+      'PAYSTACK_BASE_URL',
+      'https://api.paystack.co',
+    );
+    const frontendCallbackUrl = this.get<string>(
+      'FRONTEND_PAYMENT_CALLBACK_URL',
+    );
+
+    if (!secretKey || !publicKey) {
+      this.logger.error(
+        'Paystack Secret Key or Public Key missing in .env configuration!',
+      );
+    }
+    if (!frontendCallbackUrl) {
+      this.logger.warn(
+        'FRONTEND_PAYMENT_CALLBACK_URL not set in .env, Paystack callback might not work as expected.',
+      );
+    }
+
+    return {
+      secretKey,
+      publicKey,
+      baseUrl,
+      frontendCallbackUrl, // URL where frontend handles Paystack redirect
+    };
+  }
+
+  get googleMaps() {
+    const apiKey = this.get<string>('GOOGLE_MAPS_API_KEY');
+    if (!apiKey) {
+      this.logger.error(
+        'GOOGLE_MAPS_API_KEY is missing in .env configuration!',
+      );
+    }
+    return { apiKey };
+  }
+
+  get firebase() {
+    const serviceAccountPath = this.get<string>(
+      'FIREBASE_SERVICE_ACCOUNT_PATH',
+    );
+    if (!serviceAccountPath) {
+      this.logger.error(
+        'FIREBASE_SERVICE_ACCOUNT_PATH is missing in .env configuration!',
+      );
+    }
+    return { serviceAccountPath };
+  }
+}
+````
+
+## File: src/modules/main.module.ts
+````typescript
+import { Module } from '@nestjs/common';
+import { ConfigModule } from '@nestjs/config';
+import { DatabaseModule } from './database/database.module';
+import { RidesModule } from './rides/rides.module';
+import { GeolocationModule } from './geolocation/geolocation.module';
+import { DriverModule } from './driver/driver.module';
+import { AuthModule } from './auth/auth.module';
+import { UserModule } from './user/user.module';
+import { MongooseModule } from '@nestjs/mongoose';
+import { SecretsModule } from '../global/secrets/module';
+import { SecretsService } from '../global/secrets/service';
+import { AppModule } from './app.module';
+import { GlobalModule } from 'src/global/global.module';
+import { BookingModule } from './booking/booking.module';
+import { RatingModule } from './rating/rating.module';
+import { CommunicationModule } from './communication/communication.module';
+import { AdminModule } from './admin/admin.module';
+import { TripSharingModule } from './trip-sharing/trip-sharing.module';
+import { NotificationModule } from './notification/notification.module';
+@Module({
+  imports: [
+    GlobalModule,
+    DatabaseModule,
+    ConfigModule,
+    AuthModule,
+    UserModule,
+    RidesModule,
+    DriverModule,
+    GeolocationModule,
+    AppModule,
+    BookingModule,
+    RatingModule,
+    CommunicationModule,
+    AdminModule,
+    UserModule,
+    TripSharingModule,
+    NotificationModule,
+    MongooseModule.forRootAsync({
+      imports: [SecretsModule],
+      inject: [SecretsService],
+      useFactory: (secretsService: SecretsService) => ({
+        uri: secretsService.MONGO_URI,
+      }),
+    }),
+  ],
+  controllers: [],
+  providers: [],
+})
+export class MainModule {}
+````
+
 ## File: src/modules/auth/auth.service.ts
 ````typescript
 import { Injectable, Logger } from '@nestjs/common';
@@ -5193,7 +10445,7 @@ import {
 import { EncryptHelper, ErrorHelper } from 'src/core/helpers';
 import { UserLoginStrategy, IDriver, IPassenger } from 'src/core/interfaces';
 import { PassengerRegistrationDto } from '../passenger/dto/passenger.dto';
-import { DriverRegistrationDto } from '../driver/dto/driver-regidtration.dto';
+import { DriverRegistrationDto } from '../driver/dto/driver-registration.dto';
 import { UserService } from '../user/user.service';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
@@ -6226,8 +11478,10 @@ export class AuthController {
     "test:e2e": "jest --config ./test/jest-e2e.json"
   },
   "dependencies": {
+    "@googlemaps/google-maps-services-js": "^3.4.1",
     "@nestjs-modules/ioredis": "^2.0.2",
     "@nestjs-modules/mailer": "^2.0.2",
+    "@nestjs/axios": "^4.0.0",
     "@nestjs/bull": "^11.0.2",
     "@nestjs/common": "^11.0.0",
     "@nestjs/config": "^4.0.0",
@@ -6241,6 +11495,7 @@ export class AuthController {
     "@nestjs/websockets": "^11.0.16",
     "@socket.io/redis-adapter": "^8.2.0",
     "aws-sdk": "^2.1692.0",
+    "axios": "^1.8.4",
     "bcryptjs": "^3.0.2",
     "bull": "^4.16.5",
     "class-transformer": "^0.5.1",
@@ -6249,6 +11504,7 @@ export class AuthController {
     "dotenv": "^16.4.7",
     "ejs": "^3.1.10",
     "eslint-plugin-security": "^3.0.1",
+    "firebase-admin": "^13.2.0",
     "ioredis": "^5.4.2",
     "mongoose": "^8.9.5",
     "nest-aws-sdk": "^3.1.0",
@@ -6259,7 +11515,8 @@ export class AuthController {
     "reflect-metadata": "^0.2.0",
     "rxjs": "^7.8.1",
     "swagger-ui-express": "^5.0.1",
-    "twilio": "^5.5.2"
+    "twilio": "^5.5.2",
+    "uuid": "^11.1.0"
   },
   "devDependencies": {
     "@nestjs/cli": "^11.0.0",
@@ -6268,11 +11525,13 @@ export class AuthController {
     "@types/bull": "^3.15.9",
     "@types/cookie-parser": "^1.4.8",
     "@types/express": "^5.0.0",
+    "@types/google__maps": "^0.5.20",
     "@types/jest": "^29.5.2",
     "@types/multer": "^1.4.12",
     "@types/node": "^20.3.1",
     "@types/nodemailer": "^6.4.17",
     "@types/supertest": "^6.0.0",
+    "@types/uuid": "^10.0.0",
     "@typescript-eslint/eslint-plugin": "^8.0.0",
     "@typescript-eslint/parser": "^8.0.0",
     "eslint": "^8.0.0",

@@ -21,18 +21,24 @@ export class User {
 
   @Prop({
     type: String,
-    required: true,
     unique: true,
     lowercase: true,
     trim: true,
     index: true,
+    sparse: true,
   })
-  email: string;
+  email?: string;
 
   @Prop({ type: String, required: false, select: false }) // Required only for LOCAL strategy initially
   password?: string;
 
-  @Prop({ type: String, unique: true, sparse: true, index: true }) // Unique phone number, sparse allows multiple nulls
+  @Prop({
+    type: String,
+    unique: true,
+    sparse: true,
+    index: true,
+    required: true,
+  }) // Unique phone number, sparse allows multiple nulls
   phoneNumber?: string;
 
   @Prop({ type: Boolean, default: false })
@@ -128,6 +134,9 @@ export class User {
 
   @Prop({ type: Number, default: 0, min: 0 })
   totalRatingsAsPassenger: number; // Total number of ratings received as passenger
+
+  @Prop({ type: [String], default: [], index: true }) // Array to store FCM registration tokens
+  deviceTokens: string[];
 }
 
 export const UserSchema = SchemaFactory.createForClass(User);

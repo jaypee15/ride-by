@@ -10,6 +10,7 @@ export enum UserStatus {
   PENDING_DRIVER_VERIFICATION = 'PENDING_DRIVER_VERIFICATION', // Email verified, driver docs submitted, pending admin approval
   SUSPENDED = 'SUSPENDED', // Temporarily suspended by admin
   BANNED = 'BANNED', // Permanently banned by admin
+  PENDING_PROFILE_COMPLETION = 'PENDING_PROFILE_COMPLETION', // Registered but profile not completed
 }
 
 export enum DriverVerificationStatus {

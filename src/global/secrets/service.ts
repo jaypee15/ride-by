@@ -114,4 +114,16 @@ export class SecretsService extends ConfigService {
     }
     return { apiKey };
   }
+
+  get firebase() {
+    const serviceAccountPath = this.get<string>(
+      'FIREBASE_SERVICE_ACCOUNT_PATH',
+    );
+    if (!serviceAccountPath) {
+      this.logger.error(
+        'FIREBASE_SERVICE_ACCOUNT_PATH is missing in .env configuration!',
+      );
+    }
+    return { serviceAccountPath };
+  }
 }

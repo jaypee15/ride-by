@@ -9,6 +9,7 @@ import {
   Logger,
   UseInterceptors,
   UploadedFile,
+  Patch,
 } from '@nestjs/common';
 import { AuthService } from './auth.service';
 import {
@@ -17,12 +18,10 @@ import {
   LoginDto,
   // TCodeLoginDto,
 } from './dto';
-import { BaseRegistrationDto } from './dto/base-registeration.dto';
 import { IDriver, IPassenger } from 'src/core/interfaces';
 import { User as UserDecorator } from 'src/core/decorators';
 import { AuthGuard } from 'src/core/guards';
 import { SecretsService } from 'src/global/secrets/service';
-import { PortalType } from 'src/core/enums/auth.enum';
 import { FileInterceptor } from '@nestjs/platform-express';
 import {
   ApiTags,
@@ -34,6 +33,10 @@ import {
 } from '@nestjs/swagger';
 import { AuthUserResponseDto, BaseResponseDto } from './dto/auth-response.dto';
 import { SendPhoneOtpDto, VerifyPhoneOtpDto } from './dto/send-phone-otp.dto';
+import { SendEmailOtpDto } from './dto/send-email-otp.dto';
+import { VerifyEmailOtpDto } from './dto/verify-email-otp.dto';
+import { CompleteProfileDto } from './dto/complete-profile.dto';
+import { User } from 'src/core/decorators';
 
 @ApiTags('Authentication')
 @Controller('auth')
@@ -77,8 +80,9 @@ export class AuthController {
   @ApiOperation({ summary: 'Verify OTP for phone number' })
   @ApiResponse({
     status: 200,
-    description: 'OTP verified successfully',
-    type: BaseResponseDto<{ verified: boolean }>,
+    description:
+      'Phone OTP verified successfully. Returns partial token for next steps.',
+    schema: { properties: { partialToken: { type: 'string' } } },
   })
   @ApiResponse({ status: 400, description: 'Bad request - Invalid input' })
   @ApiResponse({ status: 500, description: 'Internal server error' })
@@ -107,23 +111,80 @@ export class AuthController {
     };
   }
 
-  @Post('/create-user')
-  @ApiOperation({ summary: 'Register a new user' })
+  @Post('email/send-otp')
+  @UseGuards(AuthGuard) // Requires the partial token from phone verification
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Send OTP to the provided email address' })
+  @ApiResponse({ status: 200, description: 'Email OTP sent successfully.' })
   @ApiResponse({
-    status: 201,
-    description: 'User successfully created',
+    status: 401,
+    description: 'Unauthorized (invalid/missing partial token).',
+  })
+  @ApiResponse({
+    status: 409,
+    description: 'Email already verified for another account.',
+  })
+  @HttpCode(HttpStatus.OK)
+  async sendEmailOtp(
+    @User() partialUser: { _id: string }, // Get userId from partial token
+    @Body() body: SendEmailOtpDto,
+  ): Promise<{ message: string }> {
+    const data = await this.authService.sendEmailVerificationOtp(
+      partialUser._id,
+      body,
+    );
+    return { message: data.message };
+  }
+
+  @Post('email/verify-otp')
+  @UseGuards(AuthGuard) // Requires partial token
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Verify OTP received via email' })
+  @ApiResponse({ status: 200, description: 'Email verified successfully.' })
+  @ApiResponse({ status: 400, description: 'Invalid or expired OTP.' })
+  @ApiResponse({ status: 401, description: 'Unauthorized.' })
+  @HttpCode(HttpStatus.OK)
+  async verifyEmailOtp(
+    @User() partialUser: { _id: string },
+    @Body() body: VerifyEmailOtpDto,
+  ): Promise<{ message: string }> {
+    const data = await this.authService.verifyEmailOtp(partialUser._id, body);
+    return { message: data.message };
+  }
+
+  // --- New Profile Completion Endpoint ---
+  @Patch('profile/complete') // Use PATCH
+  @UseGuards(AuthGuard) // Requires partial token
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Complete user profile after phone and email verification',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Profile completed successfully. Returns full user session.',
     type: BaseResponseDto<AuthUserResponseDto>,
   })
-  @ApiResponse({ status: 400, description: 'Bad request - Invalid input' })
-  async register(
-    @Body() body: BaseRegistrationDto,
-    @Body('portalType') portalType: PortalType,
-  ) {
-    const data = await this.authService.createPortalUser(body, portalType);
-
+  @ApiResponse({
+    status: 400,
+    description: 'Bad Request - Invalid input data.',
+  })
+  @ApiResponse({ status: 401, description: 'Unauthorized.' })
+  @ApiResponse({
+    status: 403,
+    description: 'Forbidden - Phone or email not verified.',
+  })
+  async completeProfile(
+    @User() partialUser: { _id: string },
+    @Body() body: CompleteProfileDto,
+  ): Promise<{ message: string; data: any }> {
+    // Return full login response structure
+    const result = await this.authService.completeUserProfile(
+      partialUser._id,
+      body,
+    );
     return {
-      data,
-      message: 'User created successfully',
+      message: 'Profile completed and user logged in successfully.',
+      data: result, // Contains { token, user }
     };
   }
 

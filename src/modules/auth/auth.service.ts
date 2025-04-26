@@ -28,6 +28,12 @@ import { LoginDto } from './dto/auth.dto';
 import { UserStatus } from 'src/core/enums/user.enum';
 import { TwilioService } from '../twilio/twilio.service';
 import { SendPhoneOtpDto, VerifyPhoneOtpDto } from './dto/send-phone-otp.dto';
+import { SendEmailOtpDto } from './dto/send-email-otp.dto';
+import { VerifyEmailOtpDto } from './dto/verify-email-otp.dto';
+import { CompleteProfileDto } from './dto/complete-profile.dto';
+import { RoleNameEnum } from 'src/core/interfaces';
+import { SecretsService } from 'src/global/secrets/service';
+import * as jwt from 'jsonwebtoken';
 
 @Injectable()
 export class AuthService {
@@ -44,6 +50,7 @@ export class AuthService {
     private userSessionService: UserSessionService,
     private awsS3Service: AwsS3Service,
     private twilioService: TwilioService,
+    private secretsService: SecretsService,
   ) {}
 
   async sendPhoneVerificationOtp(
@@ -52,13 +59,14 @@ export class AuthService {
     const { phoneNumber } = dto;
 
     // 1. Check if phone number is already registered and verified (optional but recommended)
-    const existingUser = await this.userRepo.findOne({
+    const existingVerifiedUser = await this.userRepo.findOne({
       phoneNumber,
       phoneVerified: true,
-    });
-    if (existingUser) {
+      status: { $ne: UserStatus.INACTIVE },
+    }); // Check active/pending etc.
+    if (existingVerifiedUser) {
       ErrorHelper.ConflictException(
-        'This phone number is already associated with a verified account.',
+        'This phone number is already linked to a verified account.',
       );
     }
 
@@ -86,60 +94,246 @@ export class AuthService {
 
   async verifyPhoneNumberOtp(
     dto: VerifyPhoneOtpDto,
-  ): Promise<{ verified: boolean; message: string }> {
+  ): Promise<{ partialToken: string; message: string }> {
     const { phoneNumber, otp } = dto;
+    let userId: string;
 
     // 1. Check verification using Twilio Verify
-    try {
-      const isApproved = await this.twilioService.checkVerificationToken(
-        phoneNumber,
-        otp,
-      );
+    const isApproved = await this.twilioService.checkVerificationToken(
+      phoneNumber,
+      otp,
+    );
+    if (!isApproved) {
+      ErrorHelper.BadRequestException('Invalid or expired verification code.');
+    }
 
-      if (isApproved) {
-        // Optionally: If you want to mark the number as pre-verified for registration,
-        // you could store a temporary flag in Redis associated with the phone number.
-        // Example: await this.redisClient.set(`preverified:${phoneNumber}`, 'true', 'EX', 600); // 10 min expiry
+    // 2. Check/Create User
+    let user = await this.userRepo.findOne({ phoneNumber });
 
-        return {
-          verified: true,
-          message: 'Phone number verified successfully.',
-        };
-      } else {
-        // checkVerificationToken returned false (invalid/expired code)
-        ErrorHelper.BadRequestException(
-          'Invalid or expired verification code.',
+    if (user) {
+      // User exists
+      if (
+        user.phoneVerified &&
+        user.status !== UserStatus.PENDING_EMAIL_VERIFICATION
+      ) {
+        // Phone already verified and likely active/profile complete - maybe initiate login instead?
+        // For now, let's prevent proceeding with signup flow.
+        ErrorHelper.ConflictException(
+          'Phone number already linked to a verified account. Please log in.',
         );
       }
+      // User exists but phone wasn't verified, mark as verified
+      user.phoneVerified = true;
+      // Ensure status allows proceeding
+      if (user.status !== UserStatus.PENDING_EMAIL_VERIFICATION) {
+        user.status = UserStatus.PENDING_EMAIL_VERIFICATION;
+      }
+      await user.save();
+      userId = user._id.toString();
+      this.logger.log(`Updated existing user ${userId} - phone verified.`);
+    } else {
+      // No user exists, create one
+      // Determine default role (e.g., Passenger)
+      const defaultRole = await this.roleRepo.findOne({
+        name: RoleNameEnum.Passenger,
+      });
+      if (!defaultRole) throw new Error('Default role not found'); // Internal config error
+
+      user = await this.userRepo.create({
+        phoneNumber: phoneNumber,
+        phoneVerified: true,
+        status: UserStatus.PENDING_EMAIL_VERIFICATION,
+        roles: [defaultRole._id], // Assign default role
+        // Other fields (email, password, name) are null/undefined initially
+      });
+      userId = user._id.toString();
+      this.logger.log(`Created new user ${userId} after phone verification.`);
+    }
+
+    // 3. Generate Partial JWT
+    // This token proves phone is verified and identifies the user for next steps
+    const partialPayload = {
+      _id: userId,
+      phone: phoneNumber, // Include phone for reference if needed
+      isPhoneVerified: true,
+      isPartialToken: true, // Flag to distinguish from full login token
+    };
+    // Use a shorter expiry for partial tokens? e.g., 1 hour
+    const partialToken = this.tokenHelper.verify<any>( // Use standard generation but verify type below
+      jwt.sign(partialPayload, this.secretsService.jwtSecret.JWT_SECRET, {
+        expiresIn: '1h',
+      }),
+    );
+
+    return {
+      message: 'Phone number verified successfully.',
+      partialToken: partialToken, // Contains userId etc.
+    };
+  }
+
+  // --- Email Verification ---
+
+  async sendEmailVerificationOtp(
+    userId: string,
+    dto: SendEmailOtpDto,
+  ): Promise<{ message: string }> {
+    const { email } = dto;
+    this.logger.log(
+      `User ${userId} requesting email verification OTP for ${email}`,
+    );
+
+    // Optional: Check if email is already verified on *another* account
+    const emailExists = await this.userRepo.findOne({
+      email: email.toLowerCase(),
+      _id: { $ne: userId },
+      emailConfirm: true,
+    });
+    if (emailExists) {
+      ErrorHelper.ConflictException(
+        'This email address is already linked to another verified account.',
+      );
+    }
+
+    const user = await this.userRepo.findById(userId);
+    if (!user) ErrorHelper.NotFoundException('User not found.'); // Should not happen with valid partial JWT
+    if (!user.phoneVerified)
+      ErrorHelper.ForbiddenException('Phone number must be verified first.'); // Belt-and-suspenders check
+
+    // Generate and send email OTP using existing UserService logic
+    try {
+      const emailOtp = await this.userService.generateOtpCode({
+        _id: userId,
+      } as IUser); // Pass minimal user object
+      await this.mailEvent.sendUserConfirmation(
+        { email, firstName: user.firstName || 'User' },
+        emailOtp,
+      ); // Pass email and name
+      this.logger.log(
+        `Sent email verification OTP to ${email} for user ${userId}`,
+      );
+      return { message: 'Verification code sent to your email.' };
     } catch (error) {
-      // Error is already logged in TwilioService, rethrow specific message
+      this.logger.error(
+        `Failed to send email OTP for user ${userId}: ${error.message}`,
+        error.stack,
+      );
       ErrorHelper.InternalServerErrorException(
-        error.message || 'Could not verify code.',
+        'Could not send email verification code.',
       );
     }
   }
 
-  async createPortalUser(
-    payload: DriverRegistrationDto | PassengerRegistrationDto,
-    portalType: PortalType,
-  ): Promise<any> {
-    try {
-      const user = await this.createUser(payload, {
-        strategy: UserLoginStrategy.LOCAL,
-        portalType,
-      });
+  async verifyEmailOtp(
+    userId: string,
+    dto: VerifyEmailOtpDto,
+  ): Promise<{ message: string }> {
+    const { email, otp } = dto;
+    this.logger.log(
+      `User ${userId} attempting to verify email ${email} with OTP`,
+    );
 
-      const tokenInfo = await this.generateUserSession(user);
+    const user = await this.userRepo.findById(userId);
+    if (!user) ErrorHelper.NotFoundException('User not found.');
+    if (!user.phoneVerified)
+      ErrorHelper.ForbiddenException('Phone number must be verified first.');
 
-      return {
-        token: tokenInfo,
-        user: user,
-      };
-    } catch (error) {
-      ErrorHelper.ConflictException('Email Already Exist');
-      this.logger.log('createPortalUser', { error });
+    // Verify email OTP using UserService
+    const isEmailOtpValid = await this.userService.verifyOtpCode(
+      { _id: userId } as IUser,
+      otp,
+      'Invalid or expired email verification code.',
+    );
+    if (!isEmailOtpValid) {
+      // verifyOtpCode throws on failure, so this might be redundant
+      ErrorHelper.BadRequestException(
+        'Invalid or expired email verification code.',
+      );
     }
+
+    // Update user document
+    user.email = email.toLowerCase();
+    user.emailConfirm = true;
+    if (user.status === UserStatus.PENDING_EMAIL_VERIFICATION) {
+      user.status = UserStatus.PENDING_PROFILE_COMPLETION; // Move to next status
+    }
+    await user.save();
+
+    this.logger.log(`Email ${email} verified successfully for user ${userId}.`);
+    return { message: 'Email verified successfully.' };
   }
+
+  // --- Profile Completion ---
+
+  async completeUserProfile(
+    userId: string,
+    dto: CompleteProfileDto,
+  ): Promise<{ token: any; user: IUser }> {
+    this.logger.log(`User ${userId} completing profile.`);
+
+    const user = await this.userRepo.findById(userId);
+    if (!user) ErrorHelper.NotFoundException('User not found.');
+
+    // Verify preconditions (phone and email must be verified)
+    if (
+      !user.phoneVerified ||
+      !user.emailConfirm ||
+      user.email?.toLowerCase() !== dto.email.toLowerCase()
+    ) {
+      ErrorHelper.ForbiddenException(
+        'Phone and email must be verified, and email must match the verified address, before completing profile.',
+      );
+    }
+    if (user.status !== UserStatus.PENDING_PROFILE_COMPLETION) {
+      // Allow completion even if ACTIVE? Or only if PENDING_PROFILE_COMPLETION?
+      // this.logger.warn(`User ${userId} attempting to complete profile with status ${user.status}`);
+      // throw new BadRequestException('Profile completion not applicable for current user status.');
+    }
+
+    // Update user details
+    user.firstName = dto.firstName;
+    user.lastName = dto.lastName;
+    user.password = await this.encryptHelper.hash(dto.password);
+    user.country = dto.country;
+    user.gender = dto.gender;
+    user.status = UserStatus.ACTIVE; // Set status to ACTIVE
+    // Handle portalType change if included in DTO and logic is needed
+
+    await user.save();
+    this.logger.log(
+      `Profile completed for user ${userId}. Status set to ACTIVE.`,
+    );
+
+    // Generate FULL JWT session
+    const fullUser = { ...user.toObject(), _id: user._id.toString() } as IUser; // Ensure ID is string
+    const tokenInfo = await this.generateUserSession(fullUser); // Use existing method
+
+    return {
+      token: tokenInfo,
+      user: fullUser,
+    };
+  }
+
+  // async createPortalUser(
+  //   payload: DriverRegistrationDto | PassengerRegistrationDto,
+  //   portalType: PortalType,
+  // ): Promise<any> {
+  //   try {
+  //     const user = await this.createUser(payload, {
+  //       strategy: UserLoginStrategy.LOCAL,
+  //       portalType,
+  //     });
+
+  //     const tokenInfo = await this.generateUserSession(user);
+
+  //     return {
+  //       token: tokenInfo,
+  //       user: user,
+  //     };
+  //   } catch (error) {
+  //     ErrorHelper.ConflictException('Email Already Exist');
+  //     this.logger.log('createPortalUser', { error });
+  //   }
+  // }
 
   private async generateUserSession(
     user: IDriver | IPassenger,
@@ -216,6 +410,15 @@ export class AuthService {
       const { email, password, portalType } = params;
 
       const user = await this.validateUser(email, password, portalType);
+
+      if (
+        user.status === UserStatus.PENDING_EMAIL_VERIFICATION ||
+        user.status === UserStatus.PENDING_PROFILE_COMPLETION
+      ) {
+        ErrorHelper.ForbiddenException(
+          'Please complete your registration process before logging in.',
+        );
+      }
 
       const tokenInfo = await this.generateUserSession(user, params.rememberMe);
 
