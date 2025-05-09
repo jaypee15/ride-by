@@ -2,6 +2,8 @@ export enum RoleNameEnum {
   Admin = 'ADMIN',
   Driver = 'DRIVER',
   Passenger = 'PASSENGER',
+  SuperAdmin = 'SUPER_ADMIN',
+  Support = 'Support',
 }
 
 export enum ActionEnum {

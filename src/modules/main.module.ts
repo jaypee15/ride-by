@@ -17,8 +17,10 @@ import { CommunicationModule } from './communication/communication.module';
 import { AdminModule } from './admin/admin.module';
 import { TripSharingModule } from './trip-sharing/trip-sharing.module';
 import { NotificationModule } from './notification/notification.module';
+import { SeedModule } from './seed/seed.module';
 @Module({
   imports: [
+    SeedModule,
     GlobalModule,
     DatabaseModule,
     ConfigModule,
