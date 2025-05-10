@@ -113,9 +113,12 @@ src/
         auth-response.dto.ts
         auth.dto.ts
         base-registeration.dto.ts
+        complete-profile.dto.ts
         index.ts
+        send-email-otp.dto.ts
         send-phone-otp.dto.ts
         update-user.dto.ts
+        verify-email-otp.dto.ts
       auth.controller.ts
       auth.module.ts
       auth.service.ts
@@ -214,6 +217,18 @@ src/
       rides.controller.ts
       rides.module.ts
       rides.service.ts
+    seed/
+      countries/
+        countries.ts
+      currencies/
+        currencies.ts
+      schemas/
+        country.schema.ts
+        currency.schema.ts
+        index.ts
+      data.ts
+      seed.module.ts
+      seed.service.ts
     storage/
       constants/
         index.ts
@@ -266,6 +281,12 @@ tsconfig.json
 
 # Files
 
+## File: src/core/constants/index.ts
+````typescript
+export * from './base.constant';
+export * from './messages.constant';
+````
+
 ## File: src/core/decorators/roles.decorator.ts
 ````typescript
 import { SetMetadata } from '@nestjs/common';
@@ -274,468 +295,6 @@ import { RoleNameEnum } from '../interfaces/user/role.interface';
 export const ROLES_KEY = 'roles';
 export const Roles = (...roles: RoleNameEnum[]) =>
   SetMetadata(ROLES_KEY, roles);
-````
-
-## File: src/core/guards/role.guards.ts
-````typescript
-import {
-  Injectable,
-  CanActivate,
-  ExecutionContext,
-  ForbiddenException,
-} from '@nestjs/common';
-import { Reflector } from '@nestjs/core';
-import { RoleNameEnum } from '../interfaces/user/role.interface';
-import { IUser } from '../interfaces/user/user.interface';
-import { ROLES_KEY } from '../decorators/roles.decorator';
-
-@Injectable()
-export class RolesGuard implements CanActivate {
-  constructor(private reflector: Reflector) {}
-
-  canActivate(context: ExecutionContext): boolean {
-    const requiredRoles = this.reflector.getAllAndOverride<RoleNameEnum[]>(
-      ROLES_KEY,
-      [context.getHandler(), context.getClass()],
-    );
-
-    if (!requiredRoles || requiredRoles.length === 0) {
-      // If no roles are specified, access is allowed by default (AuthGuard already ran)
-      // Or you might want to deny access if no roles specified for extra security
-      return true;
-    }
-
-    const request = context.switchToHttp().getRequest();
-    const user = request.user as IUser; // Assumes user object attached by AuthGuard
-
-    if (!user || !user.roles) {
-      // This shouldn't happen if AuthGuard ran successfully, but good check
-      throw new ForbiddenException('User role information is missing.');
-    }
-
-    // Check if the user has at least one of the required roles
-    const hasRequiredRole = requiredRoles.some(
-      (role) =>
-        // IMPORTANT: Check how roles are stored on your user object.
-        // If user.roles is an array of Role *objects* with a 'name' property:
-        (user.roles as any[]).some((userRole) => userRole.name === role),
-      // If user.roles is an array of *strings* (role names):
-      // user.roles.includes(role)
-    );
-
-    if (!hasRequiredRole) {
-      throw new ForbiddenException(
-        `Access denied. Required roles: ${requiredRoles.join(', ')}`,
-      );
-    }
-
-    return true;
-  }
-}
-````
-
-## File: src/modules/communication/ride.gateway.ts
-````typescript
-import { RideStatus } from '../rides/enums/ride-status.enum';
-import { Logger, UseGuards } from '@nestjs/common';
-import {
-  OnGatewayConnection,
-  OnGatewayDisconnect,
-  WebSocketGateway,
-  SubscribeMessage,
-  MessageBody,
-  ConnectedSocket,
-  WsException,
-  WebSocketServer,
-} from '@nestjs/websockets';
-import { Server, Socket } from 'socket.io';
-import { WsGuard } from '../../core/guards/ws.guard'; // Use the WS Guard
-import { InjectModel } from '@nestjs/mongoose';
-import { Model } from 'mongoose';
-import { Message, MessageDocument } from './schemas/message.schema';
-import { IUser } from 'src/core/interfaces'; // Assuming IUser is defined
-import {
-  IsNotEmpty,
-  IsLongitude,
-  IsLatitude,
-  IsMongoId,
-} from 'class-validator';
-import { RideDocument, Ride } from '../rides/schemas/ride.schema';
-
-// DTO for location update
-class LocationUpdateDto {
-  @IsNotEmpty() @IsMongoId() rideId: string;
-  @IsNotEmpty() @IsLatitude() lat: number;
-  @IsNotEmpty() @IsLongitude() lon: number;
-}
-
-@WebSocketGateway({
-  cors: { origin: '*' },
-  // namespace: 'ride', // Optional: use a namespace
-  // path: '/api/communication/socket' // Example different path
-})
-@UseGuards(WsGuard)
-export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
-  @WebSocketServer() server: Server; // Inject the server instance
-  private logger = new Logger(ChatGateway.name);
-
-  constructor(
-    @InjectModel(Message.name) private messageModel: Model<MessageDocument>,
-    @InjectModel(Ride.name) private rideModel: Model<RideDocument>, // Inject RideModel
-  ) {}
-
-  handleConnection(client: Socket) {
-    // User is already authenticated and joined their room via AppGateway/WsGuard
-    const user = client.data.user as IUser;
-    if (user) {
-      this.logger.log(`Ride client connected: ${client.id}, User: ${user._id}`);
-    } else {
-      this.logger.warn(`Ride client connected without user data: ${client.id}`);
-      client.disconnect(true); // Disconnect if user data somehow missing
-    }
-  }
-
-  handleDisconnect(client: Socket) {
-    const user = client.data.user as IUser;
-    this.logger.log(
-      `Ride client disconnected: ${client.id}, User: ${user?._id || 'N/A'}`,
-    );
-  }
-
-  @SubscribeMessage('updateLocation')
-  async handleLocationUpdate(
-    @MessageBody() data: LocationUpdateDto,
-    @ConnectedSocket() client: Socket,
-  ): Promise<{ success: boolean }> {
-    const driver = client.data.user as IUser;
-    if (!driver)
-      throw new WsException('Authentication data missing on socket.');
-    // TODO: Add validation pipe for WebSocket DTOs if not configured globally
-
-    this.logger.debug(
-      `Received 'updateLocation' from driver ${driver._id} for ride ${data.rideId}`,
-    );
-
-    try {
-      // 1. Find Ride and verify driver and status
-      const ride = await this.rideModel
-        .findById(data.rideId)
-        .select('driver status');
-      if (!ride) {
-        this.logger.warn(
-          `Location update received for non-existent ride ${data.rideId}`,
-        );
-        throw new WsException('Ride not found.');
-      }
-      if (ride.driver.toString() !== driver._id) {
-        this.logger.warn(
-          `User ${driver._id} attempted to update location for ride ${data.rideId} they are not driving.`,
-        );
-        throw new WsException(
-          'Not authorized to update location for this ride.',
-        );
-      }
-      if (ride.status !== RideStatus.IN_PROGRESS) {
-        this.logger.warn(
-          `Location update received for ride ${data.rideId} not in progress (status: ${ride.status}).`,
-        );
-        // Decide whether to throw or just ignore
-        throw new WsException('Ride is not currently in progress.');
-      }
-
-      // 2. Prepare location data
-      const locationData = {
-        type: 'Point' as const,
-        coordinates: [data.lon, data.lat],
-      };
-      const updateTime = new Date();
-
-      // 3. Update Ride Document (optional, could also store in Redis)
-      await this.rideModel.updateOne(
-        { _id: data.rideId },
-        {
-          $set: {
-            currentLocation: locationData,
-            lastLocationUpdate: updateTime,
-          },
-        },
-      );
-      this.logger.debug(`Updated ride ${data.rideId} location in DB.`);
-
-      // 4. Broadcast location update to a room specific to the ride
-      const rideRoom = `ride_${data.rideId}`;
-      const payload = {
-        rideId: data.rideId,
-        lat: data.lat,
-        lon: data.lon,
-        timestamp: updateTime,
-      };
-      // Emit to all sockets in the room *except* the sender (the driver)
-      client.to(rideRoom).emit('locationUpdate', payload);
-      this.logger.debug(`Broadcasted location update to room ${rideRoom}`);
-
-      return { success: true };
-    } catch (error) {
-      this.logger.error(
-        `Error handling 'updateLocation' from ${driver._id} for ride ${data.rideId}: ${error.message}`,
-        error.stack,
-      );
-      client.emit(
-        'exception',
-        `Failed to update location: ${error.message || 'Server error'}`,
-      );
-      return { success: false };
-    }
-  }
-
-  // Passengers need to join the ride room when they view the ride or it starts
-  @SubscribeMessage('joinRideRoom')
-  handleJoinRoom(
-    @MessageBody() data: { rideId: string },
-    @ConnectedSocket() client: Socket,
-  ): void {
-    const user = client.data.user as IUser;
-    if (!user || !data.rideId) return; // Ignore if no user or rideId
-
-    // TODO: Add verification: Is this user actually part of this ride (driver or confirmed passenger)?
-    // This requires fetching booking/ride data which might be heavy here.
-    // Maybe do verification when ride starts or details are fetched via HTTP.
-
-    const roomName = `ride_${data.rideId}`;
-    client.join(roomName);
-    this.logger.log(`User ${user._id} joined room ${roomName}`);
-  }
-
-  @SubscribeMessage('leaveRideRoom')
-  handleLeaveRoom(
-    @MessageBody() data: { rideId: string },
-    @ConnectedSocket() client: Socket,
-  ): void {
-    const user = client.data.user as IUser;
-    if (!user || !data.rideId) return;
-
-    const roomName = `ride_${data.rideId}`;
-    client.leave(roomName);
-    this.logger.log(`User ${user._id} left room ${roomName}`);
-  }
-}
-````
-
-## File: src/modules/notification/notification.module.ts
-````typescript
-import { Module, Global } from '@nestjs/common';
-import { NotificationService } from './notification.service';
-import { SecretsModule } from 'src/global/secrets/module'; // Ensure secrets are available
-import { MongooseModule } from '@nestjs/mongoose';
-import { User, UserSchema } from '../user/schemas/user.schema';
-
-@Global() // Make service available globally without importing module explicitly
-@Module({
-  imports: [
-    SecretsModule,
-    MongooseModule.forFeature([{ name: User.name, schema: UserSchema }]),
-  ],
-  providers: [NotificationService],
-  exports: [NotificationService],
-})
-export class NotificationModule {}
-````
-
-## File: src/modules/notification/notification.service.ts
-````typescript
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
-import * as admin from 'firebase-admin';
-import { SecretsService } from '../../global/secrets/service';
-import * as fs from 'fs';
-import * as path from 'path';
-import { InjectModel } from '@nestjs/mongoose';
-import { Model } from 'mongoose';
-import { User } from '../user/schemas/user.schema';
-
-@Injectable()
-export class NotificationService implements OnModuleInit {
-  private readonly logger = new Logger(NotificationService.name);
-  private isFirebaseInitialized = false;
-
-  constructor(
-    @InjectModel(User.name) private userRepo: Model<User>,
-    private secretsService: SecretsService,
-  ) {}
-
-  onModuleInit() {
-    const { serviceAccountPath } = this.secretsService.firebase;
-    if (!serviceAccountPath) {
-      this.logger.error(
-        'Firebase Service Account Path not found. Cannot initialize Firebase Admin.',
-      );
-      return;
-    }
-
-    try {
-      // Resolve path relative to project root (adjust if needed)
-      const absolutePath = path.resolve(process.cwd(), serviceAccountPath);
-
-      if (!fs.existsSync(absolutePath)) {
-        this.logger.error(
-          `Firebase service account file not found at: ${absolutePath}`,
-        );
-        return;
-      }
-
-      const serviceAccount = JSON.parse(fs.readFileSync(absolutePath, 'utf8'));
-
-      admin.initializeApp({
-        credential: admin.credential.cert(serviceAccount),
-      });
-      this.isFirebaseInitialized = true;
-      this.logger.log('Firebase Admin initialized successfully.');
-    } catch (error) {
-      this.logger.error(
-        `Failed to initialize Firebase Admin: ${error.message}`,
-        error.stack,
-      );
-    }
-  }
-
-  private checkInitialized(): void {
-    if (!this.isFirebaseInitialized) {
-      this.logger.error('Firebase Admin SDK not initialized.');
-      // Optionally throw an error, but might be better to log and fail silently
-      // throw new InternalServerErrorException('Notification service is not available.');
-    }
-  }
-
-  // Send to specific tokens
-  async sendPushNotificationToTokens(
-    deviceTokens: string[],
-    title: string,
-    body: string,
-    data?: { [key: string]: string }, // Optional data payload
-  ): Promise<boolean> {
-    this.checkInitialized();
-    if (!deviceTokens || deviceTokens.length === 0) {
-      this.logger.warn('No device tokens provided for push notification.');
-      return false;
-    }
-
-    const message: admin.messaging.MulticastMessage = {
-      notification: { title, body },
-      tokens: deviceTokens,
-      data: data || {}, // Add custom data payload if provided
-      android: {
-        // Optional: Android specific config
-        priority: 'high',
-        notification: {
-          sound: 'default',
-          // channelId: 'your_channel_id' // Define notification channels on Android
-        },
-      },
-      apns: {
-        // Optional: Apple specific config
-        payload: {
-          aps: {
-            sound: 'default',
-            // badge: 1, // Example badge count
-          },
-        },
-      },
-    };
-
-    try {
-      this.logger.log(
-        `Sending push notification to ${deviceTokens.length} tokens. Title: ${title}`,
-      );
-      const response = await admin.messaging().sendEachForMulticast(message);
-      this.logger.log(
-        `Successfully sent message to ${response.successCount} devices`,
-      );
-      if (response.failureCount > 0) {
-        const failedTokens = [];
-        response.responses.forEach((resp, idx) => {
-          if (!resp.success) {
-            failedTokens.push(deviceTokens[idx]);
-            this.logger.error(
-              `Failed to send to token ${deviceTokens[idx]}: ${resp.error}`,
-            );
-            // TODO: Handle failed tokens (e.g., remove from user's deviceTokens array)
-          }
-        });
-        this.logger.warn(
-          `Failed to send to ${response.failureCount} devices. Failed tokens: ${failedTokens.join(', ')}`,
-        );
-      }
-      return response.successCount > 0; // Return true if at least one succeeded
-    } catch (error) {
-      this.logger.error(
-        `Error sending push notification: ${error.message}`,
-        error.stack,
-      );
-      return false;
-    }
-  }
-
-  async sendNotificationToUser(
-    userId: string,
-    title: string,
-    body: string,
-    data?: { [key: string]: string },
-  ) {
-    const user = await this.userRepo.findById(userId).select('deviceTokens');
-    if (user && user.deviceTokens && user.deviceTokens.length > 0) {
-      await this.sendPushNotificationToTokens(
-        user.deviceTokens,
-        title,
-        body,
-        data,
-      );
-    } else {
-      this.logger.warn(`User ${userId} not found or has no device tokens.`);
-    }
-  }
-}
-````
-
-## File: src/modules/user/dto/register-device.dto.ts
-````typescript
-import { ApiProperty } from '@nestjs/swagger';
-import { IsNotEmpty, IsString } from 'class-validator';
-
-export class RegisterDeviceDto {
-  @ApiProperty({ description: 'FCM device registration token' })
-  @IsString()
-  @IsNotEmpty()
-  deviceToken: string;
-}
-````
-
-## File: src/core/constants/index.ts
-````typescript
-export * from './base.constant';
-export * from './messages.constant';
-````
-
-## File: src/core/enums/user.enum.ts
-````typescript
-export enum UserGender {
-  MALE = 'MALE',
-  FEMALE = 'FEMALE',
-}
-
-export enum UserStatus {
-  ACTIVE = 'ACTIVE', // Verified and active
-  INACTIVE = 'INACTIVE', // Deactivated by user or admin
-  PENDING_EMAIL_VERIFICATION = 'PENDING_EMAIL_VERIFICATION', // Registered but email not verified
-  PENDING_DRIVER_VERIFICATION = 'PENDING_DRIVER_VERIFICATION', // Email verified, driver docs submitted, pending admin approval
-  SUSPENDED = 'SUSPENDED', // Temporarily suspended by admin
-  BANNED = 'BANNED', // Permanently banned by admin
-}
-
-export enum DriverVerificationStatus {
-  NOT_SUBMITTED = 'NOT_SUBMITTED',
-  PENDING = 'PENDING',
-  VERIFIED = 'VERIFIED',
-  REJECTED = 'REJECTED',
-}
 ````
 
 ## File: src/core/enums/vehicle.enum.ts
@@ -805,6 +364,64 @@ export class HttpExceptionFilter implements ExceptionFilter<HttpException> {
 ## File: src/core/filters/index.ts
 ````typescript
 export * from './http-exception.filter';
+````
+
+## File: src/core/guards/role.guards.ts
+````typescript
+import {
+  Injectable,
+  CanActivate,
+  ExecutionContext,
+  ForbiddenException,
+} from '@nestjs/common';
+import { Reflector } from '@nestjs/core';
+import { RoleNameEnum } from '../interfaces/user/role.interface';
+import { IUser } from '../interfaces/user/user.interface';
+import { ROLES_KEY } from '../decorators/roles.decorator';
+
+@Injectable()
+export class RolesGuard implements CanActivate {
+  constructor(private reflector: Reflector) {}
+
+  canActivate(context: ExecutionContext): boolean {
+    const requiredRoles = this.reflector.getAllAndOverride<RoleNameEnum[]>(
+      ROLES_KEY,
+      [context.getHandler(), context.getClass()],
+    );
+
+    if (!requiredRoles || requiredRoles.length === 0) {
+      // If no roles are specified, access is allowed by default (AuthGuard already ran)
+      // Or you might want to deny access if no roles specified for extra security
+      return true;
+    }
+
+    const request = context.switchToHttp().getRequest();
+    const user = request.user as IUser; // Assumes user object attached by AuthGuard
+
+    if (!user || !user.roles) {
+      // This shouldn't happen if AuthGuard ran successfully, but good check
+      throw new ForbiddenException('User role information is missing.');
+    }
+
+    // Check if the user has at least one of the required roles
+    const hasRequiredRole = requiredRoles.some(
+      (role) =>
+        // IMPORTANT: Check how roles are stored on your user object.
+        // If user.roles is an array of Role *objects* with a 'name' property:
+        (user.roles as any[]).some((userRole) => userRole.name === role),
+      // If user.roles is an array of *strings* (role names):
+      // user.roles.includes(role)
+    );
+
+    if (!hasRequiredRole) {
+      throw new ForbiddenException(
+        `Access denied. Required roles: ${requiredRoles.join(', ')}`,
+      );
+    }
+
+    return true;
+  }
+}
 ````
 
 ## File: src/core/guards/ws.guard.ts
@@ -1849,6 +1466,107 @@ export class AuthUserResponseDto {
 }
 ````
 
+## File: src/modules/auth/dto/complete-profile.dto.ts
+````typescript
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import {
+  IsEmail,
+  IsEnum,
+  IsNotEmpty,
+  IsOptional,
+  IsString,
+  MinLength,
+  IsBoolean,
+  Equals,
+} from 'class-validator';
+import { PASSWORD_PATTERN } from '../../../core/constants/base.constant';
+import { UserGender } from 'src/core/enums/user.enum';
+import { IsMatchPattern } from '../../../core/validators/IsMatchPattern.validator';
+import { PortalType } from 'src/core/enums/auth.enum';
+
+export class CompleteProfileDto {
+  @ApiProperty({ description: "User's first name", minLength: 2 })
+  @IsString()
+  @IsNotEmpty()
+  @MinLength(2)
+  firstName: string;
+
+  @ApiProperty({ description: "User's last name", minLength: 2 })
+  @IsString()
+  @IsNotEmpty()
+  @MinLength(2)
+  lastName: string;
+
+  // Email might already be set from verify step, but include for validation/confirmation
+  @ApiProperty({
+    description: "User's email address (must match verified one)",
+    example: 'user@example.com',
+  })
+  @IsEmail()
+  @IsNotEmpty()
+  email: string;
+
+  @ApiProperty({
+    description:
+      "User's password - must contain uppercase, lowercase, and number",
+    minLength: 8,
+  })
+  @IsString()
+  @IsNotEmpty()
+  @MinLength(8, { message: 'Password must be at least 8 characters long' })
+  @IsMatchPattern(PASSWORD_PATTERN, {
+    message:
+      'Password must contain at least one uppercase letter, one lowercase letter, and one number',
+  })
+  password: string;
+
+  @ApiPropertyOptional({ description: "User's country" })
+  @IsOptional()
+  @IsString()
+  country?: string;
+
+  @ApiPropertyOptional({ description: "User's gender", enum: UserGender })
+  @IsOptional()
+  @IsEnum(UserGender)
+  gender?: UserGender;
+
+  @ApiProperty({
+    description: 'Whether user has accepted terms and conditions',
+    default: false,
+  })
+  @IsBoolean({ message: 'You must accept the terms and conditions.' })
+  @Equals(true, { message: 'You must accept the terms and conditions.' })
+  termsAccepted: boolean; // Ensure terms are accepted at final step
+
+  // Optional: Allow choosing portal type here if not decided earlier
+  @ApiPropertyOptional({
+    enum: PortalType,
+    description: 'Choose account type (Driver/Passenger)',
+  })
+  @IsOptional()
+  @IsEnum(PortalType)
+  portalType?: PortalType;
+}
+````
+
+## File: src/modules/auth/dto/send-email-otp.dto.ts
+````typescript
+import { ApiProperty } from '@nestjs/swagger';
+import { IsEmail, IsNotEmpty } from 'class-validator';
+import { Transform } from 'class-transformer';
+
+export class SendEmailOtpDto {
+  @ApiProperty({
+    description: "User's email address",
+    example: 'user@example.com',
+  })
+  @IsEmail()
+  @IsNotEmpty()
+  @Transform(({ value }) => value?.toLowerCase().trim())
+  email: string;
+}
+````
+
 ## File: src/modules/auth/dto/send-phone-otp.dto.ts
 ````typescript
 import { IsNotEmpty, IsPhoneNumber, IsString, Length } from 'class-validator';
@@ -1875,6 +1593,33 @@ export class VerifyPhoneOtpDto {
   @IsString()
   @IsNotEmpty()
   @Length(6, 6, { message: 'OTP must be exactly 6 digits' }) // Assuming 6-digit OTP
+  otp: string;
+}
+````
+
+## File: src/modules/auth/dto/verify-email-otp.dto.ts
+````typescript
+import { ApiProperty } from '@nestjs/swagger';
+import { IsEmail, IsNotEmpty, IsString, Length } from 'class-validator';
+import { Transform } from 'class-transformer';
+
+export class VerifyEmailOtpDto {
+  @ApiProperty({
+    description: "User's email address being verified",
+    example: 'user@example.com',
+  })
+  @IsEmail()
+  @IsNotEmpty()
+  @Transform(({ value }) => value?.toLowerCase().trim())
+  email: string; // Include email to ensure OTP matches the intended address
+
+  @ApiProperty({
+    description: '6-digit OTP received via email',
+    example: '123456',
+  })
+  @IsString()
+  @IsNotEmpty()
+  @Length(6, 6, { message: 'OTP must be exactly 6 digits' }) // Or match your email OTP length
   otp: string;
 }
 ````
@@ -2299,6 +2044,193 @@ import { AppModule } from '../app.module';
   exports: [ChatGateway], // Export if needed
 })
 export class CommunicationModule {}
+````
+
+## File: src/modules/communication/ride.gateway.ts
+````typescript
+import { RideStatus } from '../rides/enums/ride-status.enum';
+import { Logger, UseGuards } from '@nestjs/common';
+import {
+  OnGatewayConnection,
+  OnGatewayDisconnect,
+  WebSocketGateway,
+  SubscribeMessage,
+  MessageBody,
+  ConnectedSocket,
+  WsException,
+  WebSocketServer,
+} from '@nestjs/websockets';
+import { Server, Socket } from 'socket.io';
+import { WsGuard } from '../../core/guards/ws.guard'; // Use the WS Guard
+import { InjectModel } from '@nestjs/mongoose';
+import { Model } from 'mongoose';
+import { Message, MessageDocument } from './schemas/message.schema';
+import { IUser } from 'src/core/interfaces'; // Assuming IUser is defined
+import {
+  IsNotEmpty,
+  IsLongitude,
+  IsLatitude,
+  IsMongoId,
+} from 'class-validator';
+import { RideDocument, Ride } from '../rides/schemas/ride.schema';
+
+// DTO for location update
+class LocationUpdateDto {
+  @IsNotEmpty() @IsMongoId() rideId: string;
+  @IsNotEmpty() @IsLatitude() lat: number;
+  @IsNotEmpty() @IsLongitude() lon: number;
+}
+
+@WebSocketGateway({
+  cors: { origin: '*' },
+  // namespace: 'ride', // Optional: use a namespace
+  // path: '/api/communication/socket' // Example different path
+})
+@UseGuards(WsGuard)
+export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
+  @WebSocketServer() server: Server; // Inject the server instance
+  private logger = new Logger(ChatGateway.name);
+
+  constructor(
+    @InjectModel(Message.name) private messageModel: Model<MessageDocument>,
+    @InjectModel(Ride.name) private rideModel: Model<RideDocument>, // Inject RideModel
+  ) {}
+
+  handleConnection(client: Socket) {
+    // User is already authenticated and joined their room via AppGateway/WsGuard
+    const user = client.data.user as IUser;
+    if (user) {
+      this.logger.log(`Ride client connected: ${client.id}, User: ${user._id}`);
+    } else {
+      this.logger.warn(`Ride client connected without user data: ${client.id}`);
+      client.disconnect(true); // Disconnect if user data somehow missing
+    }
+  }
+
+  handleDisconnect(client: Socket) {
+    const user = client.data.user as IUser;
+    this.logger.log(
+      `Ride client disconnected: ${client.id}, User: ${user?._id || 'N/A'}`,
+    );
+  }
+
+  @SubscribeMessage('updateLocation')
+  async handleLocationUpdate(
+    @MessageBody() data: LocationUpdateDto,
+    @ConnectedSocket() client: Socket,
+  ): Promise<{ success: boolean }> {
+    const driver = client.data.user as IUser;
+    if (!driver)
+      throw new WsException('Authentication data missing on socket.');
+    // TODO: Add validation pipe for WebSocket DTOs if not configured globally
+
+    this.logger.debug(
+      `Received 'updateLocation' from driver ${driver._id} for ride ${data.rideId}`,
+    );
+
+    try {
+      // 1. Find Ride and verify driver and status
+      const ride = await this.rideModel
+        .findById(data.rideId)
+        .select('driver status');
+      if (!ride) {
+        this.logger.warn(
+          `Location update received for non-existent ride ${data.rideId}`,
+        );
+        throw new WsException('Ride not found.');
+      }
+      if (ride.driver.toString() !== driver._id) {
+        this.logger.warn(
+          `User ${driver._id} attempted to update location for ride ${data.rideId} they are not driving.`,
+        );
+        throw new WsException(
+          'Not authorized to update location for this ride.',
+        );
+      }
+      if (ride.status !== RideStatus.IN_PROGRESS) {
+        this.logger.warn(
+          `Location update received for ride ${data.rideId} not in progress (status: ${ride.status}).`,
+        );
+        // Decide whether to throw or just ignore
+        throw new WsException('Ride is not currently in progress.');
+      }
+
+      // 2. Prepare location data
+      const locationData = {
+        type: 'Point' as const,
+        coordinates: [data.lon, data.lat],
+      };
+      const updateTime = new Date();
+
+      // 3. Update Ride Document (optional, could also store in Redis)
+      await this.rideModel.updateOne(
+        { _id: data.rideId },
+        {
+          $set: {
+            currentLocation: locationData,
+            lastLocationUpdate: updateTime,
+          },
+        },
+      );
+      this.logger.debug(`Updated ride ${data.rideId} location in DB.`);
+
+      // 4. Broadcast location update to a room specific to the ride
+      const rideRoom = `ride_${data.rideId}`;
+      const payload = {
+        rideId: data.rideId,
+        lat: data.lat,
+        lon: data.lon,
+        timestamp: updateTime,
+      };
+      // Emit to all sockets in the room *except* the sender (the driver)
+      client.to(rideRoom).emit('locationUpdate', payload);
+      this.logger.debug(`Broadcasted location update to room ${rideRoom}`);
+
+      return { success: true };
+    } catch (error) {
+      this.logger.error(
+        `Error handling 'updateLocation' from ${driver._id} for ride ${data.rideId}: ${error.message}`,
+        error.stack,
+      );
+      client.emit(
+        'exception',
+        `Failed to update location: ${error.message || 'Server error'}`,
+      );
+      return { success: false };
+    }
+  }
+
+  // Passengers need to join the ride room when they view the ride or it starts
+  @SubscribeMessage('joinRideRoom')
+  handleJoinRoom(
+    @MessageBody() data: { rideId: string },
+    @ConnectedSocket() client: Socket,
+  ): void {
+    const user = client.data.user as IUser;
+    if (!user || !data.rideId) return; // Ignore if no user or rideId
+
+    // TODO: Add verification: Is this user actually part of this ride (driver or confirmed passenger)?
+    // This requires fetching booking/ride data which might be heavy here.
+    // Maybe do verification when ride starts or details are fetched via HTTP.
+
+    const roomName = `ride_${data.rideId}`;
+    client.join(roomName);
+    this.logger.log(`User ${user._id} joined room ${roomName}`);
+  }
+
+  @SubscribeMessage('leaveRideRoom')
+  handleLeaveRoom(
+    @MessageBody() data: { rideId: string },
+    @ConnectedSocket() client: Socket,
+  ): void {
+    const user = client.data.user as IUser;
+    if (!user || !data.rideId) return;
+
+    const roomName = `ride_${data.rideId}`;
+    client.leave(roomName);
+    this.logger.log(`User ${user._id} left room ${roomName}`);
+  }
+}
 ````
 
 ## File: src/modules/config/config.module.ts
@@ -4107,6 +4039,180 @@ export const EmailSchema = SchemaFactory.createForClass(Email);
 </html>
 ````
 
+## File: src/modules/notification/notification.module.ts
+````typescript
+import { Module, Global } from '@nestjs/common';
+import { NotificationService } from './notification.service';
+import { SecretsModule } from 'src/global/secrets/module'; // Ensure secrets are available
+import { MongooseModule } from '@nestjs/mongoose';
+import { User, UserSchema } from '../user/schemas/user.schema';
+
+@Global() // Make service available globally without importing module explicitly
+@Module({
+  imports: [
+    SecretsModule,
+    MongooseModule.forFeature([{ name: User.name, schema: UserSchema }]),
+  ],
+  providers: [NotificationService],
+  exports: [NotificationService],
+})
+export class NotificationModule {}
+````
+
+## File: src/modules/notification/notification.service.ts
+````typescript
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import * as admin from 'firebase-admin';
+import { SecretsService } from '../../global/secrets/service';
+import * as fs from 'fs';
+import * as path from 'path';
+import { InjectModel } from '@nestjs/mongoose';
+import { Model } from 'mongoose';
+import { User } from '../user/schemas/user.schema';
+
+@Injectable()
+export class NotificationService implements OnModuleInit {
+  private readonly logger = new Logger(NotificationService.name);
+  private isFirebaseInitialized = false;
+
+  constructor(
+    @InjectModel(User.name) private userRepo: Model<User>,
+    private secretsService: SecretsService,
+  ) {}
+
+  onModuleInit() {
+    const { serviceAccountPath } = this.secretsService.firebase;
+    if (!serviceAccountPath) {
+      this.logger.error(
+        'Firebase Service Account Path not found. Cannot initialize Firebase Admin.',
+      );
+      return;
+    }
+
+    try {
+      // Resolve path relative to project root (adjust if needed)
+      const absolutePath = path.resolve(process.cwd(), serviceAccountPath);
+
+      if (!fs.existsSync(absolutePath)) {
+        this.logger.error(
+          `Firebase service account file not found at: ${absolutePath}`,
+        );
+        return;
+      }
+
+      const serviceAccount = JSON.parse(fs.readFileSync(absolutePath, 'utf8'));
+
+      admin.initializeApp({
+        credential: admin.credential.cert(serviceAccount),
+      });
+      this.isFirebaseInitialized = true;
+      this.logger.log('Firebase Admin initialized successfully.');
+    } catch (error) {
+      this.logger.error(
+        `Failed to initialize Firebase Admin: ${error.message}`,
+        error.stack,
+      );
+    }
+  }
+
+  private checkInitialized(): void {
+    if (!this.isFirebaseInitialized) {
+      this.logger.error('Firebase Admin SDK not initialized.');
+      // Optionally throw an error, but might be better to log and fail silently
+      // throw new InternalServerErrorException('Notification service is not available.');
+    }
+  }
+
+  // Send to specific tokens
+  async sendPushNotificationToTokens(
+    deviceTokens: string[],
+    title: string,
+    body: string,
+    data?: { [key: string]: string }, // Optional data payload
+  ): Promise<boolean> {
+    this.checkInitialized();
+    if (!deviceTokens || deviceTokens.length === 0) {
+      this.logger.warn('No device tokens provided for push notification.');
+      return false;
+    }
+
+    const message: admin.messaging.MulticastMessage = {
+      notification: { title, body },
+      tokens: deviceTokens,
+      data: data || {}, // Add custom data payload if provided
+      android: {
+        // Optional: Android specific config
+        priority: 'high',
+        notification: {
+          sound: 'default',
+          // channelId: 'your_channel_id' // Define notification channels on Android
+        },
+      },
+      apns: {
+        // Optional: Apple specific config
+        payload: {
+          aps: {
+            sound: 'default',
+            // badge: 1, // Example badge count
+          },
+        },
+      },
+    };
+
+    try {
+      this.logger.log(
+        `Sending push notification to ${deviceTokens.length} tokens. Title: ${title}`,
+      );
+      const response = await admin.messaging().sendEachForMulticast(message);
+      this.logger.log(
+        `Successfully sent message to ${response.successCount} devices`,
+      );
+      if (response.failureCount > 0) {
+        const failedTokens = [];
+        response.responses.forEach((resp, idx) => {
+          if (!resp.success) {
+            failedTokens.push(deviceTokens[idx]);
+            this.logger.error(
+              `Failed to send to token ${deviceTokens[idx]}: ${resp.error}`,
+            );
+            // TODO: Handle failed tokens (e.g., remove from user's deviceTokens array)
+          }
+        });
+        this.logger.warn(
+          `Failed to send to ${response.failureCount} devices. Failed tokens: ${failedTokens.join(', ')}`,
+        );
+      }
+      return response.successCount > 0; // Return true if at least one succeeded
+    } catch (error) {
+      this.logger.error(
+        `Error sending push notification: ${error.message}`,
+        error.stack,
+      );
+      return false;
+    }
+  }
+
+  async sendNotificationToUser(
+    userId: string,
+    title: string,
+    body: string,
+    data?: { [key: string]: string },
+  ) {
+    const user = await this.userRepo.findById(userId).select('deviceTokens');
+    if (user && user.deviceTokens && user.deviceTokens.length > 0) {
+      await this.sendPushNotificationToTokens(
+        user.deviceTokens,
+        title,
+        body,
+        data,
+      );
+    } else {
+      this.logger.warn(`User ${userId} not found or has no device tokens.`);
+    }
+  }
+}
+````
+
 ## File: src/modules/passenger/dto/passenger.dto.ts
 ````typescript
 import { BaseRegistrationDto } from 'src/modules/auth/dto/base-registeration.dto';
@@ -5116,102 +5222,2352 @@ export interface PopulatedRideWithBookings
 }
 ````
 
-## File: src/modules/rides/schemas/ride.schema.ts
+## File: src/modules/seed/countries/countries.ts
+````typescript
+export const countriesSeed = [
+  {
+    name: 'Afghanistan',
+    alpha2code: 'AF',
+    alpha3code: 'AFG',
+    callingCode: '93',
+    continent: 'Asia',
+    currencies: ['AFN'],
+  },
+  {
+    name: 'Åland Islands',
+    alpha2code: 'AX',
+    alpha3code: 'ALA',
+    callingCode: '358',
+    continent: 'Europe',
+    currencies: ['EUR'],
+  },
+  {
+    name: 'Albania',
+    alpha2code: 'AL',
+    alpha3code: 'ALB',
+    callingCode: '355',
+    continent: 'Europe',
+    currencies: ['ALL'],
+  },
+  {
+    name: 'Algeria',
+    alpha2code: 'DZ',
+    alpha3code: 'DZA',
+    callingCode: '213',
+    continent: 'Africa',
+    currencies: ['DZD'],
+  },
+  {
+    name: 'American Samoa',
+    alpha2code: 'AS',
+    alpha3code: 'ASM',
+    callingCode: '1',
+    continent: 'Oceania',
+    currencies: ['USD'],
+  },
+  {
+    name: 'Andorra',
+    alpha2code: 'AD',
+    alpha3code: 'AND',
+    callingCode: '376',
+    continent: 'Europe',
+    currencies: ['EUR'],
+  },
+  {
+    name: 'Angola',
+    alpha2code: 'AO',
+    alpha3code: 'AGO',
+    callingCode: '244',
+    continent: 'Africa',
+    currencies: ['AOA'],
+  },
+  {
+    name: 'Anguilla',
+    alpha2code: 'AI',
+    alpha3code: 'AIA',
+    callingCode: '1',
+    continent: 'Americas',
+    currencies: ['XCD'],
+  },
+  {
+    name: 'Antarctica',
+    alpha2code: 'AQ',
+    alpha3code: 'ATA',
+    callingCode: '672',
+    continent: 'Polar',
+    currencies: ['GBP'],
+  },
+  {
+    name: 'Antigua and Barbuda',
+    alpha2code: 'AG',
+    alpha3code: 'ATG',
+    callingCode: '1',
+    continent: 'Americas',
+    currencies: ['XCD'],
+  },
+  {
+    name: 'Argentina',
+    alpha2code: 'AR',
+    alpha3code: 'ARG',
+    callingCode: '54',
+    continent: 'Americas',
+    currencies: ['ARS'],
+  },
+  {
+    name: 'Armenia',
+    alpha2code: 'AM',
+    alpha3code: 'ARM',
+    callingCode: '374',
+    continent: 'Asia',
+    currencies: ['AMD'],
+  },
+  {
+    name: 'Aruba',
+    alpha2code: 'AW',
+    alpha3code: 'ABW',
+    callingCode: '297',
+    continent: 'Americas',
+    currencies: ['AWG'],
+  },
+  {
+    name: 'Australia',
+    alpha2code: 'AU',
+    alpha3code: 'AUS',
+    callingCode: '61',
+    continent: 'Oceania',
+    currencies: ['AUD'],
+  },
+  {
+    name: 'Austria',
+    alpha2code: 'AT',
+    alpha3code: 'AUT',
+    callingCode: '43',
+    continent: 'Europe',
+    currencies: ['EUR'],
+  },
+  {
+    name: 'Azerbaijan',
+    alpha2code: 'AZ',
+    alpha3code: 'AZE',
+    callingCode: '994',
+    continent: 'Asia',
+    currencies: ['AZN'],
+  },
+  {
+    name: 'Bahamas',
+    alpha2code: 'BS',
+    alpha3code: 'BHS',
+    callingCode: '1',
+    continent: 'Americas',
+    currencies: ['BSD'],
+  },
+  {
+    name: 'Bahrain',
+    alpha2code: 'BH',
+    alpha3code: 'BHR',
+    callingCode: '973',
+    continent: 'Asia',
+    currencies: ['BHD'],
+  },
+  {
+    name: 'Bangladesh',
+    alpha2code: 'BD',
+    alpha3code: 'BGD',
+    callingCode: '880',
+    continent: 'Asia',
+    currencies: ['BDT'],
+  },
+  {
+    name: 'Barbados',
+    alpha2code: 'BB',
+    alpha3code: 'BRB',
+    callingCode: '1',
+    continent: 'Americas',
+    currencies: ['BBD'],
+  },
+  {
+    name: 'Belarus',
+    alpha2code: 'BY',
+    alpha3code: 'BLR',
+    callingCode: '375',
+    continent: 'Europe',
+    currencies: ['BYN', 'BYR'],
+  },
+  {
+    name: 'Belgium',
+    alpha2code: 'BE',
+    alpha3code: 'BEL',
+    callingCode: '32',
+    continent: 'Europe',
+    currencies: ['EUR'],
+  },
+  {
+    name: 'Belize',
+    alpha2code: 'BZ',
+    alpha3code: 'BLZ',
+    callingCode: '501',
+    continent: 'Americas',
+    currencies: ['BZD'],
+  },
+  {
+    name: 'Benin',
+    alpha2code: 'BJ',
+    alpha3code: 'BEN',
+    callingCode: '229',
+    continent: 'Africa',
+    currencies: ['XOF'],
+  },
+  {
+    name: 'Bermuda',
+    alpha2code: 'BM',
+    alpha3code: 'BMU',
+    callingCode: '1',
+    continent: 'Americas',
+    currencies: ['BMD'],
+  },
+  {
+    name: 'Bhutan',
+    alpha2code: 'BT',
+    alpha3code: 'BTN',
+    callingCode: '975',
+    continent: 'Asia',
+    currencies: ['BTN', 'INR'],
+  },
+  {
+    name: 'Bolivia (Plurinational State of)',
+    alpha2code: 'BO',
+    alpha3code: 'BOL',
+    callingCode: '591',
+    continent: 'Americas',
+    currencies: ['BOB'],
+  },
+  {
+    name: 'Bonaire, Sint Eustatius and Saba',
+    alpha2code: 'BQ',
+    alpha3code: 'BES',
+    callingCode: '599',
+    continent: 'Americas',
+    currencies: ['USD'],
+  },
+  {
+    name: 'Bosnia and Herzegovina',
+    alpha2code: 'BA',
+    alpha3code: 'BIH',
+    callingCode: '387',
+    continent: 'Europe',
+    currencies: ['BAM'],
+  },
+  {
+    name: 'Botswana',
+    alpha2code: 'BW',
+    alpha3code: 'BWA',
+    callingCode: '267',
+    continent: 'Africa',
+    currencies: ['BWP'],
+  },
+  {
+    name: 'Bouvet Island',
+    alpha2code: 'BV',
+    alpha3code: 'BVT',
+    callingCode: '47',
+    continent: 'Antarctic Ocean',
+    currencies: ['NOK'],
+  },
+  {
+    name: 'Brazil',
+    alpha2code: 'BR',
+    alpha3code: 'BRA',
+    callingCode: '55',
+    continent: 'Americas',
+    currencies: ['BRL'],
+  },
+  {
+    name: 'British Indian Ocean Territory',
+    alpha2code: 'IO',
+    alpha3code: 'IOT',
+    callingCode: '246',
+    continent: 'Africa',
+    currencies: ['USD'],
+  },
+  {
+    name: 'United States Minor Outlying Islands',
+    alpha2code: 'UM',
+    alpha3code: 'UMI',
+    callingCode: '246',
+    continent: 'Americas',
+    currencies: ['GBP'],
+  },
+  {
+    name: 'Virgin Islands (British)',
+    alpha2code: 'VG',
+    alpha3code: 'VGB',
+    callingCode: '1',
+    continent: 'Americas',
+    currencies: ['USD'],
+  },
+  {
+    name: 'Virgin Islands (U.S.)',
+    alpha2code: 'VI',
+    alpha3code: 'VIR',
+    callingCode: '1 340',
+    continent: 'Americas',
+    currencies: ['USD'],
+  },
+  {
+    name: 'Brunei Darussalam',
+    alpha2code: 'BN',
+    alpha3code: 'BRN',
+    callingCode: '673',
+    continent: 'Asia',
+    currencies: ['BND', 'SGD'],
+  },
+  {
+    name: 'Bulgaria',
+    alpha2code: 'BG',
+    alpha3code: 'BGR',
+    callingCode: '359',
+    continent: 'Europe',
+    currencies: ['BGN'],
+  },
+  {
+    name: 'Burkina Faso',
+    alpha2code: 'BF',
+    alpha3code: 'BFA',
+    callingCode: '226',
+    continent: 'Africa',
+    currencies: ['XOF'],
+  },
+  {
+    name: 'Burundi',
+    alpha2code: 'BI',
+    alpha3code: 'BDI',
+    callingCode: '257',
+    continent: 'Africa',
+    currencies: ['BIF'],
+  },
+  {
+    name: 'Cambodia',
+    alpha2code: 'KH',
+    alpha3code: 'KHM',
+    callingCode: '855',
+    continent: 'Asia',
+    currencies: ['KHR', 'USD'],
+  },
+  {
+    name: 'Cameroon',
+    alpha2code: 'CM',
+    alpha3code: 'CMR',
+    callingCode: '237',
+    continent: 'Africa',
+    currencies: ['XAF'],
+  },
+  {
+    name: 'Canada',
+    alpha2code: 'CA',
+    alpha3code: 'CAN',
+    callingCode: '1',
+    continent: 'Americas',
+    currencies: ['CAD'],
+  },
+  {
+    name: 'Cabo Verde',
+    alpha2code: 'CV',
+    alpha3code: 'CPV',
+    callingCode: '238',
+    continent: 'Africa',
+    currencies: ['CVE'],
+  },
+  {
+    name: 'Cayman Islands',
+    alpha2code: 'KY',
+    alpha3code: 'CYM',
+    callingCode: '1',
+    continent: 'Americas',
+    currencies: ['KYD'],
+  },
+  {
+    name: 'Central African Republic',
+    alpha2code: 'CF',
+    alpha3code: 'CAF',
+    callingCode: '236',
+    continent: 'Africa',
+    currencies: ['XAF'],
+  },
+  {
+    name: 'Chad',
+    alpha2code: 'TD',
+    alpha3code: 'TCD',
+    callingCode: '235',
+    continent: 'Africa',
+    currencies: ['XAF'],
+  },
+  {
+    name: 'Chile',
+    alpha2code: 'CL',
+    alpha3code: 'CHL',
+    callingCode: '56',
+    continent: 'Americas',
+    currencies: ['CLP'],
+  },
+  {
+    name: 'China',
+    alpha2code: 'CN',
+    alpha3code: 'CHN',
+    callingCode: '86',
+    continent: 'Asia',
+    currencies: ['CNY'],
+  },
+  {
+    name: 'Christmas Island',
+    alpha2code: 'CX',
+    alpha3code: 'CXR',
+    callingCode: '61',
+    continent: 'Oceania',
+    currencies: ['AUD'],
+  },
+  {
+    name: 'Cocos (Keeling) Islands',
+    alpha2code: 'CC',
+    alpha3code: 'CCK',
+    callingCode: '61',
+    continent: 'Oceania',
+    currencies: ['AUD'],
+  },
+  {
+    name: 'Colombia',
+    alpha2code: 'CO',
+    alpha3code: 'COL',
+    callingCode: '57',
+    continent: 'Americas',
+    currencies: ['COP'],
+  },
+  {
+    name: 'Comoros',
+    alpha2code: 'KM',
+    alpha3code: 'COM',
+    callingCode: '269',
+    continent: 'Africa',
+    currencies: ['KMF'],
+  },
+  {
+    name: 'Congo',
+    alpha2code: 'CG',
+    alpha3code: 'COG',
+    callingCode: '242',
+    continent: 'Africa',
+    currencies: ['XAF'],
+  },
+  {
+    name: 'Congo (Democratic Republic of the)',
+    alpha2code: 'CD',
+    alpha3code: 'COD',
+    callingCode: '243',
+    continent: 'Africa',
+    currencies: ['CDF'],
+  },
+  {
+    name: 'Cook Islands',
+    alpha2code: 'CK',
+    alpha3code: 'COK',
+    callingCode: '682',
+    continent: 'Oceania',
+    currencies: ['NZD', 'CKD'],
+  },
+  {
+    name: 'Costa Rica',
+    alpha2code: 'CR',
+    alpha3code: 'CRI',
+    callingCode: '506',
+    continent: 'Americas',
+    currencies: ['CRC'],
+  },
+  {
+    name: 'Croatia',
+    alpha2code: 'HR',
+    alpha3code: 'HRV',
+    callingCode: '385',
+    continent: 'Europe',
+    currencies: ['HRK'],
+  },
+  {
+    name: 'Cuba',
+    alpha2code: 'CU',
+    alpha3code: 'CUB',
+    callingCode: '53',
+    continent: 'Americas',
+    currencies: ['CUC', 'CUP'],
+  },
+  {
+    name: 'Curaçao',
+    alpha2code: 'CW',
+    alpha3code: 'CUW',
+    callingCode: '599',
+    continent: 'Americas',
+    currencies: ['ANG'],
+  },
+  {
+    name: 'Cyprus',
+    alpha2code: 'CY',
+    alpha3code: 'CYP',
+    callingCode: '357',
+    continent: 'Europe',
+    currencies: ['EUR'],
+  },
+  {
+    name: 'Czech Republic',
+    alpha2code: 'CZ',
+    alpha3code: 'CZE',
+    callingCode: '420',
+    continent: 'Europe',
+    currencies: ['CZK'],
+  },
+  {
+    name: 'Denmark',
+    alpha2code: 'DK',
+    alpha3code: 'DNK',
+    callingCode: '45',
+    continent: 'Europe',
+    currencies: ['DKK'],
+  },
+  {
+    name: 'Djibouti',
+    alpha2code: 'DJ',
+    alpha3code: 'DJI',
+    callingCode: '253',
+    continent: 'Africa',
+    currencies: ['DJF'],
+  },
+  {
+    name: 'Dominica',
+    alpha2code: 'DM',
+    alpha3code: 'DMA',
+    callingCode: '1',
+    continent: 'Americas',
+    currencies: ['XCD'],
+  },
+  {
+    name: 'Dominican Republic',
+    alpha2code: 'DO',
+    alpha3code: 'DOM',
+    callingCode: '1',
+    continent: 'Americas',
+    currencies: ['DOP'],
+  },
+  {
+    name: 'Ecuador',
+    alpha2code: 'EC',
+    alpha3code: 'ECU',
+    callingCode: '593',
+    continent: 'Americas',
+    currencies: ['USD'],
+  },
+  {
+    name: 'Egypt',
+    alpha2code: 'EG',
+    alpha3code: 'EGY',
+    callingCode: '20',
+    continent: 'Africa',
+    currencies: ['EGP'],
+  },
+  {
+    name: 'El Salvador',
+    alpha2code: 'SV',
+    alpha3code: 'SLV',
+    callingCode: '503',
+    continent: 'Americas',
+    currencies: ['USD'],
+  },
+  {
+    name: 'Equatorial Guinea',
+    alpha2code: 'GQ',
+    alpha3code: 'GNQ',
+    callingCode: '240',
+    continent: 'Africa',
+    currencies: ['XAF'],
+  },
+  {
+    name: 'Eritrea',
+    alpha2code: 'ER',
+    alpha3code: 'ERI',
+    callingCode: '291',
+    continent: 'Africa',
+    currencies: ['ERN'],
+  },
+  {
+    name: 'Estonia',
+    alpha2code: 'EE',
+    alpha3code: 'EST',
+    callingCode: '372',
+    continent: 'Europe',
+    currencies: ['EUR'],
+  },
+  {
+    name: 'Ethiopia',
+    alpha2code: 'ET',
+    alpha3code: 'ETH',
+    callingCode: '251',
+    continent: 'Africa',
+    currencies: ['ETB'],
+  },
+  {
+    name: 'Falkland Islands (Malvinas)',
+    alpha2code: 'FK',
+    alpha3code: 'FLK',
+    callingCode: '500',
+    continent: 'Americas',
+    currencies: ['FKP'],
+  },
+  {
+    name: 'Faroe Islands',
+    alpha2code: 'FO',
+    alpha3code: 'FRO',
+    callingCode: '298',
+    continent: 'Europe',
+    currencies: ['DKK', 'FOK'],
+  },
+  {
+    name: 'Fiji',
+    alpha2code: 'FJ',
+    alpha3code: 'FJI',
+    callingCode: '679',
+    continent: 'Oceania',
+    currencies: ['FJD'],
+  },
+  {
+    name: 'Finland',
+    alpha2code: 'FI',
+    alpha3code: 'FIN',
+    callingCode: '358',
+    continent: 'Europe',
+    currencies: ['EUR'],
+  },
+  {
+    name: 'France',
+    alpha2code: 'FR',
+    alpha3code: 'FRA',
+    callingCode: '33',
+    continent: 'Europe',
+    currencies: ['EUR'],
+  },
+  {
+    name: 'French Guiana',
+    alpha2code: 'GF',
+    alpha3code: 'GUF',
+    callingCode: '594',
+    continent: 'Americas',
+    currencies: ['EUR'],
+  },
+  {
+    name: 'French Polynesia',
+    alpha2code: 'PF',
+    alpha3code: 'PYF',
+    callingCode: '689',
+    continent: 'Oceania',
+    currencies: ['XPF'],
+  },
+  {
+    name: 'French Southern Territories',
+    alpha2code: 'TF',
+    alpha3code: 'ATF',
+    callingCode: '262',
+    continent: 'Africa',
+    currencies: ['EUR'],
+  },
+  {
+    name: 'Gabon',
+    alpha2code: 'GA',
+    alpha3code: 'GAB',
+    callingCode: '241',
+    continent: 'Africa',
+    currencies: ['XAF'],
+  },
+  {
+    name: 'Gambia',
+    alpha2code: 'GM',
+    alpha3code: 'GMB',
+    callingCode: '220',
+    continent: 'Africa',
+    currencies: ['GMD'],
+  },
+  {
+    name: 'Georgia',
+    alpha2code: 'GE',
+    alpha3code: 'GEO',
+    callingCode: '995',
+    continent: 'Asia',
+    currencies: ['GEL'],
+  },
+  {
+    name: 'Germany',
+    alpha2code: 'DE',
+    alpha3code: 'DEU',
+    callingCode: '49',
+    continent: 'Europe',
+    currencies: ['EUR'],
+  },
+  {
+    name: 'Ghana',
+    alpha2code: 'GH',
+    alpha3code: 'GHA',
+    callingCode: '233',
+    continent: 'Africa',
+    currencies: ['GHS'],
+  },
+  {
+    name: 'Gibraltar',
+    alpha2code: 'GI',
+    alpha3code: 'GIB',
+    callingCode: '350',
+    continent: 'Europe',
+    currencies: ['GIP'],
+  },
+  {
+    name: 'Greece',
+    alpha2code: 'GR',
+    alpha3code: 'GRC',
+    callingCode: '30',
+    continent: 'Europe',
+    currencies: ['EUR'],
+  },
+  {
+    name: 'Greenland',
+    alpha2code: 'GL',
+    alpha3code: 'GRL',
+    callingCode: '299',
+    continent: 'Americas',
+    currencies: ['DKK'],
+  },
+  {
+    name: 'Grenada',
+    alpha2code: 'GD',
+    alpha3code: 'GRD',
+    callingCode: '1',
+    continent: 'Americas',
+    currencies: ['XCD'],
+  },
+  {
+    name: 'Guadeloupe',
+    alpha2code: 'GP',
+    alpha3code: 'GLP',
+    callingCode: '590',
+    continent: 'Americas',
+    currencies: ['EUR'],
+  },
+  {
+    name: 'Guam',
+    alpha2code: 'GU',
+    alpha3code: 'GUM',
+    callingCode: '1',
+    continent: 'Oceania',
+    currencies: ['USD'],
+  },
+  {
+    name: 'Guatemala',
+    alpha2code: 'GT',
+    alpha3code: 'GTM',
+    callingCode: '502',
+    continent: 'Americas',
+    currencies: ['GTQ'],
+  },
+  {
+    name: 'Guernsey',
+    alpha2code: 'GG',
+    alpha3code: 'GGY',
+    callingCode: '44',
+    continent: 'Europe',
+    currencies: ['GBP', 'GGP'],
+  },
+  {
+    name: 'Guinea',
+    alpha2code: 'GN',
+    alpha3code: 'GIN',
+    callingCode: '224',
+    continent: 'Africa',
+    currencies: ['GNF'],
+  },
+  {
+    name: 'Guinea-Bissau',
+    alpha2code: 'GW',
+    alpha3code: 'GNB',
+    callingCode: '245',
+    continent: 'Africa',
+    currencies: ['XOF'],
+  },
+  {
+    name: 'Guyana',
+    alpha2code: 'GY',
+    alpha3code: 'GUY',
+    callingCode: '592',
+    continent: 'Americas',
+    currencies: ['GYD'],
+  },
+  {
+    name: 'Haiti',
+    alpha2code: 'HT',
+    alpha3code: 'HTI',
+    callingCode: '509',
+    continent: 'Americas',
+    currencies: ['HTG'],
+  },
+  {
+    name: 'Heard Island and McDonald Islands',
+    alpha2code: 'HM',
+    alpha3code: 'HMD',
+    callingCode: '672',
+    continent: 'Antarctic',
+    currencies: ['AUD'],
+  },
+  {
+    name: 'Vatican City',
+    alpha2code: 'VA',
+    alpha3code: 'VAT',
+    callingCode: '379',
+    continent: 'Europe',
+    currencies: ['EUR'],
+  },
+  {
+    name: 'Honduras',
+    alpha2code: 'HN',
+    alpha3code: 'HND',
+    callingCode: '504',
+    continent: 'Americas',
+    currencies: ['HNL'],
+  },
+  {
+    name: 'Hungary',
+    alpha2code: 'HU',
+    alpha3code: 'HUN',
+    callingCode: '36',
+    continent: 'Europe',
+    currencies: ['HUF'],
+  },
+  {
+    name: 'Hong Kong',
+    alpha2code: 'HK',
+    alpha3code: 'HKG',
+    callingCode: '852',
+    continent: 'Asia',
+    currencies: ['HKD'],
+  },
+  {
+    name: 'Iceland',
+    alpha2code: 'IS',
+    alpha3code: 'ISL',
+    callingCode: '354',
+    continent: 'Europe',
+    currencies: ['ISK'],
+  },
+  {
+    name: 'India',
+    alpha2code: 'IN',
+    alpha3code: 'IND',
+    callingCode: '91',
+    continent: 'Asia',
+    currencies: ['INR'],
+  },
+  {
+    name: 'Indonesia',
+    alpha2code: 'ID',
+    alpha3code: 'IDN',
+    callingCode: '62',
+    continent: 'Asia',
+    currencies: ['IDR'],
+  },
+  {
+    name: 'Ivory Coast',
+    alpha2code: 'CI',
+    alpha3code: 'CIV',
+    callingCode: '225',
+    continent: 'Africa',
+    currencies: ['XOF'],
+  },
+  {
+    name: 'Iran (Islamic Republic of)',
+    alpha2code: 'IR',
+    alpha3code: 'IRN',
+    callingCode: '98',
+    continent: 'Asia',
+    currencies: ['IRR'],
+  },
+  {
+    name: 'Iraq',
+    alpha2code: 'IQ',
+    alpha3code: 'IRQ',
+    callingCode: '964',
+    continent: 'Asia',
+    currencies: ['IQD'],
+  },
+  {
+    name: 'Ireland',
+    alpha2code: 'IE',
+    alpha3code: 'IRL',
+    callingCode: '353',
+    continent: 'Europe',
+    currencies: ['EUR'],
+  },
+  {
+    name: 'Isle of Man',
+    alpha2code: 'IM',
+    alpha3code: 'IMN',
+    callingCode: '44',
+    continent: 'Europe',
+    currencies: ['GBP', 'IMP[G]'],
+  },
+  {
+    name: 'Israel',
+    alpha2code: 'IL',
+    alpha3code: 'ISR',
+    callingCode: '972',
+    continent: 'Asia',
+    currencies: ['ILS'],
+  },
+  {
+    name: 'Italy',
+    alpha2code: 'IT',
+    alpha3code: 'ITA',
+    callingCode: '39',
+    continent: 'Europe',
+    currencies: ['EUR'],
+  },
+  {
+    name: 'Jamaica',
+    alpha2code: 'JM',
+    alpha3code: 'JAM',
+    callingCode: '1',
+    continent: 'Americas',
+    currencies: ['JMD'],
+  },
+  {
+    name: 'Japan',
+    alpha2code: 'JP',
+    alpha3code: 'JPN',
+    callingCode: '81',
+    continent: 'Asia',
+    currencies: ['JPY'],
+  },
+  {
+    name: 'Jersey',
+    alpha2code: 'JE',
+    alpha3code: 'JEY',
+    callingCode: '44',
+    continent: 'Europe',
+    currencies: ['GBP', 'JEP[G]'],
+  },
+  {
+    name: 'Jordan',
+    alpha2code: 'JO',
+    alpha3code: 'JOR',
+    callingCode: '962',
+    continent: 'Asia',
+    currencies: ['JOD'],
+  },
+  {
+    name: 'Kazakhstan',
+    alpha2code: 'KZ',
+    alpha3code: 'KAZ',
+    callingCode: '76',
+    continent: 'Asia',
+    currencies: ['KZT'],
+  },
+  {
+    name: 'Kenya',
+    alpha2code: 'KE',
+    alpha3code: 'KEN',
+    callingCode: '254',
+    continent: 'Africa',
+    currencies: ['KES'],
+  },
+  {
+    name: 'Kiribati',
+    alpha2code: 'KI',
+    alpha3code: 'KIR',
+    callingCode: '686',
+    continent: 'Oceania',
+    currencies: ['AUD', 'KID'],
+  },
+  {
+    name: 'Kuwait',
+    alpha2code: 'KW',
+    alpha3code: 'KWT',
+    callingCode: '965',
+    continent: 'Asia',
+    currencies: ['KWD'],
+  },
+  {
+    name: 'Kyrgyzstan',
+    alpha2code: 'KG',
+    alpha3code: 'KGZ',
+    callingCode: '996',
+    continent: 'Asia',
+    currencies: ['KGS'],
+  },
+  {
+    name: "Lao People's Democratic Republic",
+    alpha2code: 'LA',
+    alpha3code: 'LAO',
+    callingCode: '856',
+    continent: 'Asia',
+    currencies: ['LAK'],
+  },
+  {
+    name: 'Latvia',
+    alpha2code: 'LV',
+    alpha3code: 'LVA',
+    callingCode: '371',
+    continent: 'Europe',
+    currencies: ['EUR'],
+  },
+  {
+    name: 'Lebanon',
+    alpha2code: 'LB',
+    alpha3code: 'LBN',
+    callingCode: '961',
+    continent: 'Asia',
+    currencies: ['LBP'],
+  },
+  {
+    name: 'Lesotho',
+    alpha2code: 'LS',
+    alpha3code: 'LSO',
+    callingCode: '266',
+    continent: 'Africa',
+    currencies: ['LSL', 'ZAR'],
+  },
+  {
+    name: 'Liberia',
+    alpha2code: 'LR',
+    alpha3code: 'LBR',
+    callingCode: '231',
+    continent: 'Africa',
+    currencies: ['LRD'],
+  },
+  {
+    name: 'Libya',
+    alpha2code: 'LY',
+    alpha3code: 'LBY',
+    callingCode: '218',
+    continent: 'Africa',
+    currencies: ['LYD'],
+  },
+  {
+    name: 'Liechtenstein',
+    alpha2code: 'LI',
+    alpha3code: 'LIE',
+    callingCode: '423',
+    continent: 'Europe',
+    currencies: ['CHF'],
+  },
+  {
+    name: 'Lithuania',
+    alpha2code: 'LT',
+    alpha3code: 'LTU',
+    callingCode: '370',
+    continent: 'Europe',
+    currencies: ['EUR'],
+  },
+  {
+    name: 'Luxembourg',
+    alpha2code: 'LU',
+    alpha3code: 'LUX',
+    callingCode: '352',
+    continent: 'Europe',
+    currencies: ['EUR'],
+  },
+  {
+    name: 'Macao',
+    alpha2code: 'MO',
+    alpha3code: 'MAC',
+    callingCode: '853',
+    continent: 'Asia',
+    currencies: ['MOP'],
+  },
+  {
+    name: 'North Macedonia',
+    alpha2code: 'MK',
+    alpha3code: 'MKD',
+    callingCode: '389',
+    continent: 'Europe',
+    currencies: ['MKD'],
+  },
+  {
+    name: 'Madagascar',
+    alpha2code: 'MG',
+    alpha3code: 'MDG',
+    callingCode: '261',
+    continent: 'Africa',
+    currencies: ['MGA'],
+  },
+  {
+    name: 'Malawi',
+    alpha2code: 'MW',
+    alpha3code: 'MWI',
+    callingCode: '265',
+    continent: 'Africa',
+    currencies: ['MWK'],
+  },
+  {
+    name: 'Malaysia',
+    alpha2code: 'MY',
+    alpha3code: 'MYS',
+    callingCode: '60',
+    continent: 'Asia',
+    currencies: ['MYR'],
+  },
+  {
+    name: 'Maldives',
+    alpha2code: 'MV',
+    alpha3code: 'MDV',
+    callingCode: '960',
+    continent: 'Asia',
+    currencies: ['MVR'],
+  },
+  {
+    name: 'Mali',
+    alpha2code: 'ML',
+    alpha3code: 'MLI',
+    callingCode: '223',
+    continent: 'Africa',
+    currencies: ['XOF'],
+  },
+  {
+    name: 'Malta',
+    alpha2code: 'MT',
+    alpha3code: 'MLT',
+    callingCode: '356',
+    continent: 'Europe',
+    currencies: ['EUR'],
+  },
+  {
+    name: 'Marshall Islands',
+    alpha2code: 'MH',
+    alpha3code: 'MHL',
+    callingCode: '692',
+    continent: 'Oceania',
+    currencies: ['USD'],
+  },
+  {
+    name: 'Martinique',
+    alpha2code: 'MQ',
+    alpha3code: 'MTQ',
+    callingCode: '596',
+    continent: 'Americas',
+    currencies: ['EUR'],
+  },
+  {
+    name: 'Mauritania',
+    alpha2code: 'MR',
+    alpha3code: 'MRT',
+    callingCode: '222',
+    continent: 'Africa',
+    currencies: ['MRO'],
+  },
+  {
+    name: 'Mauritius',
+    alpha2code: 'MU',
+    alpha3code: 'MUS',
+    callingCode: '230',
+    continent: 'Africa',
+    currencies: ['MUR'],
+  },
+  {
+    name: 'Mayotte',
+    alpha2code: 'YT',
+    alpha3code: 'MYT',
+    callingCode: '262',
+    continent: 'Africa',
+    currencies: ['EUR'],
+  },
+  {
+    name: 'Mexico',
+    alpha2code: 'MX',
+    alpha3code: 'MEX',
+    callingCode: '52',
+    continent: 'Americas',
+    currencies: ['MXN'],
+  },
+  {
+    name: 'Micronesia (Federated States of)',
+    alpha2code: 'FM',
+    alpha3code: 'FSM',
+    callingCode: '691',
+    continent: 'Oceania',
+    currencies: ['USD'],
+  },
+  {
+    name: 'Moldova (Republic of)',
+    alpha2code: 'MD',
+    alpha3code: 'MDA',
+    callingCode: '373',
+    continent: 'Europe',
+    currencies: ['MDL'],
+  },
+  {
+    name: 'Monaco',
+    alpha2code: 'MC',
+    alpha3code: 'MCO',
+    callingCode: '377',
+    continent: 'Europe',
+    currencies: ['EUR'],
+  },
+  {
+    name: 'Mongolia',
+    alpha2code: 'MN',
+    alpha3code: 'MNG',
+    callingCode: '976',
+    continent: 'Asia',
+    currencies: ['MNT'],
+  },
+  {
+    name: 'Montenegro',
+    alpha2code: 'ME',
+    alpha3code: 'MNE',
+    callingCode: '382',
+    continent: 'Europe',
+    currencies: ['EUR'],
+  },
+  {
+    name: 'Montserrat',
+    alpha2code: 'MS',
+    alpha3code: 'MSR',
+    callingCode: '1',
+    continent: 'Americas',
+    currencies: ['XCD'],
+  },
+  {
+    name: 'Morocco',
+    alpha2code: 'MA',
+    alpha3code: 'MAR',
+    callingCode: '212',
+    continent: 'Africa',
+    currencies: ['MAD'],
+  },
+  {
+    name: 'Mozambique',
+    alpha2code: 'MZ',
+    alpha3code: 'MOZ',
+    callingCode: '258',
+    continent: 'Africa',
+    currencies: ['MZN'],
+  },
+  {
+    name: 'Myanmar',
+    alpha2code: 'MM',
+    alpha3code: 'MMR',
+    callingCode: '95',
+    continent: 'Asia',
+    currencies: ['MMK'],
+  },
+  {
+    name: 'Namibia',
+    alpha2code: 'NA',
+    alpha3code: 'NAM',
+    callingCode: '264',
+    continent: 'Africa',
+    currencies: ['NAD', 'ZAR'],
+  },
+  {
+    name: 'Nauru',
+    alpha2code: 'NR',
+    alpha3code: 'NRU',
+    callingCode: '674',
+    continent: 'Oceania',
+    currencies: ['AUD'],
+  },
+  {
+    name: 'Nepal',
+    alpha2code: 'NP',
+    alpha3code: 'NPL',
+    callingCode: '977',
+    continent: 'Asia',
+    currencies: ['NPR'],
+  },
+  {
+    name: 'Netherlands',
+    alpha2code: 'NL',
+    alpha3code: 'NLD',
+    callingCode: '31',
+    continent: 'Europe',
+    currencies: ['EUR'],
+  },
+  {
+    name: 'New Caledonia',
+    alpha2code: 'NC',
+    alpha3code: 'NCL',
+    callingCode: '687',
+    continent: 'Oceania',
+    currencies: ['XPF'],
+  },
+  {
+    name: 'New Zealand',
+    alpha2code: 'NZ',
+    alpha3code: 'NZL',
+    callingCode: '64',
+    continent: 'Oceania',
+    currencies: ['NZD'],
+  },
+  {
+    name: 'Nicaragua',
+    alpha2code: 'NI',
+    alpha3code: 'NIC',
+    callingCode: '505',
+    continent: 'Americas',
+    currencies: ['NIO'],
+  },
+  {
+    name: 'Niger',
+    alpha2code: 'NE',
+    alpha3code: 'NER',
+    callingCode: '227',
+    continent: 'Africa',
+    currencies: ['XOF'],
+  },
+  {
+    name: 'Nigeria',
+    alpha2code: 'NG',
+    alpha3code: 'NGA',
+    callingCode: '234',
+    continent: 'Africa',
+    currencies: ['NGN'],
+  },
+  {
+    name: 'Niue',
+    alpha2code: 'NU',
+    alpha3code: 'NIU',
+    callingCode: '683',
+    continent: 'Oceania',
+    currencies: ['NZD', 'NZD'],
+  },
+  {
+    name: 'Norfolk Island',
+    alpha2code: 'NF',
+    alpha3code: 'NFK',
+    callingCode: '672',
+    continent: 'Oceania',
+    currencies: ['AUD'],
+  },
+  {
+    name: "Korea (Democratic People's Republic of)",
+    alpha2code: 'KP',
+    alpha3code: 'PRK',
+    callingCode: '850',
+    continent: 'Asia',
+    currencies: ['KPW'],
+  },
+  {
+    name: 'Northern Mariana Islands',
+    alpha2code: 'MP',
+    alpha3code: 'MNP',
+    callingCode: '1',
+    continent: 'Oceania',
+    currencies: ['USD'],
+  },
+  {
+    name: 'Norway',
+    alpha2code: 'NO',
+    alpha3code: 'NOR',
+    callingCode: '47',
+    continent: 'Europe',
+    currencies: ['NOK'],
+  },
+  {
+    name: 'Oman',
+    alpha2code: 'OM',
+    alpha3code: 'OMN',
+    callingCode: '968',
+    continent: 'Asia',
+    currencies: ['OMR'],
+  },
+  {
+    name: 'Pakistan',
+    alpha2code: 'PK',
+    alpha3code: 'PAK',
+    callingCode: '92',
+    continent: 'Asia',
+    currencies: ['PKR'],
+  },
+  {
+    name: 'Palau',
+    alpha2code: 'PW',
+    alpha3code: 'PLW',
+    callingCode: '680',
+    continent: 'Oceania',
+    currencies: ['USD'],
+  },
+  {
+    name: 'Palestine, State of',
+    alpha2code: 'PS',
+    alpha3code: 'PSE',
+    callingCode: '970',
+    continent: 'Asia',
+    currencies: ['EGP', 'ILS', 'JOD'],
+  },
+  {
+    name: 'Panama',
+    alpha2code: 'PA',
+    alpha3code: 'PAN',
+    callingCode: '507',
+    continent: 'Americas',
+    currencies: ['PAB', 'USD'],
+  },
+  {
+    name: 'Papua New Guinea',
+    alpha2code: 'PG',
+    alpha3code: 'PNG',
+    callingCode: '675',
+    continent: 'Oceania',
+    currencies: ['PGK'],
+  },
+  {
+    name: 'Paraguay',
+    alpha2code: 'PY',
+    alpha3code: 'PRY',
+    callingCode: '595',
+    continent: 'Americas',
+    currencies: ['PYG'],
+  },
+  {
+    name: 'Peru',
+    alpha2code: 'PE',
+    alpha3code: 'PER',
+    callingCode: '51',
+    continent: 'Americas',
+    currencies: ['PEN'],
+  },
+  {
+    name: 'Philippines',
+    alpha2code: 'PH',
+    alpha3code: 'PHL',
+    callingCode: '63',
+    continent: 'Asia',
+    currencies: ['PHP'],
+  },
+  {
+    name: 'Pitcairn',
+    alpha2code: 'PN',
+    alpha3code: 'PCN',
+    callingCode: '64',
+    continent: 'Oceania',
+    currencies: ['NZD', 'PND'],
+  },
+  {
+    name: 'Poland',
+    alpha2code: 'PL',
+    alpha3code: 'POL',
+    callingCode: '48',
+    continent: 'Europe',
+    currencies: ['PLN'],
+  },
+  {
+    name: 'Portugal',
+    alpha2code: 'PT',
+    alpha3code: 'PRT',
+    callingCode: '351',
+    continent: 'Europe',
+    currencies: ['EUR'],
+  },
+  {
+    name: 'Puerto Rico',
+    alpha2code: 'PR',
+    alpha3code: 'PRI',
+    callingCode: '1',
+    continent: 'Americas',
+    currencies: ['USD'],
+  },
+  {
+    name: 'Qatar',
+    alpha2code: 'QA',
+    alpha3code: 'QAT',
+    callingCode: '974',
+    continent: 'Asia',
+    currencies: ['QAR'],
+  },
+  {
+    name: 'Republic of Kosovo',
+    alpha2code: 'XK',
+    alpha3code: 'UNK',
+    callingCode: '383',
+    continent: 'Europe',
+    currencies: ['EUR'],
+  },
+  {
+    name: 'Réunion',
+    alpha2code: 'RE',
+    alpha3code: 'REU',
+    callingCode: '262',
+    continent: 'Africa',
+    currencies: ['EUR'],
+  },
+  {
+    name: 'Romania',
+    alpha2code: 'RO',
+    alpha3code: 'ROU',
+    callingCode: '40',
+    continent: 'Europe',
+    currencies: ['RON'],
+  },
+  {
+    name: 'Russian Federation',
+    alpha2code: 'RU',
+    alpha3code: 'RUS',
+    callingCode: '7',
+    continent: 'Europe',
+    currencies: ['RUB'],
+  },
+  {
+    name: 'Rwanda',
+    alpha2code: 'RW',
+    alpha3code: 'RWA',
+    callingCode: '250',
+    continent: 'Africa',
+    currencies: ['RWF'],
+  },
+  {
+    name: 'Saint Barthélemy',
+    alpha2code: 'BL',
+    alpha3code: 'BLM',
+    callingCode: '590',
+    continent: 'Americas',
+    currencies: ['EUR'],
+  },
+  {
+    name: 'Saint Helena, Ascension and Tristan da Cunha',
+    alpha2code: 'SH',
+    alpha3code: 'SHN',
+    callingCode: '290',
+    continent: 'Africa',
+    currencies: ['SHP'],
+  },
+  {
+    name: 'Saint Kitts and Nevis',
+    alpha2code: 'KN',
+    alpha3code: 'KNA',
+    callingCode: '1',
+    continent: 'Americas',
+    currencies: ['XCD'],
+  },
+  {
+    name: 'Saint Lucia',
+    alpha2code: 'LC',
+    alpha3code: 'LCA',
+    callingCode: '1',
+    continent: 'Americas',
+    currencies: ['XCD'],
+  },
+  {
+    name: 'Saint Martin (French part)',
+    alpha2code: 'MF',
+    alpha3code: 'MAF',
+    callingCode: '590',
+    continent: 'Americas',
+    currencies: ['EUR'],
+  },
+  {
+    name: 'Saint Pierre and Miquelon',
+    alpha2code: 'PM',
+    alpha3code: 'SPM',
+    callingCode: '508',
+    continent: 'Americas',
+    currencies: ['EUR'],
+  },
+  {
+    name: 'Saint Vincent and the Grenadines',
+    alpha2code: 'VC',
+    alpha3code: 'VCT',
+    callingCode: '1',
+    continent: 'Americas',
+    currencies: ['XCD'],
+  },
+  {
+    name: 'Samoa',
+    alpha2code: 'WS',
+    alpha3code: 'WSM',
+    callingCode: '685',
+    continent: 'Oceania',
+    currencies: ['WST'],
+  },
+  {
+    name: 'San Marino',
+    alpha2code: 'SM',
+    alpha3code: 'SMR',
+    callingCode: '378',
+    continent: 'Europe',
+    currencies: ['EUR'],
+  },
+  {
+    name: 'Sao Tome and Principe',
+    alpha2code: 'ST',
+    alpha3code: 'STP',
+    callingCode: '239',
+    continent: 'Africa',
+    currencies: ['STD'],
+  },
+  {
+    name: 'Saudi Arabia',
+    alpha2code: 'SA',
+    alpha3code: 'SAU',
+    callingCode: '966',
+    continent: 'Asia',
+    currencies: ['SAR'],
+  },
+  {
+    name: 'Senegal',
+    alpha2code: 'SN',
+    alpha3code: 'SEN',
+    callingCode: '221',
+    continent: 'Africa',
+    currencies: ['XOF'],
+  },
+  {
+    name: 'Serbia',
+    alpha2code: 'RS',
+    alpha3code: 'SRB',
+    callingCode: '381',
+    continent: 'Europe',
+    currencies: ['RSD'],
+  },
+  {
+    name: 'Seychelles',
+    alpha2code: 'SC',
+    alpha3code: 'SYC',
+    callingCode: '248',
+    continent: 'Africa',
+    currencies: ['SCR'],
+  },
+  {
+    name: 'Sierra Leone',
+    alpha2code: 'SL',
+    alpha3code: 'SLE',
+    callingCode: '232',
+    continent: 'Africa',
+    currencies: ['SLL'],
+  },
+  {
+    name: 'Singapore',
+    alpha2code: 'SG',
+    alpha3code: 'SGP',
+    callingCode: '65',
+    continent: 'Asia',
+    currencies: ['SGD'],
+  },
+  {
+    name: 'Sint Maarten (Dutch part)',
+    alpha2code: 'SX',
+    alpha3code: 'SXM',
+    callingCode: '1',
+    continent: 'Americas',
+    currencies: ['ANG'],
+  },
+  {
+    name: 'Slovakia',
+    alpha2code: 'SK',
+    alpha3code: 'SVK',
+    callingCode: '421',
+    continent: 'Europe',
+    currencies: ['EUR'],
+  },
+  {
+    name: 'Slovenia',
+    alpha2code: 'SI',
+    alpha3code: 'SVN',
+    callingCode: '386',
+    continent: 'Europe',
+    currencies: ['EUR'],
+  },
+  {
+    name: 'Solomon Islands',
+    alpha2code: 'SB',
+    alpha3code: 'SLB',
+    callingCode: '677',
+    continent: 'Oceania',
+    currencies: ['SBD'],
+  },
+  {
+    name: 'Somalia',
+    alpha2code: 'SO',
+    alpha3code: 'SOM',
+    callingCode: '252',
+    continent: 'Africa',
+    currencies: ['SOS'],
+  },
+  {
+    name: 'South Africa',
+    alpha2code: 'ZA',
+    alpha3code: 'ZAF',
+    callingCode: '27',
+    continent: 'Africa',
+    currencies: ['ZAR'],
+  },
+  {
+    name: 'South Georgia and the South Sandwich Islands',
+    alpha2code: 'GS',
+    alpha3code: 'SGS',
+    callingCode: '500',
+    continent: 'Americas',
+    currencies: ['FKP'],
+  },
+  {
+    name: 'Korea (Republic of)',
+    alpha2code: 'KR',
+    alpha3code: 'KOR',
+    callingCode: '82',
+    continent: 'Asia',
+    currencies: ['KRW'],
+  },
+  {
+    name: 'Spain',
+    alpha2code: 'ES',
+    alpha3code: 'ESP',
+    callingCode: '34',
+    continent: 'Europe',
+    currencies: ['EUR'],
+  },
+  {
+    name: 'Sri Lanka',
+    alpha2code: 'LK',
+    alpha3code: 'LKA',
+    callingCode: '94',
+    continent: 'Asia',
+    currencies: ['LKR'],
+  },
+  {
+    name: 'Sudan',
+    alpha2code: 'SD',
+    alpha3code: 'SDN',
+    callingCode: '249',
+    continent: 'Africa',
+    currencies: ['SDG'],
+  },
+  {
+    name: 'South Sudan',
+    alpha2code: 'SS',
+    alpha3code: 'SSD',
+    callingCode: '211',
+    continent: 'Africa',
+    currencies: ['SSP'],
+  },
+  {
+    name: 'Suriname',
+    alpha2code: 'SR',
+    alpha3code: 'SUR',
+    callingCode: '597',
+    continent: 'Americas',
+    currencies: ['SRD'],
+  },
+  {
+    name: 'Svalbard and Jan Mayen',
+    alpha2code: 'SJ',
+    alpha3code: 'SJM',
+    callingCode: '47',
+    continent: 'Europe',
+    currencies: ['NOK'],
+  },
+  {
+    name: 'Swaziland',
+    alpha2code: 'SZ',
+    alpha3code: 'SWZ',
+    callingCode: '268',
+    continent: 'Africa',
+    currencies: ['SZL'],
+  },
+  {
+    name: 'Sweden',
+    alpha2code: 'SE',
+    alpha3code: 'SWE',
+    callingCode: '46',
+    continent: 'Europe',
+    currencies: ['SEK'],
+  },
+  {
+    name: 'Switzerland',
+    alpha2code: 'CH',
+    alpha3code: 'CHE',
+    callingCode: '41',
+    continent: 'Europe',
+    currencies: ['CHF'],
+  },
+  {
+    name: 'Syrian Arab Republic',
+    alpha2code: 'SY',
+    alpha3code: 'SYR',
+    callingCode: '963',
+    continent: 'Asia',
+    currencies: ['SYP'],
+  },
+  {
+    name: 'Taiwan',
+    alpha2code: 'TW',
+    alpha3code: 'TWN',
+    callingCode: '886',
+    continent: 'Asia',
+    currencies: ['TWD'],
+  },
+  {
+    name: 'Tajikistan',
+    alpha2code: 'TJ',
+    alpha3code: 'TJK',
+    callingCode: '992',
+    continent: 'Asia',
+    currencies: ['TJS'],
+  },
+  {
+    name: 'Tanzania, United Republic of',
+    alpha2code: 'TZ',
+    alpha3code: 'TZA',
+    callingCode: '255',
+    continent: 'Africa',
+    currencies: ['TZS'],
+  },
+  {
+    name: 'Thailand',
+    alpha2code: 'TH',
+    alpha3code: 'THA',
+    callingCode: '66',
+    continent: 'Asia',
+    currencies: ['THB'],
+  },
+  {
+    name: 'Timor-Leste',
+    alpha2code: 'TL',
+    alpha3code: 'TLS',
+    callingCode: '670',
+    continent: 'Asia',
+    currencies: ['USD'],
+  },
+  {
+    name: 'Togo',
+    alpha2code: 'TG',
+    alpha3code: 'TGO',
+    callingCode: '228',
+    continent: 'Africa',
+    currencies: ['XOF'],
+  },
+  {
+    name: 'Tokelau',
+    alpha2code: 'TK',
+    alpha3code: 'TKL',
+    callingCode: '690',
+    continent: 'Oceania',
+    currencies: ['NZD'],
+  },
+  {
+    name: 'Tonga',
+    alpha2code: 'TO',
+    alpha3code: 'TON',
+    callingCode: '676',
+    continent: 'Oceania',
+    currencies: ['TOP'],
+  },
+  {
+    name: 'Trinidad and Tobago',
+    alpha2code: 'TT',
+    alpha3code: 'TTO',
+    callingCode: '1',
+    continent: 'Americas',
+    currencies: ['TTD'],
+  },
+  {
+    name: 'Tunisia',
+    alpha2code: 'TN',
+    alpha3code: 'TUN',
+    callingCode: '216',
+    continent: 'Africa',
+    currencies: ['TND'],
+  },
+  {
+    name: 'Turkey',
+    alpha2code: 'TR',
+    alpha3code: 'TUR',
+    callingCode: '90',
+    continent: 'Asia',
+    currencies: ['TRY'],
+  },
+  {
+    name: 'Turkmenistan',
+    alpha2code: 'TM',
+    alpha3code: 'TKM',
+    callingCode: '993',
+    continent: 'Asia',
+    currencies: ['TMT'],
+  },
+  {
+    name: 'Turks and Caicos Islands',
+    alpha2code: 'TC',
+    alpha3code: 'TCA',
+    callingCode: '1',
+    continent: 'Americas',
+    currencies: ['USD'],
+  },
+  {
+    name: 'Tuvalu',
+    alpha2code: 'TV',
+    alpha3code: 'TUV',
+    callingCode: '688',
+    continent: 'Oceania',
+    currencies: ['AUD', 'TVD[G]'],
+  },
+  {
+    name: 'Uganda',
+    alpha2code: 'UG',
+    alpha3code: 'UGA',
+    callingCode: '256',
+    continent: 'Africa',
+    currencies: ['UGX'],
+  },
+  {
+    name: 'Ukraine',
+    alpha2code: 'UA',
+    alpha3code: 'UKR',
+    callingCode: '380',
+    continent: 'Europe',
+    currencies: ['UAH'],
+  },
+  {
+    name: 'United Arab Emirates',
+    alpha2code: 'AE',
+    alpha3code: 'ARE',
+    callingCode: '971',
+    continent: 'Asia',
+    currencies: ['AED'],
+  },
+  {
+    name: 'United Kingdom of Great Britain and Northern Ireland',
+    alpha2code: 'GB',
+    alpha3code: 'GBR',
+    callingCode: '44',
+    continent: 'Europe',
+    currencies: ['GBP'],
+  },
+  {
+    name: 'United States of America',
+    alpha2code: 'US',
+    alpha3code: 'USA',
+    callingCode: '1',
+    continent: 'Americas',
+    currencies: ['USD'],
+  },
+  {
+    name: 'Uruguay',
+    alpha2code: 'UY',
+    alpha3code: 'URY',
+    callingCode: '598',
+    continent: 'Americas',
+    currencies: ['UYU'],
+  },
+  {
+    name: 'Uzbekistan',
+    alpha2code: 'UZ',
+    alpha3code: 'UZB',
+    callingCode: '998',
+    continent: 'Asia',
+    currencies: ['UZS'],
+  },
+  {
+    name: 'Vanuatu',
+    alpha2code: 'VU',
+    alpha3code: 'VUT',
+    callingCode: '678',
+    continent: 'Oceania',
+    currencies: ['VUV'],
+  },
+  {
+    name: 'Venezuela (Bolivarian Republic of)',
+    alpha2code: 'VE',
+    alpha3code: 'VEN',
+    callingCode: '58',
+    continent: 'Americas',
+    currencies: ['VEF'],
+  },
+  {
+    name: 'Vietnam',
+    alpha2code: 'VN',
+    alpha3code: 'VNM',
+    callingCode: '84',
+    continent: 'Asia',
+    currencies: ['VND'],
+  },
+  {
+    name: 'Wallis and Futuna',
+    alpha2code: 'WF',
+    alpha3code: 'WLF',
+    callingCode: '681',
+    continent: 'Oceania',
+    currencies: ['XPF'],
+  },
+  {
+    name: 'Western Sahara',
+    alpha2code: 'EH',
+    alpha3code: 'ESH',
+    callingCode: '212',
+    continent: 'Africa',
+    currencies: ['MAD', 'DZD'],
+  },
+  {
+    name: 'Yemen',
+    alpha2code: 'YE',
+    alpha3code: 'YEM',
+    callingCode: '967',
+    continent: 'Asia',
+    currencies: ['YER'],
+  },
+  {
+    name: 'Zambia',
+    alpha2code: 'ZM',
+    alpha3code: 'ZMB',
+    callingCode: '260',
+    continent: 'Africa',
+    currencies: ['ZMW'],
+  },
+  {
+    name: 'Zimbabwe',
+    alpha2code: 'ZW',
+    alpha3code: 'ZWE',
+    callingCode: '263',
+    continent: 'Africa',
+    currencies: ['ZMW'],
+  },
+];
+````
+
+## File: src/modules/seed/currencies/currencies.ts
+````typescript
+export const currencies = [
+  {
+    code: 'USD',
+    label: 'dollar',
+    symbol: '$',
+  },
+  {
+    code: 'GBP',
+    label: 'pound sterling',
+    symbol: '£',
+  },
+  {
+    code: 'NGN',
+    label: 'naira',
+    symbol: '₦',
+  },
+];
+````
+
+## File: src/modules/seed/schemas/country.schema.ts
 ````typescript
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
-import mongoose, { Document } from 'mongoose';
-import { User } from '../../user/schemas/user.schema'; // Adjust path
-import { Vehicle } from '../../driver/schemas/vehicle.schema'; // Adjust path
-import { RideStatus } from '../enums/ride-status.enum';
+import { Document } from 'mongoose';
 
-// Simple Point Schema for GeoJSON
-@Schema({ _id: false }) // No separate ID for point subdocuments
-class Point {
-  @Prop({ type: String, enum: ['Point'], required: true, default: 'Point' })
-  type: string;
-
-  @Prop({ type: [Number], required: true }) // [longitude, latitude]
-  coordinates: number[];
-}
-const PointSchema = SchemaFactory.createForClass(Point);
-
-export type RideDocument = Ride & Document;
-
-@Schema({ timestamps: true, collection: 'rides' })
-export class Ride {
+@Schema({
+  timestamps: true,
+})
+export class Country extends Document {
   @Prop({
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'User',
+    type: String,
     required: true,
-    index: true,
   })
-  driver: User;
-
-  @Prop({
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'Vehicle',
-    required: true,
-    index: true,
-  })
-  vehicle: Vehicle;
-
-  @Prop({ type: PointSchema, required: true })
-  origin: Point;
-
-  @Prop({ type: PointSchema, required: true })
-  destination: Point;
-
-  @Prop({ type: [PointSchema], default: [] }) // Array of waypoints
-  waypoints?: Point[];
-
-  @Prop({ type: String, required: true })
-  originAddress: string; // User-friendly origin address
-
-  @Prop({ type: String, required: true })
-  destinationAddress: string; // User-friendly destination address
-
-  @Prop({ type: Date, required: true, index: true })
-  departureTime: Date;
-
-  @Prop({ type: Date }) // Can be calculated/updated
-  estimatedArrivalTime?: Date;
-
-  @Prop({ type: Number, required: true, min: 0 })
-  initialSeats: number; // Seats the vehicle had when ride was created
-
-  @Prop({ type: Number, required: true, min: 0 })
-  availableSeats: number; // Current available seats (decreases with bookings)
-
-  @Prop({ type: Number, required: true, min: 0 })
-  pricePerSeat: number;
+  name: string;
 
   @Prop({
     type: String,
-    enum: RideStatus,
-    default: RideStatus.SCHEDULED,
-    index: true,
+    required: true,
   })
-  status: RideStatus;
+  alpha2code: string;
 
-  @Prop({ type: [String], default: [] })
-  preferences?: string[]; // e.g., "No Smoking", "Pets Allowed"
+  @Prop({
+    type: String,
+    required: true,
+  })
+  alpha3code: string;
 
-  @Prop({ type: mongoose.Schema.Types.ObjectId, ref: 'Booking', default: [] })
-  bookings: mongoose.Schema.Types.ObjectId[]; // Refs to Booking documents for this ride
+  @Prop({
+    type: String,
+    required: true,
+  })
+  callingCode: string;
 
-  @Prop({ type: PointSchema, required: false, index: '2dsphere' }) // Add geospatial index if querying by location
-  currentLocation?: Point;
+  @Prop({
+    type: String,
+    required: true,
+  })
+  continent: string;
 
-  @Prop({ type: Date })
-  lastLocationUpdate?: Date;
+  @Prop({
+    type: [String],
+    required: false,
+    default: [],
+  })
+  currencies: string[];
 }
 
-export const RideSchema = SchemaFactory.createForClass(Ride);
+export const CountrySchema = SchemaFactory.createForClass(Country);
+````
 
-// Geospatial index for efficient location-based searching
-RideSchema.index({ origin: '2dsphere', destination: '2dsphere' });
-// Optional: Index departure time for sorting/filtering
-RideSchema.index({ departureTime: 1 });
+## File: src/modules/seed/schemas/currency.schema.ts
+````typescript
+import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
+import { Document } from 'mongoose';
+
+@Schema({
+  timestamps: true,
+})
+export class Currency extends Document {
+  @Prop({ type: String })
+  code: string;
+
+  @Prop({ required: false, type: String })
+  label: string;
+
+  @Prop({ required: false, type: String })
+  symbol: string;
+
+  @Prop({
+    type: Date,
+    default: null,
+  })
+  deletedAt?: Date;
+}
+
+export const CurrencySchema = SchemaFactory.createForClass(Currency);
+````
+
+## File: src/modules/seed/schemas/index.ts
+````typescript
+export * from './country.schema';
+export * from './currency.schema';
+````
+
+## File: src/modules/seed/data.ts
+````typescript
+import {
+  ActionEnum,
+  IRole,
+  RoleNameEnum,
+  Subject,
+  UserLoginStrategy,
+} from 'src/core/interfaces';
+
+export const admins: { data: any; role: RoleNameEnum }[] = [
+  {
+    data: {
+      email: 'superadmin@traveazi.com',
+      firstName: 'Super',
+      lastName: 'Admin',
+      strategy: UserLoginStrategy.LOCAL,
+      emailConfirm: true,
+      roles: [],
+    },
+    role: RoleNameEnum.SuperAdmin,
+  },
+
+  {
+    data: {
+      email: 'admin@traveazi.com',
+      firstName: 'Admin',
+      lastName: 'Xtern',
+      strategy: UserLoginStrategy.LOCAL,
+      emailConfirm: true,
+      roles: [],
+    },
+    role: RoleNameEnum.Admin,
+  },
+  {
+    data: {
+      email: 'support@traveazi.com',
+      firstName: 'Support',
+      lastName: 'Xtern',
+      strategy: UserLoginStrategy.LOCAL,
+      emailConfirm: true,
+      roles: [],
+    },
+    role: RoleNameEnum.Support,
+  },
+];
+
+export const roleSeed: IRole[] = [
+  {
+    name: RoleNameEnum.SuperAdmin,
+    description: 'Super Admin',
+    actions: [
+      {
+        action: ActionEnum.Manage,
+        description: 'User management',
+        subject: Subject.UserManagement,
+      },
+    ],
+  },
+  {
+    name: RoleNameEnum.Admin,
+    description: 'Admin',
+    actions: [
+      {
+        action: ActionEnum.Manage,
+        description: 'User management',
+        subject: Subject.UserManagement,
+      },
+    ],
+  },
+  {
+    name: RoleNameEnum.Support,
+    description: 'Support',
+    actions: [
+      {
+        action: ActionEnum.Read,
+        description: 'User management',
+        subject: Subject.UserManagement,
+      },
+    ],
+  },
+  {
+    name: RoleNameEnum.Passenger,
+    description: 'Passenger',
+    actions: [],
+  },
+  {
+    name: RoleNameEnum.Driver,
+    description: 'Driver',
+    actions: [],
+  },
+];
+````
+
+## File: src/modules/seed/seed.module.ts
+````typescript
+import { Module } from '@nestjs/common';
+
+import { AuthModule } from '../auth/auth.module';
+import { UserModule } from '../user/user.module';
+import { SeedService } from './seed.service';
+import { MongooseModule } from '@nestjs/mongoose';
+import { Country, CountrySchema, Currency, CurrencySchema } from './schemas';
+import { roleSchema, Role } from '../user/schemas/role.schema';
+import { UserSchema, User } from '../user/schemas/user.schema';
+
+@Module({
+  imports: [
+    AuthModule,
+    UserModule,
+    MongooseModule.forFeature([
+      { name: Country.name, schema: CountrySchema },
+      { name: User.name, schema: UserSchema },
+      { name: Role.name, schema: roleSchema },
+      { name: Currency.name, schema: CurrencySchema },
+    ]),
+  ],
+  providers: [SeedService],
+  exports: [SeedService],
+})
+export class SeedModule {}
+````
+
+## File: src/modules/seed/seed.service.ts
+````typescript
+import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
+
+import { Country, Currency } from './schemas';
+import { InjectModel } from '@nestjs/mongoose';
+import { Model } from 'mongoose';
+import { countriesSeed } from './countries/countries';
+import { admins, roleSeed } from './data';
+import { UserLoginStrategy } from 'src/core/interfaces';
+import { AuthService } from '../auth/auth.service';
+import { PortalType } from 'src/core/enums/auth.enum';
+import { Role } from '../user/schemas/role.schema';
+import { currencies } from './currencies/currencies';
+
+@Injectable()
+export class SeedService implements OnApplicationBootstrap {
+  private logger = new Logger(SeedService.name);
+
+  constructor(
+    @InjectModel(Country.name)
+    private countryRepo: Model<Country>,
+    @InjectModel(Role.name)
+    private roleRepo: Model<Role>,
+    @InjectModel(Currency.name)
+    private currencyRepo: Model<Currency>,
+    private authService: AuthService,
+  ) {}
+
+  async onApplicationBootstrap() {
+    this.logger.log('Seeding...');
+    await this.seedCountries();
+    await this.seedRoles();
+    await this.createAdmins();
+    await this.seedCurrencies();
+    this.logger.log('Seeding completed');
+  }
+
+  async seedCountries() {
+    const countryCount = await this.countryRepo.countDocuments({});
+
+    if (countryCount > 0) {
+      this.logger.log('Seeding country actions skipped');
+      return;
+    }
+
+    this.logger.log('Seeding countries...');
+    await this.countryRepo.insertMany(countriesSeed);
+    this.logger.log('Seeding countries done');
+  }
+
+  async createAdmins() {
+    this.logger.log('Seeding traveazi admins...!!!');
+    const password = 'Traveazi123$';
+
+    await Promise.allSettled(
+      admins.map(async ({ data }) => {
+        await this.authService.createUser(
+          {
+            email: data.email.toLowerCase(),
+            password,
+            firstName: data.firstName,
+            lastName: data.lastName,
+            termsAccepted: true,
+          },
+          {
+            strategy: UserLoginStrategy.LOCAL,
+            portalType: PortalType.ADMIN,
+            adminCreated: true,
+          },
+        );
+      }),
+    );
+    this.logger.log('Seeding admins completed');
+  }
+
+  async seedRoles() {
+    this.logger.log('Seeding role actions...');
+    for (const role of roleSeed) {
+      try {
+        const roleInstance = await this.roleRepo.findOne({
+          name: role.name,
+        });
+
+        if (!roleInstance) {
+          this.logger.log(`Creating role ${role.name}`);
+          await this.roleRepo.create(role);
+          continue;
+        }
+
+        await this.roleRepo.updateOne(
+          { _id: roleInstance._id },
+          { actions: role.actions },
+        );
+      } catch (err) {
+        this.logger.error(err);
+      }
+    }
+
+    this.logger.log('Seeding role actions completed');
+  }
+
+  async seedCurrencies() {
+    const currencyCount = await this.currencyRepo.countDocuments({});
+    this.logger.log(`currency count is ${currencyCount}`);
+    if (currencyCount > 0) return;
+
+    await this.currencyRepo.insertMany(currencies, { lean: true });
+
+    this.logger.log('Seeding Currencies completed');
+  }
+}
 ````
 
 ## File: src/modules/storage/constants/index.ts
@@ -5616,6 +7972,19 @@ export class UpdateEmergencyContactsDto {
 }
 ````
 
+## File: src/modules/user/dto/register-device.dto.ts
+````typescript
+import { ApiProperty } from '@nestjs/swagger';
+import { IsNotEmpty, IsString } from 'class-validator';
+
+export class RegisterDeviceDto {
+  @ApiProperty({ description: 'FCM device registration token' })
+  @IsString()
+  @IsNotEmpty()
+  deviceToken: string;
+}
+````
+
 ## File: src/modules/user/schemas/action.schema.ts
 ````typescript
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
@@ -5697,103 +8066,6 @@ export class Token extends Document {
 }
 
 export const TokenSchema = SchemaFactory.createForClass(Token);
-````
-
-## File: src/modules/user/user.controller.ts
-````typescript
-import {
-  ApiBearerAuth,
-  ApiOperation,
-  ApiResponse,
-  ApiTags,
-  ApiBody,
-} from '@nestjs/swagger';
-import {
-  Patch,
-  Controller,
-  UseGuards,
-  Logger,
-  Body,
-  Delete,
-  Post,
-} from '@nestjs/common'; // Import Patch
-import { UpdateEmergencyContactsDto } from '../user/dto/emergency-contact.dto'; // Import DTO
-import { UserService } from '../user/user.service'; // Import UserService
-import { AuthGuard } from 'src/core/guards';
-import { IUser } from 'src/core/interfaces';
-import { User } from 'src/core/decorators';
-import { RegisterDeviceDto } from '../user/dto/register-device.dto';
-
-@ApiTags('User') // Modify tag if adding profile endpoints
-@Controller('user')
-export class UserController {
-  private readonly logger = new Logger(UserController.name);
-  constructor(
-    private userService: UserService, // Inject UserService
-  ) {}
-
-  // ... (existing auth endpoints) ...
-
-  @Patch('/profile/emergency-contacts') // Use PATCH for updates
-  @UseGuards(AuthGuard)
-  @ApiBearerAuth()
-  @ApiOperation({ summary: "Update the logged-in user's emergency contacts" })
-  @ApiResponse({
-    status: 200,
-    description: 'Emergency contacts updated successfully.' /* type: User? */,
-  })
-  @ApiResponse({
-    status: 400,
-    description: 'Bad Request - Invalid input data.',
-  })
-  @ApiResponse({ status: 401, description: 'Unauthorized.' })
-  @ApiResponse({ status: 404, description: 'Not Found - User not found.' })
-  async updateEmergencyContacts(
-    @User() currentUser: IUser,
-    @Body() updateDto: UpdateEmergencyContactsDto,
-  ): Promise<{ message: string; data?: any }> {
-    // Return success message
-    this.logger.log(`User ${currentUser._id} updating emergency contacts.`);
-    await this.userService.updateEmergencyContacts(currentUser._id, updateDto);
-    return {
-      message: 'Emergency contacts updated successfully.',
-      // Optionally return updated contacts or user profile snippet
-    };
-  }
-
-  @Post('devices/register')
-  @UseGuards(AuthGuard)
-  @ApiBearerAuth()
-  @ApiOperation({ summary: 'Register a device token for push notifications' })
-  @ApiResponse({ status: 200, description: 'Device registered successfully.' })
-  @ApiResponse({ status: 401, description: 'Unauthorized.' })
-  @ApiResponse({ status: 400, description: 'Bad Request - Missing token.' })
-  async registerDevice(
-    @User() currentUser: IUser,
-    @Body() dto: RegisterDeviceDto,
-  ): Promise<{ message: string }> {
-    await this.userService.addDeviceToken(currentUser._id, dto.deviceToken);
-    return { message: 'Device registered successfully.' };
-  }
-
-  @Delete('devices/unregister') // Use DELETE method
-  @UseGuards(AuthGuard)
-  @ApiBearerAuth()
-  @ApiOperation({ summary: 'Unregister a device token for push notifications' })
-  @ApiResponse({
-    status: 200,
-    description: 'Device unregistered successfully.',
-  })
-  @ApiResponse({ status: 401, description: 'Unauthorized.' })
-  @ApiBody({ type: RegisterDeviceDto }) // Reuse DTO for body structure
-  async unregisterDevice(
-    @User() currentUser: IUser,
-    @Body() dto: RegisterDeviceDto, // Get token from body
-  ): Promise<{ message: string }> {
-    await this.userService.removeDeviceToken(currentUser._id, dto.deviceToken);
-    return { message: 'Device unregistered successfully.' };
-  }
-}
 ````
 
 ## File: src/modules/app.gateway.ts
@@ -5893,68 +8165,6 @@ module.exports = {
     '@typescript-eslint/no-explicit-any': 'off',
   },
 };
-````
-
-## File: .gitignore
-````
-# compiled output
-/dist
-/node_modules
-/build
-
-# Logs
-logs
-*.log
-npm-debug.log*
-pnpm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-lerna-debug.log*
-
-# OS
-.DS_Store
-
-# Tests
-/coverage
-/.nyc_output
-
-# IDEs and editors
-/.idea
-.project
-.classpath
-.c9/
-*.launch
-.settings/
-*.sublime-workspace
-
-# IDE - VSCode
-.vscode/*
-!.vscode/settings.json
-!.vscode/tasks.json
-!.vscode/launch.json
-!.vscode/extensions.json
-
-# dotenv environment variable files
-.env
-.env.development.local
-.env.test.local
-.env.production.local
-.env.local
-
-# temp directory
-.temp
-.tmp
-
-# Runtime data
-pids
-*.pid
-*.seed
-*.pid.lock
-
-# Diagnostic reports (https://nodejs.org/api/report.html)
-report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
-
-/config/firebase-service-account.json
 ````
 
 ## File: .prettierrc
@@ -6366,24 +8576,6 @@ export const SLA_WARNING = 'SLA Warning';
 export * from './user.decorator';
 ````
 
-## File: src/core/decorators/user.decorator.ts
-````typescript
-/* eslint-disable @typescript-eslint/no-explicit-any */
-import { createParamDecorator, ExecutionContext } from '@nestjs/common';
-
-import { IUser } from '../../core/interfaces';
-
-export const User = createParamDecorator<any, any>(
-  (data: string, ctx: ExecutionContext): IUser | any => {
-    const request = ctx.switchToHttp().getRequest();
-    const user = request.user;
-
-    // eslint-disable-next-line security/detect-object-injection
-    return data ? user[data] : user;
-  },
-);
-````
-
 ## File: src/core/dto/index.ts
 ````typescript
 export * from './page-meta.dto';
@@ -6397,6 +8589,31 @@ export enum PortalType {
   DRIVER = 'DRIVER',
   PASSENGER = 'PASSENGER',
   ADMIN = 'ADMIN',
+}
+````
+
+## File: src/core/enums/user.enum.ts
+````typescript
+export enum UserGender {
+  MALE = 'MALE',
+  FEMALE = 'FEMALE',
+}
+
+export enum UserStatus {
+  ACTIVE = 'ACTIVE', // Verified and active
+  INACTIVE = 'INACTIVE', // Deactivated by user or admin
+  PENDING_EMAIL_VERIFICATION = 'PENDING_EMAIL_VERIFICATION', // Registered but email not verified
+  PENDING_DRIVER_VERIFICATION = 'PENDING_DRIVER_VERIFICATION', // Email verified, driver docs submitted, pending admin approval
+  SUSPENDED = 'SUSPENDED', // Temporarily suspended by admin
+  BANNED = 'BANNED', // Permanently banned by admin
+  PENDING_PROFILE_COMPLETION = 'PENDING_PROFILE_COMPLETION', // Registered but profile not completed
+}
+
+export enum DriverVerificationStatus {
+  NOT_SUBMITTED = 'NOT_SUBMITTED',
+  PENDING = 'PENDING',
+  VERIFIED = 'VERIFIED',
+  REJECTED = 'REJECTED',
 }
 ````
 
@@ -6482,40 +8699,6 @@ export * from './date.helper';
 ## File: src/core/interfaces/http/index.ts
 ````typescript
 export * from './http.interface';
-````
-
-## File: src/core/interfaces/user/role.interface.ts
-````typescript
-export enum RoleNameEnum {
-  Admin = 'ADMIN',
-  Driver = 'DRIVER',
-  Passenger = 'PASSENGER',
-}
-
-export enum ActionEnum {
-  Manage = 'manage',
-  Create = 'create',
-  Read = 'read',
-  Update = 'update',
-  Delete = 'delete',
-}
-
-export enum Subject {
-  UserManagement = 'USER_MANAGEMENT',
-  RideManagement = 'RIDE_MANAGEMENT',
-}
-
-export interface IAction {
-  action: ActionEnum;
-  subject: Subject;
-  description: string;
-}
-
-export interface IRole {
-  name: RoleNameEnum;
-  description: string;
-  actions: IAction[];
-}
 ````
 
 ## File: src/global/secrets/module.ts
@@ -6909,553 +9092,6 @@ import { PaymentModule } from '../payment/payment.module';
   exports: [BookingService], // Export if needed
 })
 export class BookingModule {}
-````
-
-## File: src/modules/booking/booking.service.ts
-````typescript
-import { Injectable, Logger, HttpException } from '@nestjs/common';
-import { InjectModel } from '@nestjs/mongoose';
-import mongoose, { Model } from 'mongoose';
-import { Booking, BookingDocument } from './schemas/booking.schema';
-import { Ride, RideDocument } from '../rides/schemas/ride.schema';
-import { User, UserDocument } from '../user/schemas/user.schema';
-import { CreateBookingDto } from './dto/create-booking.dto';
-import { BookingStatus } from './enums/booking-status.enum';
-import { RideStatus } from '../rides/enums/ride-status.enum';
-import { ErrorHelper } from 'src/core/helpers';
-import { PaymentStatus } from './enums/payment-status.enum';
-import { PaginationDto, PaginationResultDto } from 'src/core/dto';
-import { PaymentService } from '../payment/payment.service';
-import { NotificationService } from '../notification/notification.service';
-
-@Injectable()
-export class BookingService {
-  private readonly logger = new Logger(BookingService.name);
-
-  constructor(
-    @InjectModel(Booking.name) private bookingModel: Model<Booking>,
-    @InjectModel(Ride.name) private rideModel: Model<RideDocument>,
-    @InjectModel(User.name) private userModel: Model<User>,
-    private readonly notificationService: NotificationService,
-    private readonly paymentService: PaymentService,
-  ) {}
-
-  async requestBooking(
-    passengerId: string,
-    dto: CreateBookingDto,
-  ): Promise<BookingDocument> {
-    this.logger.log(
-      `Passenger ${passengerId} requesting booking for ride ${dto.rideId}`,
-    );
-
-    // 1. Validate Passenger Exists (although AuthGuard does this, good practice)
-    const passenger = await this.userModel.findById(passengerId);
-    if (!passenger) {
-      ErrorHelper.NotFoundException('Passenger user not found.'); // Should not happen if AuthGuard is used
-    }
-
-    // 2. Validate Ride Exists and is Suitable
-    const ride = await this.rideModel.findById(dto.rideId);
-    if (!ride) {
-      ErrorHelper.NotFoundException(`Ride with ID ${dto.rideId} not found.`);
-    }
-    if (ride.status !== RideStatus.SCHEDULED) {
-      ErrorHelper.BadRequestException(
-        'This ride is not available for booking (already started, completed, or cancelled).',
-      );
-    }
-    if (ride.driver.toString() === passengerId) {
-      ErrorHelper.BadRequestException(
-        'You cannot book a ride you are driving.',
-      );
-    }
-    if (ride.availableSeats < dto.seatsNeeded) {
-      ErrorHelper.BadRequestException(
-        `Not enough seats available. Only ${ride.availableSeats} left.`,
-      );
-    }
-
-    // 3. Check if Passenger Already Booked This Ride
-    const existingBooking = await this.bookingModel.findOne({
-      passenger: passengerId,
-      ride: dto.rideId,
-      status: {
-        $nin: [
-          BookingStatus.CANCELLED_BY_DRIVER,
-          BookingStatus.CANCELLED_BY_PASSENGER,
-          BookingStatus.REJECTED,
-        ],
-      }, // Check active/pending bookings
-    });
-    if (existingBooking) {
-      ErrorHelper.ConflictException(
-        'You have already requested or booked this ride.',
-      );
-    }
-
-    // 4. Prepare Booking Data
-    const totalPrice = ride.pricePerSeat * dto.seatsNeeded;
-    const bookingData = {
-      passenger: passengerId,
-      driver: ride.driver, // Store driver ID from ride
-      ride: dto.rideId,
-      seatsBooked: dto.seatsNeeded,
-      totalPrice: totalPrice,
-      status: BookingStatus.PENDING, // Initial status
-      paymentStatus:
-        totalPrice > 0 ? PaymentStatus.PENDING : PaymentStatus.NOT_REQUIRED, // Set payment status
-      pickupAddress: dto.pickupAddress, // Optional proposed address
-      dropoffAddress: dto.dropoffAddress,
-    };
-
-    // 5. Create and Save Booking
-    try {
-      const newBooking = new this.bookingModel(bookingData);
-      await newBooking.save();
-      this.logger.log(
-        `Booking ${newBooking._id} created successfully for ride ${dto.rideId} by passenger ${passengerId}`,
-      );
-
-      try {
-        const driver = await this.userModel
-          .findById(ride.driver)
-          .select('deviceTokens');
-
-        await this.notificationService.sendNotificationToUser(
-          driver._id.toString(),
-          'New Booking Request',
-          `Passenger ${passenger.firstName} wants to book ${newBooking.seatsBooked} seat(s) on your ride.`,
-          { bookingId: newBooking._id.toString(), type: 'BOOKING_REQUEST' },
-        );
-      } catch (notificationError) {
-        this.logger.error(
-          `Failed to send booking request notification to driver ${ride.driver}: ${notificationError.message}`,
-        );
-      }
-
-      return newBooking;
-    } catch (error) {
-      this.logger.error(
-        `Error creating booking for ride ${dto.rideId}: ${error.message}`,
-        error.stack,
-      );
-      ErrorHelper.InternalServerErrorException(
-        'Failed to create booking request.',
-      );
-    }
-  }
-
-  // --- Methods for Driver and Passenger booking management will be added below ---
-  async getRideBookings(
-    driverId: string,
-    rideId: string,
-  ): Promise<BookingDocument[]> {
-    this.logger.log(`Driver ${driverId} fetching bookings for ride ${rideId}`);
-    if (!mongoose.Types.ObjectId.isValid(rideId)) {
-      ErrorHelper.BadRequestException('Invalid Ride ID format.');
-    }
-
-    // Verify the ride exists and the user is the driver
-    const ride = await this.rideModel.findById(rideId).select('driver'); // Select only driver field
-    if (!ride) {
-      ErrorHelper.NotFoundException(`Ride with ID ${rideId} not found.`);
-    }
-    if (ride.driver.toString() !== driverId) {
-      ErrorHelper.ForbiddenException('You are not the driver of this ride.');
-    }
-
-    // Fetch bookings for this ride, populate passenger details
-    const bookings = await this.bookingModel
-      .find({ ride: rideId, driver: driverId })
-      .populate<{ passenger: UserDocument }>({
-        path: 'passenger',
-        select: 'firstName lastName avatar phoneNumber', // Select needed passenger info
-      })
-      .sort({ createdAt: -1 }) // Sort by newest first
-      .exec();
-
-    return bookings;
-  }
-
-  async confirmBooking(
-    driverId: string,
-    bookingId: string,
-  ): Promise<BookingDocument> {
-    this.logger.log(
-      `Driver ${driverId} attempting to confirm booking ${bookingId}`,
-    );
-    if (!mongoose.Types.ObjectId.isValid(bookingId)) {
-      ErrorHelper.BadRequestException('Invalid Booking ID format.');
-    }
-
-    const session = await this.bookingModel.db.startSession(); // Start mongoose session for transaction
-    session.startTransaction();
-
-    try {
-      // 1. Find Booking within session, verify driver and status
-      const booking = await this.bookingModel
-        .findById(bookingId)
-        .session(session);
-      if (!booking) {
-        ErrorHelper.NotFoundException(
-          `Booking with ID ${bookingId} not found.`,
-        );
-      }
-      if (booking.driver.toString() !== driverId) {
-        ErrorHelper.ForbiddenException(
-          'You cannot confirm a booking for a ride you are not driving.',
-        );
-      }
-      if (booking.status !== BookingStatus.PENDING) {
-        ErrorHelper.BadRequestException(
-          `Booking is not in PENDING state (current state: ${booking.status}).`,
-        );
-      }
-
-      // 2. Find Ride within session, verify seats
-      const ride = await this.rideModel.findById(booking.ride).session(session);
-      if (!ride) {
-        // Should not happen if booking exists, but good check
-        ErrorHelper.NotFoundException(
-          `Associated ride ${booking.ride} not found.`,
-        );
-      }
-      if (ride.availableSeats < booking.seatsBooked) {
-        ErrorHelper.BadRequestException(
-          `Not enough seats available on the ride to confirm this booking (needed: ${booking.seatsBooked}, available: ${ride.availableSeats}).`,
-        );
-      }
-
-      // 3. Update Ride: Decrease available seats (atomic operation within transaction)
-      const rideUpdateResult = await this.rideModel.updateOne(
-        { _id: ride._id, availableSeats: { $gte: booking.seatsBooked } }, // Ensure seats didn't change concurrently
-        { $inc: { availableSeats: -booking.seatsBooked } },
-        { session },
-      );
-
-      if (rideUpdateResult.modifiedCount === 0) {
-        // This means the seats were likely taken by another concurrent confirmation
-        ErrorHelper.ConflictException(
-          'Seats became unavailable while confirming. Please refresh.',
-        );
-      }
-
-      // 4. Update Booking Status
-      booking.status = BookingStatus.CONFIRMED;
-      // Optionally update pickup/dropoff if driver agrees/modifies them
-      await booking.save({ session }); // Save booking changes within session
-
-      // TODO: Trigger Payment Initiation (Phase 3)
-      // if (booking.totalPrice > 0) {
-      //      await this.paymentService.initializeTransactionForBooking(booking);
-      // }
-
-      // TODO: Trigger Notification to Passenger (Phase 6)
-      // await this.notificationService.notifyPassengerBookingConfirmed(booking.passenger, booking);
-
-      await session.commitTransaction(); // Commit transaction if all steps succeed
-      this.logger.log(
-        `Booking ${bookingId} confirmed successfully by driver ${driverId}.`,
-      );
-      return booking;
-    } catch (error) {
-      await session.abortTransaction(); // Rollback on any error
-      this.logger.error(
-        `Error confirming booking ${bookingId}: ${error.message}`,
-        error.stack,
-      );
-      // Rethrow specific exceptions or a generic one
-      if (error instanceof HttpException) throw error;
-      ErrorHelper.InternalServerErrorException('Failed to confirm booking.');
-    } finally {
-      session.endSession(); // Always end the session
-    }
-  }
-
-  async rejectBooking(
-    driverId: string,
-    bookingId: string,
-  ): Promise<BookingDocument> {
-    this.logger.log(
-      `Driver ${driverId} attempting to reject booking ${bookingId}`,
-    );
-    if (!mongoose.Types.ObjectId.isValid(bookingId)) {
-      ErrorHelper.BadRequestException('Invalid Booking ID format.');
-    }
-
-    const booking = await this.bookingModel.findById(bookingId);
-
-    if (!booking) {
-      ErrorHelper.NotFoundException(`Booking with ID ${bookingId} not found.`);
-    }
-    if (booking.driver.toString() !== driverId) {
-      ErrorHelper.ForbiddenException(
-        'You cannot reject a booking for a ride you are not driving.',
-      );
-    }
-    if (booking.status !== BookingStatus.PENDING) {
-      ErrorHelper.BadRequestException(
-        `Booking is not in PENDING state (current state: ${booking.status}). Cannot reject.`,
-      );
-    }
-
-    booking.status = BookingStatus.REJECTED; // Use REJECTED instead of CANCELLED_BY_DRIVER for clarity
-    await booking.save();
-
-    this.logger.log(
-      `Booking ${bookingId} rejected successfully by driver ${driverId}.`,
-    );
-
-    // TODO: Trigger Notification to Passenger (Phase 6)
-    // await this.notificationService.notifyPassengerBookingRejected(booking.passenger, booking);
-
-    return booking;
-  }
-
-  async getMyBookings(
-    passengerId: string,
-    paginationDto: PaginationDto,
-  ): Promise<PaginationResultDto<BookingDocument>> {
-    this.logger.log(`Passenger ${passengerId} fetching their bookings.`);
-    const { limit, page, order } = paginationDto;
-    const skip = paginationDto.skip;
-
-    const conditions = { passenger: passengerId };
-
-    const query = this.bookingModel
-      .find(conditions)
-      .populate<{ driver: UserDocument }>({
-        path: 'driver',
-        select: 'firstName lastName avatar',
-      })
-      .populate<{ ride: RideDocument }>({
-        path: 'ride',
-        select:
-          'originAddress destinationAddress departureTime status pricePerSeat', // Select key ride info
-        populate: { path: 'vehicle', select: 'make model color' }, // Populate nested vehicle info
-      })
-      .sort({ createdAt: order === 'ASC' ? 1 : -1 })
-      .skip(skip)
-      .limit(limit);
-
-    const [results, totalCount] = await Promise.all([
-      query.exec(),
-      this.bookingModel.countDocuments(conditions),
-    ]);
-
-    return new PaginationResultDto(results, totalCount, { page, limit });
-  }
-
-  async cancelBooking(
-    passengerId: string,
-    bookingId: string,
-  ): Promise<BookingDocument> {
-    this.logger.log(
-      `Passenger ${passengerId} attempting to cancel booking ${bookingId}`,
-    );
-    if (!mongoose.Types.ObjectId.isValid(bookingId)) {
-      ErrorHelper.BadRequestException('Invalid Booking ID format.');
-    }
-
-    const session = await this.bookingModel.db.startSession();
-    session.startTransaction();
-
-    try {
-      // 1. Find booking, verify passenger owns it and check status
-      const booking = await this.bookingModel
-        .findById(bookingId)
-        .session(session);
-      if (!booking) {
-        ErrorHelper.NotFoundException(
-          `Booking with ID ${bookingId} not found.`,
-        );
-      }
-      if (booking.passenger.toString() !== passengerId) {
-        ErrorHelper.ForbiddenException(
-          'You can only cancel your own bookings.',
-        );
-      }
-
-      // Define cancellable statuses
-      const cancellableStatuses = [
-        BookingStatus.PENDING,
-        BookingStatus.CONFIRMED,
-      ];
-      if (!cancellableStatuses.includes(booking.status)) {
-        ErrorHelper.BadRequestException(
-          `Cannot cancel booking with status ${booking.status}.`,
-        );
-      }
-
-      const wasConfirmed = booking.status === BookingStatus.CONFIRMED;
-
-      // 2. Update Booking Status
-      booking.status = BookingStatus.CANCELLED_BY_PASSENGER;
-      await booking.save({ session });
-
-      // 3. If booking was confirmed, increment available seats on ride
-      if (wasConfirmed) {
-        const rideUpdateResult = await this.rideModel.updateOne(
-          { _id: booking.ride },
-          { $inc: { availableSeats: booking.seatsBooked } }, // Increment seats back
-          { session },
-        );
-        // Log if ride wasn't found or not updated, but maybe don't fail the cancellation
-        if (rideUpdateResult.modifiedCount === 0) {
-          this.logger.warn(
-            `Could not increment seats for ride ${booking.ride} during cancellation of booking ${bookingId}. Ride might be deleted or status changed.`,
-          );
-        } else {
-          this.logger.log(
-            `Incremented available seats for ride ${booking.ride} by ${booking.seatsBooked}.`,
-          );
-        }
-      }
-
-      // TODO: Handle Refunds if payment was made (Phase 3)
-      // if (wasConfirmed && booking.paymentStatus === PaymentStatus.PAID) {
-      //      await this.paymentService.processRefundForBooking(booking);
-      // }
-
-      // TODO: Trigger Notification to Driver (Phase 6)
-      // await this.notificationService.notifyDriverBookingCancelled(booking.driver, booking);
-
-      await session.commitTransaction();
-      this.logger.log(
-        `Booking ${bookingId} cancelled successfully by passenger ${passengerId}.`,
-      );
-      return booking;
-    } catch (error) {
-      await session.abortTransaction();
-      this.logger.error(
-        `Error cancelling booking ${bookingId}: ${error.message}`,
-        error.stack,
-      );
-      if (error instanceof HttpException) throw error;
-      ErrorHelper.InternalServerErrorException('Failed to cancel booking.');
-    } finally {
-      session.endSession();
-    }
-  }
-
-  async initiateBookingPayment(
-    passengerId: string,
-    bookingId: string,
-  ): Promise<{
-    authorization_url: string;
-    reference: string;
-    access_code: string;
-  }> {
-    this.logger.log(
-      `Passenger ${passengerId} initiating payment for booking ${bookingId}`,
-    );
-    if (!mongoose.Types.ObjectId.isValid(bookingId)) {
-      ErrorHelper.BadRequestException('Invalid Booking ID format.');
-    }
-
-    // 1. Find booking and verify ownership and status
-    const booking = await this.bookingModel
-      .findById(bookingId)
-      .populate<{ passenger: UserDocument }>('passenger', 'email'); // Populate passenger email
-
-    if (!booking) {
-      ErrorHelper.NotFoundException(`Booking with ID ${bookingId} not found.`);
-    }
-    if (booking.passenger._id.toString() !== passengerId) {
-      ErrorHelper.ForbiddenException('You can only pay for your own bookings.');
-    }
-    // Allow payment only if CONFIRMED and PENDING payment
-    if (booking.status !== BookingStatus.CONFIRMED) {
-      ErrorHelper.BadRequestException(
-        `Booking must be confirmed by the driver before payment (current status: ${booking.status}).`,
-      );
-    }
-    if (booking.paymentStatus !== PaymentStatus.PENDING) {
-      // Allow retrying FAILED? For now, only PENDING.
-      ErrorHelper.BadRequestException(
-        `Payment for this booking is not pending (current status: ${booking.paymentStatus}).`,
-      );
-    }
-    if (booking.totalPrice <= 0) {
-      ErrorHelper.BadRequestException('This booking does not require payment.');
-    }
-
-    // 2. Call Payment Service to initialize transaction
-    try {
-      // Convert NGN price to kobo for Paystack
-      const amountInKobo = Math.round(booking.totalPrice * 100);
-      const paymentData = await this.paymentService.initializeTransaction(
-        amountInKobo,
-        booking.passenger.email, // Use passenger's email
-        bookingId,
-        passengerId,
-      );
-
-      // 3. Store transaction reference on the booking (important for webhook matching)
-      await this.bookingModel.updateOne(
-        { _id: bookingId },
-        { $set: { transactionRef: paymentData.reference } },
-      );
-      this.logger.log(
-        `Stored Paystack reference ${paymentData.reference} for booking ${bookingId}`,
-      );
-
-      return paymentData; // Return { authorization_url, reference, access_code }
-    } catch (error) {
-      this.logger.error(
-        `Error initiating payment for booking ${bookingId}: ${error.message}`,
-        error.stack,
-      );
-      // Rethrow the error from PaymentService or a generic one
-      if (error instanceof HttpException) throw error;
-      ErrorHelper.InternalServerErrorException('Failed to initiate payment.');
-    }
-  }
-
-  async completeBookingByDriver(
-    driverId: string,
-    bookingId: string,
-  ): Promise<BookingDocument> {
-    this.logger.log(
-      `Driver ${driverId} attempting to mark booking ${bookingId} as completed.`,
-    );
-    if (!mongoose.Types.ObjectId.isValid(bookingId)) {
-      ErrorHelper.BadRequestException('Invalid Booking ID format.');
-    }
-
-    // 1. Find booking, verify driver and status
-    const booking = await this.bookingModel.findById(bookingId);
-    if (!booking) {
-      ErrorHelper.NotFoundException(`Booking with ID ${bookingId} not found.`);
-    }
-    if (booking.driver.toString() !== driverId) {
-      ErrorHelper.ForbiddenException(
-        'You can only complete bookings for rides you are driving.',
-      );
-    }
-    // Allow completion only if CONFIRMED (or potentially IN_PROGRESS if you add that status)
-    if (booking.status !== BookingStatus.CONFIRMED) {
-      ErrorHelper.BadRequestException(
-        `Booking must be confirmed to be marked as completed (current status: ${booking.status}).`,
-      );
-    }
-
-    // Optionally: Check if Ride departureTime has passed significantly
-
-    // 2. Update Status
-    booking.status = BookingStatus.COMPLETED;
-    await booking.save();
-
-    this.logger.log(
-      `Booking ${bookingId} marked as COMPLETED by driver ${driverId}.`,
-    );
-
-    // TODO: Trigger Notification to Passenger (Phase 6)
-    // TODO: Check if all bookings for the ride are completed/cancelled, then update Ride status (maybe background job)
-
-    return booking;
-  }
-}
 ````
 
 ## File: src/modules/driver/schemas/vehicle.schema.ts
@@ -8296,6 +9932,104 @@ export class MailService {
 }
 ````
 
+## File: src/modules/rides/schemas/ride.schema.ts
+````typescript
+import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
+import mongoose, { Document } from 'mongoose';
+import { User } from '../../user/schemas/user.schema'; // Adjust path
+import { Vehicle } from '../../driver/schemas/vehicle.schema'; // Adjust path
+import { RideStatus } from '../enums/ride-status.enum';
+
+// Simple Point Schema for GeoJSON
+@Schema({ _id: false }) // No separate ID for point subdocuments
+class Point {
+  @Prop({ type: String, enum: ['Point'], required: true, default: 'Point' })
+  type: string;
+
+  @Prop({ type: [Number], required: true }) // [longitude, latitude]
+  coordinates: number[];
+}
+const PointSchema = SchemaFactory.createForClass(Point);
+
+export type RideDocument = Ride & Document;
+
+@Schema({ timestamps: true, collection: 'rides' })
+export class Ride {
+  @Prop({
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: true,
+    index: true,
+  })
+  driver: User;
+
+  @Prop({
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Vehicle',
+    required: true,
+    index: true,
+  })
+  vehicle: Vehicle;
+
+  @Prop({ type: PointSchema, required: true })
+  origin: Point;
+
+  @Prop({ type: PointSchema, required: true })
+  destination: Point;
+
+  @Prop({ type: [PointSchema], default: [] }) // Array of waypoints
+  waypoints?: Point[];
+
+  @Prop({ type: String, required: true })
+  originAddress: string; // User-friendly origin address
+
+  @Prop({ type: String, required: true })
+  destinationAddress: string; // User-friendly destination address
+
+  @Prop({ type: Date, required: true, index: true })
+  departureTime: Date;
+
+  @Prop({ type: Date }) // Can be calculated/updated
+  estimatedArrivalTime?: Date;
+
+  @Prop({ type: Number, required: true, min: 0 })
+  initialSeats: number; // Seats the vehicle had when ride was created
+
+  @Prop({ type: Number, required: true, min: 0 })
+  availableSeats: number; // Current available seats (decreases with bookings)
+
+  @Prop({ type: Number, required: true, min: 0 })
+  pricePerSeat: number;
+
+  @Prop({
+    type: String,
+    enum: RideStatus,
+    default: RideStatus.SCHEDULED,
+    index: true,
+  })
+  status: RideStatus;
+
+  @Prop({ type: [String], default: [] })
+  preferences?: string[]; // e.g., "No Smoking", "Pets Allowed"
+
+  @Prop({ type: mongoose.Schema.Types.ObjectId, ref: 'Booking', default: [] })
+  bookings: mongoose.Schema.Types.ObjectId[]; // Refs to Booking documents for this ride
+
+  @Prop({ type: PointSchema, required: false, index: '2dsphere' }) // Add geospatial index if querying by location
+  currentLocation?: Point;
+
+  @Prop({ type: Date })
+  lastLocationUpdate?: Date;
+}
+
+export const RideSchema = SchemaFactory.createForClass(Ride);
+
+// Geospatial index for efficient location-based searching
+RideSchema.index({ origin: '2dsphere', destination: '2dsphere' });
+// Optional: Index departure time for sorting/filtering
+RideSchema.index({ departureTime: 1 });
+````
+
 ## File: src/modules/rides/rides.controller.ts
 ````typescript
 import {
@@ -8648,144 +10382,101 @@ export class TwilioService {
 }
 ````
 
-## File: src/modules/user/schemas/user.schema.ts
+## File: src/modules/user/user.controller.ts
 ````typescript
-import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
-import mongoose, { Document } from 'mongoose';
-import { Role } from './role.schema';
 import {
-  UserGender,
-  UserStatus,
-  DriverVerificationStatus,
-} from 'src/core/enums/user.enum';
-import { UserLoginStrategy } from 'src/core/interfaces';
-import { Vehicle } from '../../driver/schemas/vehicle.schema';
+  ApiBearerAuth,
+  ApiOperation,
+  ApiResponse,
+  ApiTags,
+  ApiBody,
+} from '@nestjs/swagger';
+import {
+  Patch,
+  Controller,
+  UseGuards,
+  Logger,
+  Body,
+  Delete,
+  Post,
+} from '@nestjs/common'; // Import Patch
+import { UpdateEmergencyContactsDto } from '../user/dto/emergency-contact.dto'; // Import DTO
+import { UserService } from '../user/user.service'; // Import UserService
+import { AuthGuard } from 'src/core/guards';
+import { IUser } from 'src/core/interfaces';
+import { User } from 'src/core/decorators';
+import { RegisterDeviceDto } from '../user/dto/register-device.dto';
 
-export type UserDocument = User & Document;
+@ApiTags('User') // Modify tag if adding profile endpoints
+@Controller('user')
+export class UserController {
+  private readonly logger = new Logger(UserController.name);
+  constructor(
+    private userService: UserService, // Inject UserService
+  ) {}
 
-@Schema({ timestamps: true })
-export class User {
-  @Prop({ type: String, required: true, trim: true })
-  firstName: string;
+  // ... (existing auth endpoints) ...
 
-  @Prop({ type: String, required: true, trim: true })
-  lastName: string;
-
-  @Prop({
-    type: String,
-    required: true,
-    unique: true,
-    lowercase: true,
-    trim: true,
-    index: true,
+  @Patch('/profile/emergency-contacts') // Use PATCH for updates
+  @UseGuards(AuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: "Update the logged-in user's emergency contacts" })
+  @ApiResponse({
+    status: 200,
+    description: 'Emergency contacts updated successfully.' /* type: User? */,
   })
-  email: string;
-
-  @Prop({ type: String, required: false, select: false }) // Required only for LOCAL strategy initially
-  password?: string;
-
-  @Prop({ type: String, unique: true, sparse: true, index: true }) // Unique phone number, sparse allows multiple nulls
-  phoneNumber?: string;
-
-  @Prop({ type: Boolean, default: false })
-  phoneVerified: boolean;
-
-  @Prop({ type: Boolean, default: false })
-  emailConfirm: boolean;
-
-  @Prop({ type: String, enum: UserGender })
-  gender?: UserGender;
-
-  @Prop({ type: String })
-  avatar?: string;
-
-  @Prop({ type: String })
-  about?: string;
-
-  @Prop({ type: String })
-  country?: string;
-
-  @Prop({
-    type: String,
-    enum: UserStatus,
-    default: UserStatus.PENDING_EMAIL_VERIFICATION,
+  @ApiResponse({
+    status: 400,
+    description: 'Bad Request - Invalid input data.',
   })
-  status: UserStatus;
+  @ApiResponse({ status: 401, description: 'Unauthorized.' })
+  @ApiResponse({ status: 404, description: 'Not Found - User not found.' })
+  async updateEmergencyContacts(
+    @User() currentUser: IUser,
+    @Body() updateDto: UpdateEmergencyContactsDto,
+  ): Promise<{ message: string; data?: any }> {
+    // Return success message
+    this.logger.log(`User ${currentUser._id} updating emergency contacts.`);
+    await this.userService.updateEmergencyContacts(currentUser._id, updateDto);
+    return {
+      message: 'Emergency contacts updated successfully.',
+      // Optionally return updated contacts or user profile snippet
+    };
+  }
 
-  @Prop({
-    type: String,
-    enum: UserLoginStrategy,
-    default: UserLoginStrategy.LOCAL,
+  @Post('devices/register')
+  @UseGuards(AuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Register a device token for push notifications' })
+  @ApiResponse({ status: 200, description: 'Device registered successfully.' })
+  @ApiResponse({ status: 401, description: 'Unauthorized.' })
+  @ApiResponse({ status: 400, description: 'Bad Request - Missing token.' })
+  async registerDevice(
+    @User() currentUser: IUser,
+    @Body() dto: RegisterDeviceDto,
+  ): Promise<{ message: string }> {
+    await this.userService.addDeviceToken(currentUser._id, dto.deviceToken);
+    return { message: 'Device registered successfully.' };
+  }
+
+  @Delete('devices/unregister') // Use DELETE method
+  @UseGuards(AuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Unregister a device token for push notifications' })
+  @ApiResponse({
+    status: 200,
+    description: 'Device unregistered successfully.',
   })
-  strategy: UserLoginStrategy;
-
-  @Prop({
-    type: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Roles' }],
-    required: true,
-  })
-  roles: Role[];
-
-  @Prop({ type: Date })
-  lastSeen?: Date;
-
-  // --- Driver Specific Fields (Optional) ---
-
-  @Prop({
-    type: String,
-    enum: DriverVerificationStatus,
-    default: DriverVerificationStatus.NOT_SUBMITTED,
-  })
-  driverVerificationStatus?: DriverVerificationStatus;
-
-  @Prop({ type: String })
-  driverLicenseNumber?: string;
-
-  @Prop({ type: Date })
-  driverLicenseExpiry?: Date;
-
-  @Prop({ type: String })
-  driverLicenseFrontImageUrl?: string;
-
-  @Prop({ type: String })
-  driverLicenseBackImageUrl?: string;
-
-  @Prop({ type: String })
-  driverRejectionReason?: string;
-
-  @Prop({ type: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Vehicle' }] })
-  vehicles?: Vehicle[];
-
-  // --- Safety & Rating Fields ---
-
-  @Prop({
-    type: [
-      {
-        name: { type: String, required: true },
-        phone: { type: String, required: true }, // Add validation for phone format if needed
-      },
-    ],
-    default: [],
-    _id: false, // Don't create separate _id for each contact
-  })
-  emergencyContacts: { name: string; phone: string }[];
-
-  @Prop({ type: Number, default: 0, min: 0, max: 5 })
-  averageRatingAsDriver: number;
-
-  @Prop({ type: Number, default: 0, min: 0 })
-  totalRatingsAsDriver: number; // Total number of ratings received as driver
-
-  @Prop({ type: Number, default: 0, min: 0, max: 5 })
-  averageRatingAsPassenger: number; // Calculated average rating when acting as passenger
-
-  @Prop({ type: Number, default: 0, min: 0 })
-  totalRatingsAsPassenger: number; // Total number of ratings received as passenger
-
-  @Prop({ type: [String], default: [], index: true }) // Array to store FCM registration tokens
-  deviceTokens: string[];
+  @ApiResponse({ status: 401, description: 'Unauthorized.' })
+  @ApiBody({ type: RegisterDeviceDto }) // Reuse DTO for body structure
+  async unregisterDevice(
+    @User() currentUser: IUser,
+    @Body() dto: RegisterDeviceDto, // Get token from body
+  ): Promise<{ message: string }> {
+    await this.userService.removeDeviceToken(currentUser._id, dto.deviceToken);
+    return { message: 'Device unregistered successfully.' };
+  }
 }
-
-export const UserSchema = SchemaFactory.createForClass(User);
 ````
 
 ## File: src/modules/user/user.module.ts
@@ -8811,189 +10502,6 @@ import { UserController } from './user.controller';
   exports: [UserService],
 })
 export class UserModule {}
-````
-
-## File: src/modules/user/user.service.ts
-````typescript
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
-import { InjectModel } from '@nestjs/mongoose';
-import { Model } from 'mongoose';
-import { DateHelper, ErrorHelper } from 'src/core/helpers';
-import { IPassenger, IDriver } from 'src/core/interfaces';
-import { TokenHelper } from 'src/global/utils/token.utils';
-import { UserSessionService } from 'src/global/user-session/service';
-import { Token } from './schemas/token.schema';
-import { User } from './schemas/user.schema';
-import { UpdateEmergencyContactsDto } from './dto/emergency-contact.dto';
-import { UserDocument } from './schemas/user.schema';
-
-@Injectable()
-export class UserService {
-  private logger = new Logger(UserService.name);
-  constructor(
-    @InjectModel(Token.name) private tokenRepo: Model<Token>,
-    private tokenHelper: TokenHelper,
-    private userSessionService: UserSessionService,
-    @InjectModel(User.name) private userRepo: Model<User>,
-  ) {}
-
-  async generateOtpCode(
-    user: IDriver | IPassenger,
-    options = {
-      numberOnly: true,
-      length: 4,
-    },
-    expirationTimeInMinutes = 15,
-  ): Promise<string> {
-    let code = '';
-
-    if (options.numberOnly) {
-      code = this.tokenHelper.generateRandomNumber(options.length);
-    } else {
-      code = this.tokenHelper.generateRandomString(options.length);
-    }
-
-    this.logger.debug('Generating OTP code for user: ', user._id);
-    this.logger.debug('OTP code: ', code);
-
-    await this.tokenRepo.findOneAndDelete({ user: user?._id, isUsed: false });
-
-    await this.tokenRepo.create({
-      user: user._id,
-      code,
-      expirationTime: DateHelper.addToCurrent({
-        minutes: expirationTimeInMinutes,
-      }),
-    });
-
-    return code;
-  }
-
-  async verifyOtpCode(
-    user: IDriver | IPassenger,
-    code: string,
-    message?: string,
-  ): Promise<boolean> {
-    const otp = await this.tokenRepo.findOne({
-      user: user._id,
-      code,
-      isUsed: false,
-    });
-
-    if (!otp) {
-      ErrorHelper.BadRequestException('Invalid code');
-    }
-
-    if (DateHelper.isAfter(new Date(), otp.expirationTime)) {
-      ErrorHelper.BadRequestException(
-        message ||
-          "This code has expired. You can't change your password using this link",
-      );
-    }
-
-    await otp.deleteOne();
-
-    return true;
-  }
-
-  async logout(userId: string) {
-    await this.userSessionService.delete(userId);
-
-    return {
-      success: true,
-    };
-  }
-
-  async getUser(userId: string): Promise<User> {
-    try {
-      const user = await this.userRepo.findById(userId);
-      if (!user) {
-        ErrorHelper.BadRequestException('User does not exists');
-      }
-      return user;
-    } catch (error) {
-      ErrorHelper.BadRequestException(error);
-    }
-  }
-  async updateEmergencyContacts(
-    userId: string,
-    dto: UpdateEmergencyContactsDto,
-  ): Promise<UserDocument> {
-    this.logger.log(`Updating emergency contacts for user ${userId}`);
-
-    // DTO validation is handled by the ValidationPipe
-
-    try {
-      const updatedUser = await this.userRepo.findByIdAndUpdate(
-        userId,
-        { $set: { emergencyContacts: dto.contacts } }, // Directly set the array
-        { new: true, runValidators: true }, // Return updated doc, run schema validation
-      );
-
-      if (!updatedUser) {
-        ErrorHelper.NotFoundException(`User with ID ${userId} not found.`);
-      }
-
-      this.logger.log(`Emergency contacts updated for user ${userId}`);
-      // Don't return the full user object usually, maybe just success or limited fields
-      return updatedUser; // For now, return updated user
-    } catch (error) {
-      this.logger.error(
-        `Error updating emergency contacts for user ${userId}: ${error.message}`,
-        error.stack,
-      );
-      if (error instanceof NotFoundException) throw error;
-      ErrorHelper.InternalServerErrorException(
-        'Failed to update emergency contacts.',
-      );
-    }
-  }
-
-  async addDeviceToken(userId: string, deviceToken: string): Promise<boolean> {
-    this.logger.log(`Adding device token for user ${userId}`);
-    try {
-      // Use $addToSet to avoid duplicate tokens for the same user
-      const result = await this.userRepo.updateOne(
-        { _id: userId },
-        { $addToSet: { deviceTokens: deviceToken } },
-      );
-      this.logger.log(
-        `Device token add result for user ${userId}: Modified ${result.modifiedCount}`,
-      );
-      return result.modifiedCount > 0 || result.matchedCount > 0; // Return true if matched or modified
-    } catch (error) {
-      this.logger.error(
-        `Error adding device token for user ${userId}: ${error.message}`,
-        error.stack,
-      );
-      ErrorHelper.InternalServerErrorException('Failed to register device.');
-    }
-  }
-
-  async removeDeviceToken(
-    userId: string,
-    deviceToken: string,
-  ): Promise<boolean> {
-    this.logger.log(`Removing device token for user ${userId}`);
-    try {
-      // Use $pull to remove a specific token
-      const result = await this.userRepo.updateOne(
-        { _id: userId },
-        { $pull: { deviceTokens: deviceToken } },
-      );
-      this.logger.log(
-        `Device token remove result for user ${userId}: Modified ${result.modifiedCount}`,
-      );
-      return result.modifiedCount > 0;
-    } catch (error) {
-      this.logger.error(
-        `Error removing device token for user ${userId}: ${error.message}`,
-        error.stack,
-      );
-      ErrorHelper.InternalServerErrorException('Failed to unregister device.');
-    }
-  }
-}
 ````
 
 ## File: src/modules/app.module.ts
@@ -9037,6 +10545,68 @@ describe('AppController (e2e)', () => {
       .expect('Hello World!');
   });
 });
+````
+
+## File: .gitignore
+````
+# compiled output
+/dist
+/node_modules
+/build
+
+# Logs
+logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+
+# OS
+.DS_Store
+
+# Tests
+/coverage
+/.nyc_output
+
+# IDEs and editors
+/.idea
+.project
+.classpath
+.c9/
+*.launch
+.settings/
+*.sublime-workspace
+
+# IDE - VSCode
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+# dotenv environment variable files
+.env
+.env.development.local
+.env.test.local
+.env.production.local
+.env.local
+
+# temp directory
+.temp
+.tmp
+
+# Runtime data
+pids
+*.pid
+*.seed
+*.pid.lock
+
+# Diagnostic reports (https://nodejs.org/api/report.html)
+report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
+
+/config/firebase-service-account.json
 ````
 
 ## File: src/core/adpater/redis.adpater.ts
@@ -9083,6 +10653,23 @@ export class RedisIoAdapter extends IoAdapter {
     server.on('connection', (socket: any) => callback(socket));
   }
 }
+````
+
+## File: src/core/decorators/user.decorator.ts
+````typescript
+/* eslint-disable @typescript-eslint/no-explicit-any */
+import { createParamDecorator, ExecutionContext } from '@nestjs/common';
+
+import { IUser } from '../../core/interfaces';
+
+export const User = createParamDecorator<any, any>(
+  (data: string, ctx: ExecutionContext): IUser | any => {
+    const request = ctx.switchToHttp().getRequest();
+    const user = request.user;
+
+    return data ? user[data] : user;
+  },
+);
 ````
 
 ## File: src/core/dto/page-meta.dto.ts
@@ -9239,118 +10826,45 @@ export class PaginationResultDto<T> {
 }
 ````
 
-## File: src/core/guards/index.ts
-````typescript
-export * from './authenticate.guard';
-export * from './ws.guard';
-export * from './role.guards';
-````
-
 ## File: src/core/interfaces/user/index.ts
 ````typescript
 export * from './user.interface';
 export * from './role.interface';
 ````
 
-## File: src/core/interfaces/user/user.interface.ts
+## File: src/core/interfaces/user/role.interface.ts
 ````typescript
-/* eslint-disable @typescript-eslint/no-explicit-any */
-import { Types } from 'mongoose';
-import { UserGender } from 'src/core/enums/user.enum';
-import { UserStatus } from 'src/core/enums/user.enum';
-import { Role } from 'src/modules/user/schemas/role.schema';
-
-export interface IUser {
-  _id?: string;
-  firstName: string;
-  lastName: string;
-  email: string;
-  reasonToJoin?: string;
-  profession?: string;
-  pathway?: string;
-  techStacks?: object;
-  assessmentScore?: string;
-  emailConfirm: boolean;
-  createdAt?: Date;
-  lastSeen?: Date;
-  status?: UserStatus;
-  roles?: Types.ObjectId[] | Role[]; // Array of ObjectId or string
+export enum RoleNameEnum {
+  Admin = 'ADMIN',
+  Driver = 'DRIVER',
+  Passenger = 'PASSENGER',
+  SuperAdmin = 'SUPER_ADMIN',
+  Support = 'Support',
 }
 
-export interface IUser {
-  _id?: string;
-  email: string;
-  firstName: string;
-  lastName: string;
-  avatar?: string;
-  about?: string;
-  country?: string;
-  gender?: UserGender;
-  phoneNumber?: string;
-  emailConfirm: boolean;
-  createdAt?: Date;
-  lastSeen?: Date;
-  status?: UserStatus;
+export enum ActionEnum {
+  Manage = 'manage',
+  Create = 'create',
+  Read = 'read',
+  Update = 'update',
+  Delete = 'delete',
 }
 
-export interface IDriver {
-  _id?: string;
-  email: string;
-  firstName: string;
-  lastName: string;
-  avatar?: string;
-  about?: string;
-  country?: string;
-  gender?: UserGender;
-  phoneNumber?: string;
-  emailConfirm: boolean;
-  createdAt?: Date;
-  lastSeen?: Date;
-  status?: UserStatus;
+export enum Subject {
+  UserManagement = 'USER_MANAGEMENT',
+  RideManagement = 'RIDE_MANAGEMENT',
 }
 
-export interface IPassenger {
-  _id?: string;
-  email: string;
-  firstName: string;
-  lastName: string;
-  avatar?: string;
-  about?: string;
-  country?: string;
-  gender?: UserGender;
-  phoneNumber?: string;
-  emailConfirm: boolean;
-  createdAt?: Date;
-  lastSeen?: Date;
-  status?: UserStatus;
+export interface IAction {
+  action: ActionEnum;
+  subject: Subject;
+  description: string;
 }
 
-export interface IAdmin {
-  _id?: string;
-  email: string;
-  firstName: string;
-  lastName: string;
-  avatar?: string;
-  about?: string;
-  country?: string;
-  gender?: UserGender;
-  phoneNumber?: string;
-  emailConfirm: boolean;
-  createdAt?: Date;
-  lastSeen?: Date;
-  status?: UserStatus;
-}
-
-export interface IUserMail {
-  email: string;
-  firstName: string;
-}
-
-export enum UserLoginStrategy {
-  LOCAL = 'local',
-  GOOGLE = 'google',
-  FACEBOOK = 'facebook',
-  APPLE = 'apple',
+export interface IRole {
+  name: RoleNameEnum;
+  description: string;
+  actions: IAction[];
 }
 ````
 
@@ -9564,6 +11078,553 @@ import { TwilioModule } from '../twilio/twiio.module';
   exports: [AuthService],
 })
 export class AuthModule {}
+````
+
+## File: src/modules/booking/booking.service.ts
+````typescript
+import { Injectable, Logger, HttpException } from '@nestjs/common';
+import { InjectModel } from '@nestjs/mongoose';
+import mongoose, { Model } from 'mongoose';
+import { Booking, BookingDocument } from './schemas/booking.schema';
+import { Ride, RideDocument } from '../rides/schemas/ride.schema';
+import { User, UserDocument } from '../user/schemas/user.schema';
+import { CreateBookingDto } from './dto/create-booking.dto';
+import { BookingStatus } from './enums/booking-status.enum';
+import { RideStatus } from '../rides/enums/ride-status.enum';
+import { ErrorHelper } from 'src/core/helpers';
+import { PaymentStatus } from './enums/payment-status.enum';
+import { PaginationDto, PaginationResultDto } from 'src/core/dto';
+import { PaymentService } from '../payment/payment.service';
+import { NotificationService } from '../notification/notification.service';
+
+@Injectable()
+export class BookingService {
+  private readonly logger = new Logger(BookingService.name);
+
+  constructor(
+    @InjectModel(Booking.name) private bookingModel: Model<Booking>,
+    @InjectModel(Ride.name) private rideModel: Model<RideDocument>,
+    @InjectModel(User.name) private userModel: Model<User>,
+    private readonly notificationService: NotificationService,
+    private readonly paymentService: PaymentService,
+  ) {}
+
+  async requestBooking(
+    passengerId: string,
+    dto: CreateBookingDto,
+  ): Promise<BookingDocument> {
+    this.logger.log(
+      `Passenger ${passengerId} requesting booking for ride ${dto.rideId}`,
+    );
+
+    // 1. Validate Passenger Exists (although AuthGuard does this, good practice)
+    const passenger = await this.userModel.findById(passengerId);
+    if (!passenger) {
+      ErrorHelper.NotFoundException('Passenger user not found.'); // Should not happen if AuthGuard is used
+    }
+
+    // 2. Validate Ride Exists and is Suitable
+    const ride = await this.rideModel.findById(dto.rideId);
+    if (!ride) {
+      ErrorHelper.NotFoundException(`Ride with ID ${dto.rideId} not found.`);
+    }
+    if (ride.status !== RideStatus.SCHEDULED) {
+      ErrorHelper.BadRequestException(
+        'This ride is not available for booking (already started, completed, or cancelled).',
+      );
+    }
+    if (ride.driver.toString() === passengerId) {
+      ErrorHelper.BadRequestException(
+        'You cannot book a ride you are driving.',
+      );
+    }
+    if (ride.availableSeats < dto.seatsNeeded) {
+      ErrorHelper.BadRequestException(
+        `Not enough seats available. Only ${ride.availableSeats} left.`,
+      );
+    }
+
+    // 3. Check if Passenger Already Booked This Ride
+    const existingBooking = await this.bookingModel.findOne({
+      passenger: passengerId,
+      ride: dto.rideId,
+      status: {
+        $nin: [
+          BookingStatus.CANCELLED_BY_DRIVER,
+          BookingStatus.CANCELLED_BY_PASSENGER,
+          BookingStatus.REJECTED,
+        ],
+      }, // Check active/pending bookings
+    });
+    if (existingBooking) {
+      ErrorHelper.ConflictException(
+        'You have already requested or booked this ride.',
+      );
+    }
+
+    // 4. Prepare Booking Data
+    const totalPrice = ride.pricePerSeat * dto.seatsNeeded;
+    const bookingData = {
+      passenger: passengerId,
+      driver: ride.driver, // Store driver ID from ride
+      ride: dto.rideId,
+      seatsBooked: dto.seatsNeeded,
+      totalPrice: totalPrice,
+      status: BookingStatus.PENDING, // Initial status
+      paymentStatus:
+        totalPrice > 0 ? PaymentStatus.PENDING : PaymentStatus.NOT_REQUIRED, // Set payment status
+      pickupAddress: dto.pickupAddress, // Optional proposed address
+      dropoffAddress: dto.dropoffAddress,
+    };
+
+    // 5. Create and Save Booking
+    try {
+      const newBooking = new this.bookingModel(bookingData);
+      await newBooking.save();
+      this.logger.log(
+        `Booking ${newBooking._id} created successfully for ride ${dto.rideId} by passenger ${passengerId}`,
+      );
+
+      try {
+        const driver = await this.userModel
+          .findById(ride.driver)
+          .select('deviceTokens');
+
+        await this.notificationService.sendNotificationToUser(
+          driver._id.toString(),
+          'New Booking Request',
+          `Passenger ${passenger.firstName} wants to book ${newBooking.seatsBooked} seat(s) on your ride.`,
+          { bookingId: newBooking._id.toString(), type: 'BOOKING_REQUEST' },
+        );
+      } catch (notificationError) {
+        this.logger.error(
+          `Failed to send booking request notification to driver ${ride.driver}: ${notificationError.message}`,
+        );
+      }
+
+      return newBooking;
+    } catch (error) {
+      this.logger.error(
+        `Error creating booking for ride ${dto.rideId}: ${error.message}`,
+        error.stack,
+      );
+      ErrorHelper.InternalServerErrorException(
+        'Failed to create booking request.',
+      );
+    }
+  }
+
+  // --- Methods for Driver and Passenger booking management will be added below ---
+  async getRideBookings(
+    driverId: string,
+    rideId: string,
+  ): Promise<BookingDocument[]> {
+    this.logger.log(`Driver ${driverId} fetching bookings for ride ${rideId}`);
+    if (!mongoose.Types.ObjectId.isValid(rideId)) {
+      ErrorHelper.BadRequestException('Invalid Ride ID format.');
+    }
+
+    // Verify the ride exists and the user is the driver
+    const ride = await this.rideModel.findById(rideId).select('driver'); // Select only driver field
+    if (!ride) {
+      ErrorHelper.NotFoundException(`Ride with ID ${rideId} not found.`);
+    }
+    if (ride.driver.toString() !== driverId) {
+      ErrorHelper.ForbiddenException('You are not the driver of this ride.');
+    }
+
+    // Fetch bookings for this ride, populate passenger details
+    const bookings = await this.bookingModel
+      .find({ ride: rideId, driver: driverId })
+      .populate<{ passenger: UserDocument }>({
+        path: 'passenger',
+        select: 'firstName lastName avatar phoneNumber', // Select needed passenger info
+      })
+      .sort({ createdAt: -1 }) // Sort by newest first
+      .exec();
+
+    return bookings;
+  }
+
+  async confirmBooking(
+    driverId: string,
+    bookingId: string,
+  ): Promise<BookingDocument> {
+    this.logger.log(
+      `Driver ${driverId} attempting to confirm booking ${bookingId}`,
+    );
+    if (!mongoose.Types.ObjectId.isValid(bookingId)) {
+      ErrorHelper.BadRequestException('Invalid Booking ID format.');
+    }
+
+    const session = await this.bookingModel.db.startSession(); // Start mongoose session for transaction
+    session.startTransaction();
+
+    try {
+      // 1. Find Booking within session, verify driver and status
+      const booking = await this.bookingModel
+        .findById(bookingId)
+        .session(session);
+      if (!booking) {
+        ErrorHelper.NotFoundException(
+          `Booking with ID ${bookingId} not found.`,
+        );
+      }
+      if (booking.driver.toString() !== driverId) {
+        ErrorHelper.ForbiddenException(
+          'You cannot confirm a booking for a ride you are not driving.',
+        );
+      }
+      if (booking.status !== BookingStatus.PENDING) {
+        ErrorHelper.BadRequestException(
+          `Booking is not in PENDING state (current state: ${booking.status}).`,
+        );
+      }
+
+      // 2. Find Ride within session, verify seats
+      const ride = await this.rideModel.findById(booking.ride).session(session);
+      if (!ride) {
+        // Should not happen if booking exists, but good check
+        ErrorHelper.NotFoundException(
+          `Associated ride ${booking.ride} not found.`,
+        );
+      }
+      if (ride.availableSeats < booking.seatsBooked) {
+        ErrorHelper.BadRequestException(
+          `Not enough seats available on the ride to confirm this booking (needed: ${booking.seatsBooked}, available: ${ride.availableSeats}).`,
+        );
+      }
+
+      // 3. Update Ride: Decrease available seats (atomic operation within transaction)
+      const rideUpdateResult = await this.rideModel.updateOne(
+        { _id: ride._id, availableSeats: { $gte: booking.seatsBooked } }, // Ensure seats didn't change concurrently
+        { $inc: { availableSeats: -booking.seatsBooked } },
+        { session },
+      );
+
+      if (rideUpdateResult.modifiedCount === 0) {
+        // This means the seats were likely taken by another concurrent confirmation
+        ErrorHelper.ConflictException(
+          'Seats became unavailable while confirming. Please refresh.',
+        );
+      }
+
+      // 4. Update Booking Status
+      booking.status = BookingStatus.CONFIRMED;
+      // Optionally update pickup/dropoff if driver agrees/modifies them
+      await booking.save({ session }); // Save booking changes within session
+
+      // TODO: Trigger Payment Initiation (Phase 3)
+      // if (booking.totalPrice > 0) {
+      //      await this.paymentService.initializeTransactionForBooking(booking);
+      // }
+
+      // TODO: Trigger Notification to Passenger (Phase 6)
+      // await this.notificationService.notifyPassengerBookingConfirmed(booking.passenger, booking);
+
+      await session.commitTransaction(); // Commit transaction if all steps succeed
+      this.logger.log(
+        `Booking ${bookingId} confirmed successfully by driver ${driverId}.`,
+      );
+      return booking;
+    } catch (error) {
+      await session.abortTransaction(); // Rollback on any error
+      this.logger.error(
+        `Error confirming booking ${bookingId}: ${error.message}`,
+        error.stack,
+      );
+      // Rethrow specific exceptions or a generic one
+      if (error instanceof HttpException) throw error;
+      ErrorHelper.InternalServerErrorException('Failed to confirm booking.');
+    } finally {
+      session.endSession(); // Always end the session
+    }
+  }
+
+  async rejectBooking(
+    driverId: string,
+    bookingId: string,
+  ): Promise<BookingDocument> {
+    this.logger.log(
+      `Driver ${driverId} attempting to reject booking ${bookingId}`,
+    );
+    if (!mongoose.Types.ObjectId.isValid(bookingId)) {
+      ErrorHelper.BadRequestException('Invalid Booking ID format.');
+    }
+
+    const booking = await this.bookingModel.findById(bookingId);
+
+    if (!booking) {
+      ErrorHelper.NotFoundException(`Booking with ID ${bookingId} not found.`);
+    }
+    if (booking.driver.toString() !== driverId) {
+      ErrorHelper.ForbiddenException(
+        'You cannot reject a booking for a ride you are not driving.',
+      );
+    }
+    if (booking.status !== BookingStatus.PENDING) {
+      ErrorHelper.BadRequestException(
+        `Booking is not in PENDING state (current state: ${booking.status}). Cannot reject.`,
+      );
+    }
+
+    booking.status = BookingStatus.REJECTED; // Use REJECTED instead of CANCELLED_BY_DRIVER for clarity
+    await booking.save();
+
+    this.logger.log(
+      `Booking ${bookingId} rejected successfully by driver ${driverId}.`,
+    );
+
+    // TODO: Trigger Notification to Passenger (Phase 6)
+    // await this.notificationService.notifyPassengerBookingRejected(booking.passenger, booking);
+
+    return booking;
+  }
+
+  async getMyBookings(
+    passengerId: string,
+    paginationDto: PaginationDto,
+  ): Promise<PaginationResultDto<BookingDocument>> {
+    this.logger.log(`Passenger ${passengerId} fetching their bookings.`);
+    const { limit, page, order } = paginationDto;
+    const skip = paginationDto.skip;
+
+    const conditions = { passenger: passengerId };
+
+    const query = this.bookingModel
+      .find(conditions)
+      .populate<{ driver: UserDocument }>({
+        path: 'driver',
+        select: 'firstName lastName avatar',
+      })
+      .populate<{ ride: RideDocument }>({
+        path: 'ride',
+        select:
+          'originAddress destinationAddress departureTime status pricePerSeat', // Select key ride info
+        populate: { path: 'vehicle', select: 'make model color' }, // Populate nested vehicle info
+      })
+      .sort({ createdAt: order === 'ASC' ? 1 : -1 })
+      .skip(skip)
+      .limit(limit);
+
+    const [results, totalCount] = await Promise.all([
+      query.exec(),
+      this.bookingModel.countDocuments(conditions),
+    ]);
+
+    return new PaginationResultDto(results, totalCount, { page, limit });
+  }
+
+  async cancelBooking(
+    passengerId: string,
+    bookingId: string,
+  ): Promise<BookingDocument> {
+    this.logger.log(
+      `Passenger ${passengerId} attempting to cancel booking ${bookingId}`,
+    );
+    if (!mongoose.Types.ObjectId.isValid(bookingId)) {
+      ErrorHelper.BadRequestException('Invalid Booking ID format.');
+    }
+
+    const session = await this.bookingModel.db.startSession();
+    session.startTransaction();
+
+    try {
+      // 1. Find booking, verify passenger owns it and check status
+      const booking = await this.bookingModel
+        .findById(bookingId)
+        .session(session);
+      if (!booking) {
+        ErrorHelper.NotFoundException(
+          `Booking with ID ${bookingId} not found.`,
+        );
+      }
+      if (booking.passenger.toString() !== passengerId) {
+        ErrorHelper.ForbiddenException(
+          'You can only cancel your own bookings.',
+        );
+      }
+
+      // Define cancellable statuses
+      const cancellableStatuses = [
+        BookingStatus.PENDING,
+        BookingStatus.CONFIRMED,
+      ];
+      if (!cancellableStatuses.includes(booking.status)) {
+        ErrorHelper.BadRequestException(
+          `Cannot cancel booking with status ${booking.status}.`,
+        );
+      }
+
+      const wasConfirmed = booking.status === BookingStatus.CONFIRMED;
+
+      // 2. Update Booking Status
+      booking.status = BookingStatus.CANCELLED_BY_PASSENGER;
+      await booking.save({ session });
+
+      // 3. If booking was confirmed, increment available seats on ride
+      if (wasConfirmed) {
+        const rideUpdateResult = await this.rideModel.updateOne(
+          { _id: booking.ride },
+          { $inc: { availableSeats: booking.seatsBooked } }, // Increment seats back
+          { session },
+        );
+        // Log if ride wasn't found or not updated, but maybe don't fail the cancellation
+        if (rideUpdateResult.modifiedCount === 0) {
+          this.logger.warn(
+            `Could not increment seats for ride ${booking.ride} during cancellation of booking ${bookingId}. Ride might be deleted or status changed.`,
+          );
+        } else {
+          this.logger.log(
+            `Incremented available seats for ride ${booking.ride} by ${booking.seatsBooked}.`,
+          );
+        }
+      }
+
+      // TODO: Handle Refunds if payment was made (Phase 3)
+      // if (wasConfirmed && booking.paymentStatus === PaymentStatus.PAID) {
+      //      await this.paymentService.processRefundForBooking(booking);
+      // }
+
+      // TODO: Trigger Notification to Driver (Phase 6)
+      // await this.notificationService.notifyDriverBookingCancelled(booking.driver, booking);
+
+      await session.commitTransaction();
+      this.logger.log(
+        `Booking ${bookingId} cancelled successfully by passenger ${passengerId}.`,
+      );
+      return booking;
+    } catch (error) {
+      await session.abortTransaction();
+      this.logger.error(
+        `Error cancelling booking ${bookingId}: ${error.message}`,
+        error.stack,
+      );
+      if (error instanceof HttpException) throw error;
+      ErrorHelper.InternalServerErrorException('Failed to cancel booking.');
+    } finally {
+      session.endSession();
+    }
+  }
+
+  async initiateBookingPayment(
+    passengerId: string,
+    bookingId: string,
+  ): Promise<{
+    authorization_url: string;
+    reference: string;
+    access_code: string;
+  }> {
+    this.logger.log(
+      `Passenger ${passengerId} initiating payment for booking ${bookingId}`,
+    );
+    if (!mongoose.Types.ObjectId.isValid(bookingId)) {
+      ErrorHelper.BadRequestException('Invalid Booking ID format.');
+    }
+
+    // 1. Find booking and verify ownership and status
+    const booking = await this.bookingModel
+      .findById(bookingId)
+      .populate<{ passenger: UserDocument }>('passenger', 'email'); // Populate passenger email
+
+    if (!booking) {
+      ErrorHelper.NotFoundException(`Booking with ID ${bookingId} not found.`);
+    }
+    if (booking.passenger._id.toString() !== passengerId) {
+      ErrorHelper.ForbiddenException('You can only pay for your own bookings.');
+    }
+    // Allow payment only if CONFIRMED and PENDING payment
+    if (booking.status !== BookingStatus.CONFIRMED) {
+      ErrorHelper.BadRequestException(
+        `Booking must be confirmed by the driver before payment (current status: ${booking.status}).`,
+      );
+    }
+    if (booking.paymentStatus !== PaymentStatus.PENDING) {
+      // Allow retrying FAILED? For now, only PENDING.
+      ErrorHelper.BadRequestException(
+        `Payment for this booking is not pending (current status: ${booking.paymentStatus}).`,
+      );
+    }
+    if (booking.totalPrice <= 0) {
+      ErrorHelper.BadRequestException('This booking does not require payment.');
+    }
+
+    // 2. Call Payment Service to initialize transaction
+    try {
+      // Convert NGN price to kobo for Paystack
+      const amountInKobo = Math.round(booking.totalPrice * 100);
+      const paymentData = await this.paymentService.initializeTransaction(
+        amountInKobo,
+        booking.passenger.email, // Use passenger's email
+        bookingId,
+        passengerId,
+      );
+
+      // 3. Store transaction reference on the booking (important for webhook matching)
+      await this.bookingModel.updateOne(
+        { _id: bookingId },
+        { $set: { transactionRef: paymentData.reference } },
+      );
+      this.logger.log(
+        `Stored Paystack reference ${paymentData.reference} for booking ${bookingId}`,
+      );
+
+      return paymentData; // Return { authorization_url, reference, access_code }
+    } catch (error) {
+      this.logger.error(
+        `Error initiating payment for booking ${bookingId}: ${error.message}`,
+        error.stack,
+      );
+      // Rethrow the error from PaymentService or a generic one
+      if (error instanceof HttpException) throw error;
+      ErrorHelper.InternalServerErrorException('Failed to initiate payment.');
+    }
+  }
+
+  async completeBookingByDriver(
+    driverId: string,
+    bookingId: string,
+  ): Promise<BookingDocument> {
+    this.logger.log(
+      `Driver ${driverId} attempting to mark booking ${bookingId} as completed.`,
+    );
+    if (!mongoose.Types.ObjectId.isValid(bookingId)) {
+      ErrorHelper.BadRequestException('Invalid Booking ID format.');
+    }
+
+    // 1. Find booking, verify driver and status
+    const booking = await this.bookingModel.findById(bookingId);
+    if (!booking) {
+      ErrorHelper.NotFoundException(`Booking with ID ${bookingId} not found.`);
+    }
+    if (booking.driver.toString() !== driverId) {
+      ErrorHelper.ForbiddenException(
+        'You can only complete bookings for rides you are driving.',
+      );
+    }
+    // Allow completion only if CONFIRMED (or potentially IN_PROGRESS if you add that status)
+    if (booking.status !== BookingStatus.CONFIRMED) {
+      ErrorHelper.BadRequestException(
+        `Booking must be confirmed to be marked as completed (current status: ${booking.status}).`,
+      );
+    }
+
+    // Optionally: Check if Ride departureTime has passed significantly
+
+    // 2. Update Status
+    booking.status = BookingStatus.COMPLETED;
+    await booking.save();
+
+    this.logger.log(
+      `Booking ${bookingId} marked as COMPLETED by driver ${driverId}.`,
+    );
+
+    // TODO: Trigger Notification to Passenger (Phase 6)
+    // TODO: Check if all bookings for the ride are completed/cancelled, then update Ride status (maybe background job)
+
+    return booking;
+  }
+}
 ````
 
 ## File: src/modules/health/health.controller.ts
@@ -10075,6 +12136,335 @@ export class RidesService {
 }
 ````
 
+## File: src/modules/user/schemas/user.schema.ts
+````typescript
+import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
+import mongoose, { Document } from 'mongoose';
+import { Role } from './role.schema';
+import {
+  UserGender,
+  UserStatus,
+  DriverVerificationStatus,
+} from 'src/core/enums/user.enum';
+import { UserLoginStrategy } from 'src/core/interfaces';
+import { Vehicle } from '../../driver/schemas/vehicle.schema';
+
+export type UserDocument = User & Document;
+
+@Schema({ timestamps: true })
+export class User {
+  @Prop({ type: String, required: true, trim: true })
+  firstName: string;
+
+  @Prop({ type: String, required: true, trim: true })
+  lastName: string;
+
+  @Prop({
+    type: String,
+    unique: true,
+    lowercase: true,
+    trim: true,
+    index: true,
+    sparse: true,
+  })
+  email?: string;
+
+  @Prop({ type: String, required: false, select: false }) // Required only for LOCAL strategy initially
+  password?: string;
+
+  @Prop({
+    type: String,
+    unique: true,
+    sparse: true,
+    index: true,
+    required: true,
+  }) // Unique phone number, sparse allows multiple nulls
+  phoneNumber?: string;
+
+  @Prop({ type: Boolean, default: false })
+  phoneVerified: boolean;
+
+  @Prop({ type: Boolean, default: false })
+  emailConfirm: boolean;
+
+  @Prop({ type: String, enum: UserGender })
+  gender?: UserGender;
+
+  @Prop({ type: String })
+  avatar?: string;
+
+  @Prop({ type: String })
+  about?: string;
+
+  @Prop({ type: String })
+  country?: string;
+
+  @Prop({
+    type: String,
+    enum: UserStatus,
+    default: UserStatus.PENDING_EMAIL_VERIFICATION,
+  })
+  status: UserStatus;
+
+  @Prop({
+    type: String,
+    enum: UserLoginStrategy,
+    default: UserLoginStrategy.LOCAL,
+  })
+  strategy: UserLoginStrategy;
+
+  @Prop({
+    type: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Roles' }],
+    required: true,
+  })
+  roles: Role[];
+
+  @Prop({ type: Date })
+  lastSeen?: Date;
+
+  // --- Driver Specific Fields (Optional) ---
+
+  @Prop({
+    type: String,
+    enum: DriverVerificationStatus,
+    default: DriverVerificationStatus.NOT_SUBMITTED,
+  })
+  driverVerificationStatus?: DriverVerificationStatus;
+
+  @Prop({ type: String })
+  driverLicenseNumber?: string;
+
+  @Prop({ type: Date })
+  driverLicenseExpiry?: Date;
+
+  @Prop({ type: String })
+  driverLicenseFrontImageUrl?: string;
+
+  @Prop({ type: String })
+  driverLicenseBackImageUrl?: string;
+
+  @Prop({ type: String })
+  driverRejectionReason?: string;
+
+  @Prop({ type: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Vehicle' }] })
+  vehicles?: Vehicle[];
+
+  // --- Safety & Rating Fields ---
+
+  @Prop({
+    type: [
+      {
+        name: { type: String, required: true },
+        phone: { type: String, required: true }, // Add validation for phone format if needed
+      },
+    ],
+    default: [],
+    _id: false, // Don't create separate _id for each contact
+  })
+  emergencyContacts: { name: string; phone: string }[];
+
+  @Prop({ type: Number, default: 0, min: 0, max: 5 })
+  averageRatingAsDriver: number;
+
+  @Prop({ type: Number, default: 0, min: 0 })
+  totalRatingsAsDriver: number; // Total number of ratings received as driver
+
+  @Prop({ type: Number, default: 0, min: 0, max: 5 })
+  averageRatingAsPassenger: number; // Calculated average rating when acting as passenger
+
+  @Prop({ type: Number, default: 0, min: 0 })
+  totalRatingsAsPassenger: number; // Total number of ratings received as passenger
+
+  @Prop({ type: [String], default: [], index: true }) // Array to store FCM registration tokens
+  deviceTokens: string[];
+}
+
+export const UserSchema = SchemaFactory.createForClass(User);
+````
+
+## File: src/modules/user/user.service.ts
+````typescript
+import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { InjectModel } from '@nestjs/mongoose';
+import { Model } from 'mongoose';
+import { DateHelper, ErrorHelper } from 'src/core/helpers';
+import { IPassenger, IDriver } from 'src/core/interfaces';
+import { TokenHelper } from 'src/global/utils/token.utils';
+import { UserSessionService } from 'src/global/user-session/service';
+import { Token } from './schemas/token.schema';
+import { User } from './schemas/user.schema';
+import { UpdateEmergencyContactsDto } from './dto/emergency-contact.dto';
+import { UserDocument } from './schemas/user.schema';
+
+@Injectable()
+export class UserService {
+  private logger = new Logger(UserService.name);
+  constructor(
+    @InjectModel(Token.name) private tokenRepo: Model<Token>,
+    private tokenHelper: TokenHelper,
+    private userSessionService: UserSessionService,
+    @InjectModel(User.name) private userRepo: Model<User>,
+  ) {}
+
+  async generateOtpCode(
+    user: IDriver | IPassenger,
+    options = {
+      numberOnly: true,
+      length: 4,
+    },
+    expirationTimeInMinutes = 15,
+  ): Promise<string> {
+    let code = '';
+
+    if (options.numberOnly) {
+      code = this.tokenHelper.generateRandomNumber(options.length);
+    } else {
+      code = this.tokenHelper.generateRandomString(options.length);
+    }
+
+    this.logger.debug('Generating OTP code for user: ', user._id);
+    this.logger.debug('OTP code: ', code);
+
+    await this.tokenRepo.findOneAndDelete({ user: user?._id, isUsed: false });
+
+    await this.tokenRepo.create({
+      user: user._id,
+      code,
+      expirationTime: DateHelper.addToCurrent({
+        minutes: expirationTimeInMinutes,
+      }),
+    });
+
+    return code;
+  }
+
+  async verifyOtpCode(
+    user: IDriver | IPassenger,
+    code: string,
+    message?: string,
+  ): Promise<boolean> {
+    const otp = await this.tokenRepo.findOne({
+      user: user._id,
+      code,
+      isUsed: false,
+    });
+
+    if (!otp) {
+      ErrorHelper.BadRequestException('Invalid code');
+    }
+
+    if (DateHelper.isAfter(new Date(), otp.expirationTime)) {
+      ErrorHelper.BadRequestException(
+        message ||
+          "This code has expired. You can't change your password using this link",
+      );
+    }
+
+    await otp.deleteOne();
+
+    return true;
+  }
+
+  async logout(userId: string) {
+    await this.userSessionService.delete(userId);
+
+    return {
+      success: true,
+    };
+  }
+
+  async getUser(userId: string): Promise<User> {
+    try {
+      const user = await this.userRepo.findById(userId);
+      if (!user) {
+        ErrorHelper.BadRequestException('User does not exists');
+      }
+      return user;
+    } catch (error) {
+      ErrorHelper.BadRequestException(error);
+    }
+  }
+  async updateEmergencyContacts(
+    userId: string,
+    dto: UpdateEmergencyContactsDto,
+  ): Promise<UserDocument> {
+    this.logger.log(`Updating emergency contacts for user ${userId}`);
+
+    // DTO validation is handled by the ValidationPipe
+
+    try {
+      const updatedUser = await this.userRepo.findByIdAndUpdate(
+        userId,
+        { $set: { emergencyContacts: dto.contacts } }, // Directly set the array
+        { new: true, runValidators: true }, // Return updated doc, run schema validation
+      );
+
+      if (!updatedUser) {
+        ErrorHelper.NotFoundException(`User with ID ${userId} not found.`);
+      }
+
+      this.logger.log(`Emergency contacts updated for user ${userId}`);
+      // Don't return the full user object usually, maybe just success or limited fields
+      return updatedUser; // For now, return updated user
+    } catch (error) {
+      this.logger.error(
+        `Error updating emergency contacts for user ${userId}: ${error.message}`,
+        error.stack,
+      );
+      if (error instanceof NotFoundException) throw error;
+      ErrorHelper.InternalServerErrorException(
+        'Failed to update emergency contacts.',
+      );
+    }
+  }
+
+  async addDeviceToken(userId: string, deviceToken: string): Promise<boolean> {
+    this.logger.log(`Adding device token for user ${userId}`);
+    try {
+      // Use $addToSet to avoid duplicate tokens for the same user
+      const result = await this.userRepo.updateOne(
+        { _id: userId },
+        { $addToSet: { deviceTokens: deviceToken } },
+      );
+      this.logger.log(
+        `Device token add result for user ${userId}: Modified ${result.modifiedCount}`,
+      );
+      return result.modifiedCount > 0 || result.matchedCount > 0; // Return true if matched or modified
+    } catch (error) {
+      this.logger.error(
+        `Error adding device token for user ${userId}: ${error.message}`,
+        error.stack,
+      );
+      ErrorHelper.InternalServerErrorException('Failed to register device.');
+    }
+  }
+
+  async removeDeviceToken(
+    userId: string,
+    deviceToken: string,
+  ): Promise<boolean> {
+    this.logger.log(`Removing device token for user ${userId}`);
+    try {
+      // Use $pull to remove a specific token
+      const result = await this.userRepo.updateOne(
+        { _id: userId },
+        { $pull: { deviceTokens: deviceToken } },
+      );
+      this.logger.log(
+        `Device token remove result for user ${userId}: Modified ${result.modifiedCount}`,
+      );
+      return result.modifiedCount > 0;
+    } catch (error) {
+      this.logger.error(
+        `Error removing device token for user ${userId}: ${error.message}`,
+        error.stack,
+      );
+      ErrorHelper.InternalServerErrorException('Failed to unregister device.');
+    }
+  }
+}
+````
+
 ## File: nest-cli.json
 ````json
 {
@@ -10090,6 +12480,99 @@ export class RidesService {
       }
     ]
   }
+}
+````
+
+## File: src/core/guards/index.ts
+````typescript
+export * from './authenticate.guard';
+export * from './ws.guard';
+export * from './role.guards';
+````
+
+## File: src/core/interfaces/user/user.interface.ts
+````typescript
+/* eslint-disable @typescript-eslint/no-explicit-any */
+import { Types } from 'mongoose';
+import { UserGender } from 'src/core/enums/user.enum';
+import { UserStatus } from 'src/core/enums/user.enum';
+import { Role } from 'src/modules/user/schemas/role.schema';
+
+export interface IUser {
+  _id: string;
+  email?: string;
+  firstName?: string;
+  lastName?: string;
+  avatar?: string;
+  about?: string;
+  country?: string;
+  gender?: UserGender;
+  phoneNumber?: string;
+  emailConfirm: boolean;
+  createdAt?: Date;
+  lastSeen?: Date;
+  status?: UserStatus;
+  roles?: Types.ObjectId[] | Role[];
+}
+
+export interface IDriver {
+  _id: string;
+  email?: string;
+  firstName?: string;
+  lastName?: string;
+  avatar?: string;
+  about?: string;
+  country?: string;
+  gender?: UserGender;
+  phoneNumber?: string;
+  emailConfirm: boolean;
+  createdAt?: Date;
+  lastSeen?: Date;
+  status?: UserStatus;
+}
+
+export interface IPassenger {
+  _id: string;
+  email?: string;
+  firstName: string;
+  lastName: string;
+  avatar?: string;
+  about?: string;
+  country?: string;
+  gender?: UserGender;
+  phoneNumber?: string;
+  emailConfirm?: boolean;
+  createdAt?: Date;
+  lastSeen?: Date;
+  status?: UserStatus;
+}
+
+export interface IAdmin {
+  _id?: string;
+  email: string;
+  firstName: string;
+  lastName: string;
+  avatar?: string;
+  about?: string;
+  country?: string;
+  gender?: UserGender;
+  phoneNumber?: string;
+  emailConfirm: boolean;
+  createdAt?: Date;
+  lastSeen?: Date;
+  status?: UserStatus;
+}
+
+export interface IUserMail {
+  email: string;
+  firstName: string;
+}
+
+export enum UserLoginStrategy {
+  LOCAL = 'local',
+  GOOGLE = 'google',
+  FACEBOOK = 'facebook',
+  APPLE = 'apple',
 }
 ````
 
@@ -10378,59 +12861,6 @@ export class SecretsService extends ConfigService {
 }
 ````
 
-## File: src/modules/main.module.ts
-````typescript
-import { Module } from '@nestjs/common';
-import { ConfigModule } from '@nestjs/config';
-import { DatabaseModule } from './database/database.module';
-import { RidesModule } from './rides/rides.module';
-import { GeolocationModule } from './geolocation/geolocation.module';
-import { DriverModule } from './driver/driver.module';
-import { AuthModule } from './auth/auth.module';
-import { UserModule } from './user/user.module';
-import { MongooseModule } from '@nestjs/mongoose';
-import { SecretsModule } from '../global/secrets/module';
-import { SecretsService } from '../global/secrets/service';
-import { AppModule } from './app.module';
-import { GlobalModule } from 'src/global/global.module';
-import { BookingModule } from './booking/booking.module';
-import { RatingModule } from './rating/rating.module';
-import { CommunicationModule } from './communication/communication.module';
-import { AdminModule } from './admin/admin.module';
-import { TripSharingModule } from './trip-sharing/trip-sharing.module';
-import { NotificationModule } from './notification/notification.module';
-@Module({
-  imports: [
-    GlobalModule,
-    DatabaseModule,
-    ConfigModule,
-    AuthModule,
-    UserModule,
-    RidesModule,
-    DriverModule,
-    GeolocationModule,
-    AppModule,
-    BookingModule,
-    RatingModule,
-    CommunicationModule,
-    AdminModule,
-    UserModule,
-    TripSharingModule,
-    NotificationModule,
-    MongooseModule.forRootAsync({
-      imports: [SecretsModule],
-      inject: [SecretsService],
-      useFactory: (secretsService: SecretsService) => ({
-        uri: secretsService.MONGO_URI,
-      }),
-    }),
-  ],
-  controllers: [],
-  providers: [],
-})
-export class MainModule {}
-````
-
 ## File: src/modules/auth/auth.service.ts
 ````typescript
 import { Injectable, Logger } from '@nestjs/common';
@@ -10463,6 +12893,12 @@ import { LoginDto } from './dto/auth.dto';
 import { UserStatus } from 'src/core/enums/user.enum';
 import { TwilioService } from '../twilio/twilio.service';
 import { SendPhoneOtpDto, VerifyPhoneOtpDto } from './dto/send-phone-otp.dto';
+import { SendEmailOtpDto } from './dto/send-email-otp.dto';
+import { VerifyEmailOtpDto } from './dto/verify-email-otp.dto';
+import { CompleteProfileDto } from './dto/complete-profile.dto';
+import { RoleNameEnum } from 'src/core/interfaces';
+import { SecretsService } from 'src/global/secrets/service';
+import * as jwt from 'jsonwebtoken';
 
 @Injectable()
 export class AuthService {
@@ -10479,6 +12915,7 @@ export class AuthService {
     private userSessionService: UserSessionService,
     private awsS3Service: AwsS3Service,
     private twilioService: TwilioService,
+    private secretsService: SecretsService,
   ) {}
 
   async sendPhoneVerificationOtp(
@@ -10487,13 +12924,14 @@ export class AuthService {
     const { phoneNumber } = dto;
 
     // 1. Check if phone number is already registered and verified (optional but recommended)
-    const existingUser = await this.userRepo.findOne({
+    const existingVerifiedUser = await this.userRepo.findOne({
       phoneNumber,
       phoneVerified: true,
-    });
-    if (existingUser) {
+      status: { $ne: UserStatus.INACTIVE },
+    }); // Check active/pending etc.
+    if (existingVerifiedUser) {
       ErrorHelper.ConflictException(
-        'This phone number is already associated with a verified account.',
+        'This phone number is already linked to a verified account.',
       );
     }
 
@@ -10521,60 +12959,246 @@ export class AuthService {
 
   async verifyPhoneNumberOtp(
     dto: VerifyPhoneOtpDto,
-  ): Promise<{ verified: boolean; message: string }> {
+  ): Promise<{ partialToken: string; message: string }> {
     const { phoneNumber, otp } = dto;
+    let userId: string;
 
     // 1. Check verification using Twilio Verify
-    try {
-      const isApproved = await this.twilioService.checkVerificationToken(
-        phoneNumber,
-        otp,
-      );
+    const isApproved = await this.twilioService.checkVerificationToken(
+      phoneNumber,
+      otp,
+    );
+    if (!isApproved) {
+      ErrorHelper.BadRequestException('Invalid or expired verification code.');
+    }
 
-      if (isApproved) {
-        // Optionally: If you want to mark the number as pre-verified for registration,
-        // you could store a temporary flag in Redis associated with the phone number.
-        // Example: await this.redisClient.set(`preverified:${phoneNumber}`, 'true', 'EX', 600); // 10 min expiry
+    // 2. Check/Create User
+    let user = await this.userRepo.findOne({ phoneNumber });
 
-        return {
-          verified: true,
-          message: 'Phone number verified successfully.',
-        };
-      } else {
-        // checkVerificationToken returned false (invalid/expired code)
-        ErrorHelper.BadRequestException(
-          'Invalid or expired verification code.',
+    if (user) {
+      // User exists
+      if (
+        user.phoneVerified &&
+        user.status !== UserStatus.PENDING_EMAIL_VERIFICATION
+      ) {
+        // Phone already verified and likely active/profile complete - maybe initiate login instead?
+        // For now, let's prevent proceeding with signup flow.
+        ErrorHelper.ConflictException(
+          'Phone number already linked to a verified account. Please log in.',
         );
       }
+      // User exists but phone wasn't verified, mark as verified
+      user.phoneVerified = true;
+      // Ensure status allows proceeding
+      if (user.status !== UserStatus.PENDING_EMAIL_VERIFICATION) {
+        user.status = UserStatus.PENDING_EMAIL_VERIFICATION;
+      }
+      await user.save();
+      userId = user._id.toString();
+      this.logger.log(`Updated existing user ${userId} - phone verified.`);
+    } else {
+      // No user exists, create one
+      // Determine default role (e.g., Passenger)
+      const defaultRole = await this.roleRepo.findOne({
+        name: RoleNameEnum.Passenger,
+      });
+      if (!defaultRole) throw new Error('Default role not found'); // Internal config error
+
+      user = await this.userRepo.create({
+        phoneNumber: phoneNumber,
+        phoneVerified: true,
+        status: UserStatus.PENDING_EMAIL_VERIFICATION,
+        roles: [defaultRole._id], // Assign default role
+        // Other fields (email, password, name) are null/undefined initially
+      });
+      userId = user._id.toString();
+      this.logger.log(`Created new user ${userId} after phone verification.`);
+    }
+
+    // 3. Generate Partial JWT
+    // This token proves phone is verified and identifies the user for next steps
+    const partialPayload = {
+      _id: userId,
+      phone: phoneNumber, // Include phone for reference if needed
+      isPhoneVerified: true,
+      isPartialToken: true, // Flag to distinguish from full login token
+    };
+    // Use a shorter expiry for partial tokens? e.g., 1 hour
+    const partialToken = this.tokenHelper.verify<any>( // Use standard generation but verify type below
+      jwt.sign(partialPayload, this.secretsService.jwtSecret.JWT_SECRET, {
+        expiresIn: '1h',
+      }),
+    );
+
+    return {
+      message: 'Phone number verified successfully.',
+      partialToken: partialToken, // Contains userId etc.
+    };
+  }
+
+  // --- Email Verification ---
+
+  async sendEmailVerificationOtp(
+    userId: string,
+    dto: SendEmailOtpDto,
+  ): Promise<{ message: string }> {
+    const { email } = dto;
+    this.logger.log(
+      `User ${userId} requesting email verification OTP for ${email}`,
+    );
+
+    // Optional: Check if email is already verified on *another* account
+    const emailExists = await this.userRepo.findOne({
+      email: email.toLowerCase(),
+      _id: { $ne: userId },
+      emailConfirm: true,
+    });
+    if (emailExists) {
+      ErrorHelper.ConflictException(
+        'This email address is already linked to another verified account.',
+      );
+    }
+
+    const user = await this.userRepo.findById(userId);
+    if (!user) ErrorHelper.NotFoundException('User not found.'); // Should not happen with valid partial JWT
+    if (!user.phoneVerified)
+      ErrorHelper.ForbiddenException('Phone number must be verified first.'); // Belt-and-suspenders check
+
+    // Generate and send email OTP using existing UserService logic
+    try {
+      const emailOtp = await this.userService.generateOtpCode({
+        _id: userId,
+      } as IUser); // Pass minimal user object
+      await this.mailEvent.sendUserConfirmation(
+        { email, firstName: user.firstName || 'User' },
+        emailOtp,
+      ); // Pass email and name
+      this.logger.log(
+        `Sent email verification OTP to ${email} for user ${userId}`,
+      );
+      return { message: 'Verification code sent to your email.' };
     } catch (error) {
-      // Error is already logged in TwilioService, rethrow specific message
+      this.logger.error(
+        `Failed to send email OTP for user ${userId}: ${error.message}`,
+        error.stack,
+      );
       ErrorHelper.InternalServerErrorException(
-        error.message || 'Could not verify code.',
+        'Could not send email verification code.',
       );
     }
   }
 
-  async createPortalUser(
-    payload: DriverRegistrationDto | PassengerRegistrationDto,
-    portalType: PortalType,
-  ): Promise<any> {
-    try {
-      const user = await this.createUser(payload, {
-        strategy: UserLoginStrategy.LOCAL,
-        portalType,
-      });
+  async verifyEmailOtp(
+    userId: string,
+    dto: VerifyEmailOtpDto,
+  ): Promise<{ message: string }> {
+    const { email, otp } = dto;
+    this.logger.log(
+      `User ${userId} attempting to verify email ${email} with OTP`,
+    );
 
-      const tokenInfo = await this.generateUserSession(user);
+    const user = await this.userRepo.findById(userId);
+    if (!user) ErrorHelper.NotFoundException('User not found.');
+    if (!user.phoneVerified)
+      ErrorHelper.ForbiddenException('Phone number must be verified first.');
 
-      return {
-        token: tokenInfo,
-        user: user,
-      };
-    } catch (error) {
-      ErrorHelper.ConflictException('Email Already Exist');
-      this.logger.log('createPortalUser', { error });
+    // Verify email OTP using UserService
+    const isEmailOtpValid = await this.userService.verifyOtpCode(
+      { _id: userId } as IUser,
+      otp,
+      'Invalid or expired email verification code.',
+    );
+    if (!isEmailOtpValid) {
+      // verifyOtpCode throws on failure, so this might be redundant
+      ErrorHelper.BadRequestException(
+        'Invalid or expired email verification code.',
+      );
     }
+
+    // Update user document
+    user.email = email.toLowerCase();
+    user.emailConfirm = true;
+    if (user.status === UserStatus.PENDING_EMAIL_VERIFICATION) {
+      user.status = UserStatus.PENDING_PROFILE_COMPLETION; // Move to next status
+    }
+    await user.save();
+
+    this.logger.log(`Email ${email} verified successfully for user ${userId}.`);
+    return { message: 'Email verified successfully.' };
   }
+
+  // --- Profile Completion ---
+
+  async completeUserProfile(
+    userId: string,
+    dto: CompleteProfileDto,
+  ): Promise<{ token: any; user: IUser }> {
+    this.logger.log(`User ${userId} completing profile.`);
+
+    const user = await this.userRepo.findById(userId);
+    if (!user) ErrorHelper.NotFoundException('User not found.');
+
+    // Verify preconditions (phone and email must be verified)
+    if (
+      !user.phoneVerified ||
+      !user.emailConfirm ||
+      user.email?.toLowerCase() !== dto.email.toLowerCase()
+    ) {
+      ErrorHelper.ForbiddenException(
+        'Phone and email must be verified, and email must match the verified address, before completing profile.',
+      );
+    }
+    if (user.status !== UserStatus.PENDING_PROFILE_COMPLETION) {
+      // Allow completion even if ACTIVE? Or only if PENDING_PROFILE_COMPLETION?
+      // this.logger.warn(`User ${userId} attempting to complete profile with status ${user.status}`);
+      // throw new BadRequestException('Profile completion not applicable for current user status.');
+    }
+
+    // Update user details
+    user.firstName = dto.firstName;
+    user.lastName = dto.lastName;
+    user.password = await this.encryptHelper.hash(dto.password);
+    user.country = dto.country;
+    user.gender = dto.gender;
+    user.status = UserStatus.ACTIVE; // Set status to ACTIVE
+    // Handle portalType change if included in DTO and logic is needed
+
+    await user.save();
+    this.logger.log(
+      `Profile completed for user ${userId}. Status set to ACTIVE.`,
+    );
+
+    // Generate FULL JWT session
+    const fullUser = { ...user.toObject(), _id: user._id.toString() } as IUser; // Ensure ID is string
+    const tokenInfo = await this.generateUserSession(fullUser); // Use existing method
+
+    return {
+      token: tokenInfo,
+      user: fullUser,
+    };
+  }
+
+  // async createPortalUser(
+  //   payload: DriverRegistrationDto | PassengerRegistrationDto,
+  //   portalType: PortalType,
+  // ): Promise<any> {
+  //   try {
+  //     const user = await this.createUser(payload, {
+  //       strategy: UserLoginStrategy.LOCAL,
+  //       portalType,
+  //     });
+
+  //     const tokenInfo = await this.generateUserSession(user);
+
+  //     return {
+  //       token: tokenInfo,
+  //       user: user,
+  //     };
+  //   } catch (error) {
+  //     ErrorHelper.ConflictException('Email Already Exist');
+  //     this.logger.log('createPortalUser', { error });
+  //   }
+  // }
 
   private async generateUserSession(
     user: IDriver | IPassenger,
@@ -10651,6 +13275,15 @@ export class AuthService {
       const { email, password, portalType } = params;
 
       const user = await this.validateUser(email, password, portalType);
+
+      if (
+        user.status === UserStatus.PENDING_EMAIL_VERIFICATION ||
+        user.status === UserStatus.PENDING_PROFILE_COMPLETION
+      ) {
+        ErrorHelper.ForbiddenException(
+          'Please complete your registration process before logging in.',
+        );
+      }
 
       const tokenInfo = await this.generateUserSession(user, params.rememberMe);
 
@@ -11004,6 +13637,61 @@ export class AuthService {
 }
 ````
 
+## File: src/modules/main.module.ts
+````typescript
+import { Module } from '@nestjs/common';
+import { ConfigModule } from '@nestjs/config';
+import { DatabaseModule } from './database/database.module';
+import { RidesModule } from './rides/rides.module';
+import { GeolocationModule } from './geolocation/geolocation.module';
+import { DriverModule } from './driver/driver.module';
+import { AuthModule } from './auth/auth.module';
+import { UserModule } from './user/user.module';
+import { MongooseModule } from '@nestjs/mongoose';
+import { SecretsModule } from '../global/secrets/module';
+import { SecretsService } from '../global/secrets/service';
+import { AppModule } from './app.module';
+import { GlobalModule } from 'src/global/global.module';
+import { BookingModule } from './booking/booking.module';
+import { RatingModule } from './rating/rating.module';
+import { CommunicationModule } from './communication/communication.module';
+import { AdminModule } from './admin/admin.module';
+import { TripSharingModule } from './trip-sharing/trip-sharing.module';
+import { NotificationModule } from './notification/notification.module';
+import { SeedModule } from './seed/seed.module';
+@Module({
+  imports: [
+    SeedModule,
+    GlobalModule,
+    DatabaseModule,
+    ConfigModule,
+    AuthModule,
+    UserModule,
+    RidesModule,
+    DriverModule,
+    GeolocationModule,
+    AppModule,
+    BookingModule,
+    RatingModule,
+    CommunicationModule,
+    AdminModule,
+    UserModule,
+    TripSharingModule,
+    NotificationModule,
+    MongooseModule.forRootAsync({
+      imports: [SecretsModule],
+      inject: [SecretsService],
+      useFactory: (secretsService: SecretsService) => ({
+        uri: secretsService.MONGO_URI,
+      }),
+    }),
+  ],
+  controllers: [],
+  providers: [],
+})
+export class MainModule {}
+````
+
 ## File: src/modules/auth/auth.controller.ts
 ````typescript
 import {
@@ -11017,6 +13705,7 @@ import {
   Logger,
   UseInterceptors,
   UploadedFile,
+  Patch,
 } from '@nestjs/common';
 import { AuthService } from './auth.service';
 import {
@@ -11025,12 +13714,10 @@ import {
   LoginDto,
   // TCodeLoginDto,
 } from './dto';
-import { BaseRegistrationDto } from './dto/base-registeration.dto';
 import { IDriver, IPassenger } from 'src/core/interfaces';
 import { User as UserDecorator } from 'src/core/decorators';
 import { AuthGuard } from 'src/core/guards';
 import { SecretsService } from 'src/global/secrets/service';
-import { PortalType } from 'src/core/enums/auth.enum';
 import { FileInterceptor } from '@nestjs/platform-express';
 import {
   ApiTags,
@@ -11042,6 +13729,10 @@ import {
 } from '@nestjs/swagger';
 import { AuthUserResponseDto, BaseResponseDto } from './dto/auth-response.dto';
 import { SendPhoneOtpDto, VerifyPhoneOtpDto } from './dto/send-phone-otp.dto';
+import { SendEmailOtpDto } from './dto/send-email-otp.dto';
+import { VerifyEmailOtpDto } from './dto/verify-email-otp.dto';
+import { CompleteProfileDto } from './dto/complete-profile.dto';
+import { User } from 'src/core/decorators';
 
 @ApiTags('Authentication')
 @Controller('auth')
@@ -11066,7 +13757,7 @@ export class AuthController {
       properties: {
         phoneNumber: {
           type: 'string',
-          example: '+2348012345678',
+          example: '+2348140822353',
           description: 'Phone number in E.164 format',
         },
       },
@@ -11085,8 +13776,9 @@ export class AuthController {
   @ApiOperation({ summary: 'Verify OTP for phone number' })
   @ApiResponse({
     status: 200,
-    description: 'OTP verified successfully',
-    type: BaseResponseDto<{ verified: boolean }>,
+    description:
+      'Phone OTP verified successfully. Returns partial token for next steps.',
+    schema: { properties: { partialToken: { type: 'string' } } },
   })
   @ApiResponse({ status: 400, description: 'Bad request - Invalid input' })
   @ApiResponse({ status: 500, description: 'Internal server error' })
@@ -11095,7 +13787,7 @@ export class AuthController {
       properties: {
         phoneNumber: {
           type: 'string',
-          example: '+2348012345678',
+          example: '+2348140822353',
           description: 'Phone number in E.164 format',
         },
         otp: {
@@ -11115,23 +13807,80 @@ export class AuthController {
     };
   }
 
-  @Post('/create-user')
-  @ApiOperation({ summary: 'Register a new user' })
+  @Post('email/send-otp')
+  @UseGuards(AuthGuard) // Requires the partial token from phone verification
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Send OTP to the provided email address' })
+  @ApiResponse({ status: 200, description: 'Email OTP sent successfully.' })
   @ApiResponse({
-    status: 201,
-    description: 'User successfully created',
+    status: 401,
+    description: 'Unauthorized (invalid/missing partial token).',
+  })
+  @ApiResponse({
+    status: 409,
+    description: 'Email already verified for another account.',
+  })
+  @HttpCode(HttpStatus.OK)
+  async sendEmailOtp(
+    @User() partialUser: { _id: string }, // Get userId from partial token
+    @Body() body: SendEmailOtpDto,
+  ): Promise<{ message: string }> {
+    const data = await this.authService.sendEmailVerificationOtp(
+      partialUser._id,
+      body,
+    );
+    return { message: data.message };
+  }
+
+  @Post('email/verify-otp')
+  @UseGuards(AuthGuard) // Requires partial token
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Verify OTP received via email' })
+  @ApiResponse({ status: 200, description: 'Email verified successfully.' })
+  @ApiResponse({ status: 400, description: 'Invalid or expired OTP.' })
+  @ApiResponse({ status: 401, description: 'Unauthorized.' })
+  @HttpCode(HttpStatus.OK)
+  async verifyEmailOtp(
+    @User() partialUser: { _id: string },
+    @Body() body: VerifyEmailOtpDto,
+  ): Promise<{ message: string }> {
+    const data = await this.authService.verifyEmailOtp(partialUser._id, body);
+    return { message: data.message };
+  }
+
+  // --- New Profile Completion Endpoint ---
+  @Patch('profile/complete') // Use PATCH
+  @UseGuards(AuthGuard) // Requires partial token
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Complete user profile after phone and email verification',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Profile completed successfully. Returns full user session.',
     type: BaseResponseDto<AuthUserResponseDto>,
   })
-  @ApiResponse({ status: 400, description: 'Bad request - Invalid input' })
-  async register(
-    @Body() body: BaseRegistrationDto,
-    @Body('portalType') portalType: PortalType,
-  ) {
-    const data = await this.authService.createPortalUser(body, portalType);
-
+  @ApiResponse({
+    status: 400,
+    description: 'Bad Request - Invalid input data.',
+  })
+  @ApiResponse({ status: 401, description: 'Unauthorized.' })
+  @ApiResponse({
+    status: 403,
+    description: 'Forbidden - Phone or email not verified.',
+  })
+  async completeProfile(
+    @User() partialUser: { _id: string },
+    @Body() body: CompleteProfileDto,
+  ): Promise<{ message: string; data: any }> {
+    // Return full login response structure
+    const result = await this.authService.completeUserProfile(
+      partialUser._id,
+      body,
+    );
     return {
-      data,
-      message: 'User created successfully',
+      message: 'Profile completed and user logged in successfully.',
+      data: result, // Contains { token, user }
     };
   }
 

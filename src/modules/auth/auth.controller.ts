@@ -61,7 +61,7 @@ export class AuthController {
       properties: {
         phoneNumber: {
           type: 'string',
-          example: '+2348012345678',
+          example: '+2348140822353',
           description: 'Phone number in E.164 format',
         },
       },
@@ -91,7 +91,7 @@ export class AuthController {
       properties: {
         phoneNumber: {
           type: 'string',
-          example: '+2348012345678',
+          example: '+2348140822353',
           description: 'Phone number in E.164 format',
         },
         otp: {

@@ -13,10 +13,10 @@ export type UserDocument = User & Document;
 
 @Schema({ timestamps: true })
 export class User {
-  @Prop({ type: String, required: true, trim: true })
+  @Prop({ type: String, required: false, trim: true })
   firstName: string;
 
-  @Prop({ type: String, required: true, trim: true })
+  @Prop({ type: String, required: false, trim: true })
   lastName: string;
 
   @Prop({
