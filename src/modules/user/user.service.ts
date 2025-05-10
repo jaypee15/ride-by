@@ -24,7 +24,7 @@ export class UserService {
     user: IDriver | IPassenger,
     options = {
       numberOnly: true,
-      length: 4,
+      length: 6,
     },
     expirationTimeInMinutes = 15,
   ): Promise<string> {

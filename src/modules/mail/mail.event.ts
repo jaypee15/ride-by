@@ -19,7 +19,7 @@ export class MailEvent {
   async sendUserConfirmation(user, code: string) {
     const sendMailDto = {
       to: [user.email],
-      subject: 'Welcome to TravEazy! Confirm your Email',
+      subject: 'Welcome to TravEazi! Confirm your Email',
       type: MailType.USER_CONFIRMATION,
       data: {
         firstName: user.firstName || 'User',
@@ -39,7 +39,7 @@ export class MailEvent {
 
     const sendMailDto = {
       to: [user.email],
-      subject: 'Reset Password - TraveEazy',
+      subject: 'Reset Password - TraveEazi',
       type: MailType.RESET_PASSWORD,
       data: {
         firstName: user.firstName || 'User',
@@ -54,7 +54,7 @@ export class MailEvent {
   async sendUserCredentials(user, password: string) {
     const sendMailDto = {
       to: [user.email],
-      subject: 'Welcome to TravEazy! Here are your login credentials',
+      subject: 'Welcome to TravEazi! Here are your login credentials',
       type: MailType.USER_CREDENTIALS,
       data: {
         firstName: user.firstName || 'User',

@@ -1,6 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
-  IsEmail,
   IsEnum,
   IsNotEmpty,
   IsOptional,
@@ -26,15 +25,6 @@ export class CompleteProfileDto {
   @IsNotEmpty()
   @MinLength(2)
   lastName: string;
-
-  // Email might already be set from verify step, but include for validation/confirmation
-  @ApiProperty({
-    description: "User's email address (must match verified one)",
-    example: 'user@example.com',
-  })
-  @IsEmail()
-  @IsNotEmpty()
-  email: string;
 
   @ApiProperty({
     description:

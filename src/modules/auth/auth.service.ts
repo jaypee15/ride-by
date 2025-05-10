@@ -158,16 +158,18 @@ export class AuthService {
       isPhoneVerified: true,
       isPartialToken: true, // Flag to distinguish from full login token
     };
-    // Use a shorter expiry for partial tokens? e.g., 1 hour
-    const partialToken = this.tokenHelper.verify<any>( // Use standard generation but verify type below
-      jwt.sign(partialPayload, this.secretsService.jwtSecret.JWT_SECRET, {
+
+    const jwtString = jwt.sign(
+      partialPayload,
+      this.secretsService.jwtSecret.JWT_SECRET,
+      {
         expiresIn: '1h',
-      }),
+      },
     );
 
     return {
       message: 'Phone number verified successfully.',
-      partialToken: partialToken, // Contains userId etc.
+      partialToken: jwtString, // Contains userId etc.
     };
   }
 
@@ -274,11 +276,7 @@ export class AuthService {
     if (!user) ErrorHelper.NotFoundException('User not found.');
 
     // Verify preconditions (phone and email must be verified)
-    if (
-      !user.phoneVerified ||
-      !user.emailConfirm ||
-      user.email?.toLowerCase() !== dto.email.toLowerCase()
-    ) {
+    if (!user.phoneVerified || !user.emailConfirm) {
       ErrorHelper.ForbiddenException(
         'Phone and email must be verified, and email must match the verified address, before completing profile.',
       );
