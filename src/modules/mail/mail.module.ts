@@ -37,7 +37,7 @@ import { roleSchema, Role } from '../user/schemas/role.schema';
           rejectUnauthorized: false,
         },
         defaults: {
-          from: '"No Reply" <no-reply@TravEazi.com>',
+          from: '"No Reply" <hello@demomailtrap.com>',
         },
         preview: true,
         template: {

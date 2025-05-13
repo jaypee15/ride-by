@@ -7,10 +7,5 @@ export const INVALID_TOKEN = 'Invalid token';
 export const EMAIL_ALREADY_EXISTS = 'Email already exists';
 export const USER_DOESNT_EXIST = 'User Not Found';
 export const PORTAL_TYPE_ERROR = 'Please specify portal type';
-
-export const STORY_ASSIGNED = 'A story have been assigned to you.';
-export const STORY_UPDATED = 'A story assigned to you was updated';
-export const SUBTASK_ASSIGNED = 'A subtask have been assigned to you.';
-export const WELCOME_MESSAGE = 'Welcome to Xtern.ai';
-export const SLA_BREACH = 'SLA Breach';
-export const SLA_WARNING = 'SLA Warning';
+export const INVALID_PHONE_NUMBER_OR_PASSWORD =
+  'Invalid phone number or password';

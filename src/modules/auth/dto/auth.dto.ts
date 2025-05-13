@@ -5,6 +5,8 @@ import {
   IsOptional,
   IsString,
   IsUrl,
+  IsNotEmpty,
+  IsPhoneNumber,
 } from 'class-validator';
 import { PortalType } from 'src/core/enums/auth.enum';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
@@ -56,12 +58,17 @@ export class ForgotPasswordDto {
 
 export class LoginDto {
   @ApiProperty({
-    description: "User's email address",
-    example: 'user@example.com',
+    description: "User's phone number",
+    example: '+234567890123',
+    type: String,
   })
   @IsString()
-  @IsEmail()
-  email: string;
+  @IsNotEmpty()
+  @IsPhoneNumber('NG', {
+    message:
+      'Please provide a valid Nigerian phone number in E.164 format (e.g., +23480...)',
+  })
+  phoneNumber: string; // Expecting E.164 format
 
   @ApiProperty({ description: "User's password" })
   @IsString()

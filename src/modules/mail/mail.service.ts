@@ -10,7 +10,7 @@ import { InjectModel } from '@nestjs/mongoose';
 @Injectable()
 export class MailService {
   private logger = new Logger(MailService.name);
-  private from = '"TravEazi Team" <notifications@TravEazi.com>';
+  private from = '"TravEazi Team" <hello@demomailtrap.com>';
 
   private confirmationTemplate = fs.readFileSync(
     __dirname + '/templates/confirmation.ejs',

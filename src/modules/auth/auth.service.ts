@@ -6,6 +6,7 @@ import {
   INVALID_EMAIL_OR_PASSWORD,
   INVALID_USER,
   PORTAL_TYPE_ERROR,
+  INVALID_PHONE_NUMBER_OR_PASSWORD,
 } from 'src/core/constants/messages.constant';
 import { EncryptHelper, ErrorHelper } from 'src/core/helpers';
 import { UserLoginStrategy, IDriver, IPassenger } from 'src/core/interfaces';
@@ -405,9 +406,9 @@ export class AuthService {
 
   async login(params: LoginDto) {
     try {
-      const { email, password, portalType } = params;
+      const { phoneNumber, password, portalType } = params;
 
-      const user = await this.validateUser(email, password, portalType);
+      const user = await this.validateUser(phoneNumber, password, portalType);
 
       if (
         user.status === UserStatus.PENDING_EMAIL_VERIFICATION ||
@@ -435,20 +436,20 @@ export class AuthService {
   }
 
   async validateUser(
-    email: string,
+    phone: string,
     password: string,
     portalType?: PortalType,
   ): Promise<IDriver | IPassenger> {
-    const emailQuery = {
-      email: email.toLowerCase(),
+    const phoneQuery = {
+      phoneNumber: phone,
     };
 
     const user = await this.userRepo
-      .findOne(emailQuery)
+      .findOne(phoneQuery)
       .populate('roles', 'name');
 
     if (!user) {
-      ErrorHelper.BadRequestException(INVALID_EMAIL_OR_PASSWORD);
+      ErrorHelper.BadRequestException(INVALID_PHONE_NUMBER_OR_PASSWORD);
     }
 
     const passwordMatch = await this.encryptHelper.compare(
@@ -756,9 +757,9 @@ export class AuthService {
     exists: boolean;
     user: IDriver | IPassenger;
   }> {
-    const { email, password } = params;
+    const { phoneNumber, password } = params;
 
-    const user = await this.validateUser(email, password);
+    const user = await this.validateUser(phoneNumber, password);
 
     const session = await this.userSessionService.checkSession(user._id);
 
