@@ -438,6 +438,7 @@ export class AuthService {
   async validateUser(
     phone: string,
     password: string,
+    portalType?: string,
   ): Promise<IDriver | IPassenger> {
     const phoneQuery = {
       phoneNumber: phone,
