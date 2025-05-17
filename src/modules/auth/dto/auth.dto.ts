@@ -59,7 +59,7 @@ export class ForgotPasswordDto {
 export class LoginDto {
   @ApiProperty({
     description: "User's phone number",
-    example: '+234567890123',
+    example: '+23481040822353',
     type: String,
   })
   @IsString()

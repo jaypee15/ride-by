@@ -74,7 +74,7 @@ export class User {
   strategy: UserLoginStrategy;
 
   @Prop({
-    type: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Roles' }],
+    type: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Role' }],
     required: true,
   })
   roles: Role[];

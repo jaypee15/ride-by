@@ -1466,89 +1466,6 @@ export class AuthUserResponseDto {
 }
 ````
 
-## File: src/modules/auth/dto/complete-profile.dto.ts
-````typescript
-import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import {
-  IsEmail,
-  IsEnum,
-  IsNotEmpty,
-  IsOptional,
-  IsString,
-  MinLength,
-  IsBoolean,
-  Equals,
-} from 'class-validator';
-import { PASSWORD_PATTERN } from '../../../core/constants/base.constant';
-import { UserGender } from 'src/core/enums/user.enum';
-import { IsMatchPattern } from '../../../core/validators/IsMatchPattern.validator';
-import { PortalType } from 'src/core/enums/auth.enum';
-
-export class CompleteProfileDto {
-  @ApiProperty({ description: "User's first name", minLength: 2 })
-  @IsString()
-  @IsNotEmpty()
-  @MinLength(2)
-  firstName: string;
-
-  @ApiProperty({ description: "User's last name", minLength: 2 })
-  @IsString()
-  @IsNotEmpty()
-  @MinLength(2)
-  lastName: string;
-
-  // Email might already be set from verify step, but include for validation/confirmation
-  @ApiProperty({
-    description: "User's email address (must match verified one)",
-    example: 'user@example.com',
-  })
-  @IsEmail()
-  @IsNotEmpty()
-  email: string;
-
-  @ApiProperty({
-    description:
-      "User's password - must contain uppercase, lowercase, and number",
-    minLength: 8,
-  })
-  @IsString()
-  @IsNotEmpty()
-  @MinLength(8, { message: 'Password must be at least 8 characters long' })
-  @IsMatchPattern(PASSWORD_PATTERN, {
-    message:
-      'Password must contain at least one uppercase letter, one lowercase letter, and one number',
-  })
-  password: string;
-
-  @ApiPropertyOptional({ description: "User's country" })
-  @IsOptional()
-  @IsString()
-  country?: string;
-
-  @ApiPropertyOptional({ description: "User's gender", enum: UserGender })
-  @IsOptional()
-  @IsEnum(UserGender)
-  gender?: UserGender;
-
-  @ApiProperty({
-    description: 'Whether user has accepted terms and conditions',
-    default: false,
-  })
-  @IsBoolean({ message: 'You must accept the terms and conditions.' })
-  @Equals(true, { message: 'You must accept the terms and conditions.' })
-  termsAccepted: boolean; // Ensure terms are accepted at final step
-
-  // Optional: Allow choosing portal type here if not decided earlier
-  @ApiPropertyOptional({
-    enum: PortalType,
-    description: 'Choose account type (Driver/Passenger)',
-  })
-  @IsOptional()
-  @IsEnum(PortalType)
-  portalType?: PortalType;
-}
-````
-
 ## File: src/modules/auth/dto/send-email-otp.dto.ts
 ````typescript
 import { ApiProperty } from '@nestjs/swagger';
@@ -8551,26 +8468,6 @@ export const DRIVER_ONBOARDING_STEPS = 8;
 export const PASSENGER_ONBOARDING_STEPS = 5;
 ````
 
-## File: src/core/constants/messages.constant.ts
-````typescript
-export const INVALID_EMAIL_OR_PASSWORD = 'Invalid email or password';
-export const INVALID_USER = 'Invalid user';
-export const INVALID_CODE = 'Invalid code or expired';
-export const INVALID_CODE_FORGOT_PASSWORD =
-  "This link has expired. You can't change your password using this link";
-export const INVALID_TOKEN = 'Invalid token';
-export const EMAIL_ALREADY_EXISTS = 'Email already exists';
-export const USER_DOESNT_EXIST = 'User Not Found';
-export const PORTAL_TYPE_ERROR = 'Please specify portal type';
-
-export const STORY_ASSIGNED = 'A story have been assigned to you.';
-export const STORY_UPDATED = 'A story assigned to you was updated';
-export const SUBTASK_ASSIGNED = 'A subtask have been assigned to you.';
-export const WELCOME_MESSAGE = 'Welcome to Xtern.ai';
-export const SLA_BREACH = 'SLA Breach';
-export const SLA_WARNING = 'SLA Warning';
-````
-
 ## File: src/core/decorators/index.ts
 ````typescript
 export * from './user.decorator';
@@ -8617,78 +8514,6 @@ export enum DriverVerificationStatus {
 }
 ````
 
-## File: src/core/guards/authenticate.guard.ts
-````typescript
-import {
-  CanActivate,
-  ExecutionContext,
-  Injectable,
-  Logger,
-} from '@nestjs/common';
-
-import { ErrorHelper } from '../../core/helpers';
-import { IUser, RequestHeadersEnum } from '../../core/interfaces';
-import { TokenHelper } from '../../global/utils/token.utils';
-import { UserSessionService } from '../../global/user-session/service';
-
-@Injectable()
-export class AuthGuard implements CanActivate {
-  private logger = new Logger(AuthGuard.name);
-
-  constructor(
-    private tokenHelper: TokenHelper,
-    private userSession: UserSessionService,
-  ) {}
-
-  async canActivate(context: ExecutionContext): Promise<boolean> {
-    const req = context.switchToHttp().getRequest();
-
-    const authorization =
-      req.headers[RequestHeadersEnum.Authorization] ||
-      String(req.cookies.accessToken);
-
-    if (!authorization) {
-      ErrorHelper.ForbiddenException('Authorization header is required');
-    }
-
-    const user = await this.verifyAccessToken(authorization);
-
-    req.user = user;
-
-    return true;
-  }
-
-  async verifyAccessToken(authorization: string): Promise<IUser> {
-    const [bearer, accessToken] = authorization.split(' ');
-
-    if (bearer == 'Bearer' && accessToken !== '') {
-      const user = this.tokenHelper.verify<IUser & { sessionId: string }>(
-        accessToken,
-      );
-
-      const session = await this.userSession.get(user._id);
-
-      if (!session) {
-        this.logger.error(`verifyAccessToken: Session not found ${user._id}`);
-        ErrorHelper.UnauthorizedException('Unauthorized!');
-      }
-
-      if (session.sessionId !== user.sessionId) {
-        this.logger.error(
-          `verifyAccessToken: SessionId not match ${session.sessionId} - ${user.sessionId}`,
-        );
-        ErrorHelper.UnauthorizedException('Unauthorized');
-      }
-
-      return user;
-    } else {
-      this.logger.error(`verifyAccessToken: Invalid token ${accessToken}`);
-      ErrorHelper.UnauthorizedException('Unauthorized');
-    }
-  }
-}
-````
-
 ## File: src/core/helpers/index.ts
 ````typescript
 export * from './error.utils';
@@ -8719,6 +8544,79 @@ import { SecretsService } from './service';
   exports: [SecretsService],
 })
 export class SecretsModule {}
+````
+
+## File: src/modules/auth/dto/complete-profile.dto.ts
+````typescript
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import {
+  IsEnum,
+  IsNotEmpty,
+  IsOptional,
+  IsString,
+  MinLength,
+  IsBoolean,
+  Equals,
+} from 'class-validator';
+import { PASSWORD_PATTERN } from '../../../core/constants/base.constant';
+import { UserGender } from 'src/core/enums/user.enum';
+import { IsMatchPattern } from '../../../core/validators/IsMatchPattern.validator';
+import { PortalType } from 'src/core/enums/auth.enum';
+
+export class CompleteProfileDto {
+  @ApiProperty({ description: "User's first name", minLength: 2 })
+  @IsString()
+  @IsNotEmpty()
+  @MinLength(2)
+  firstName: string;
+
+  @ApiProperty({ description: "User's last name", minLength: 2 })
+  @IsString()
+  @IsNotEmpty()
+  @MinLength(2)
+  lastName: string;
+
+  @ApiProperty({
+    description:
+      "User's password - must contain uppercase, lowercase, and number",
+    minLength: 8,
+  })
+  @IsString()
+  @IsNotEmpty()
+  @MinLength(8, { message: 'Password must be at least 8 characters long' })
+  @IsMatchPattern(PASSWORD_PATTERN, {
+    message:
+      'Password must contain at least one uppercase letter, one lowercase letter, and one number',
+  })
+  password: string;
+
+  @ApiPropertyOptional({ description: "User's country" })
+  @IsOptional()
+  @IsString()
+  country?: string;
+
+  @ApiPropertyOptional({ description: "User's gender", enum: UserGender })
+  @IsOptional()
+  @IsEnum(UserGender)
+  gender?: UserGender;
+
+  @ApiProperty({
+    description: 'Whether user has accepted terms and conditions',
+    default: false,
+  })
+  @IsBoolean({ message: 'You must accept the terms and conditions.' })
+  @Equals(true, { message: 'You must accept the terms and conditions.' })
+  termsAccepted: boolean; // Ensure terms are accepted at final step
+
+  // Optional: Allow choosing portal type here if not decided earlier
+  @ApiPropertyOptional({
+    enum: PortalType,
+    description: 'Choose account type (Driver/Passenger)',
+  })
+  @IsOptional()
+  @IsEnum(PortalType)
+  portalType?: PortalType;
+}
 ````
 
 ## File: src/modules/auth/dto/index.ts
@@ -9630,308 +9528,6 @@ export enum MailType {
 }
 ````
 
-## File: src/modules/mail/mail.event.ts
-````typescript
-import { Injectable, Logger } from '@nestjs/common';
-import { SecretsService } from 'src/global/secrets/service';
-import { MailType } from './enums';
-import { MailController } from './mail.controller';
-import { Queue } from 'bull';
-import { InjectQueue } from '@nestjs/bull';
-import { UserService } from '../user/user.service';
-
-@Injectable()
-export class MailEvent {
-  private logger = new Logger(MailEvent.name);
-  constructor(
-    @InjectQueue('emailQueue') private emailQueue: Queue,
-    private secretService: SecretsService,
-    private mailController: MailController,
-    private userService: UserService,
-  ) {}
-
-  async sendUserConfirmation(user, code: string) {
-    const sendMailDto = {
-      to: [user.email],
-      subject: 'Welcome to TravEazy! Confirm your Email',
-      type: MailType.USER_CONFIRMATION,
-      data: {
-        firstName: user.firstName || 'User',
-        email: user.email,
-        code,
-      },
-      saveAsNotification: false,
-    };
-
-    await this.mailController.sendMail(sendMailDto);
-  }
-
-  async sendResetPassword(user, token: string, callbackURL?: string) {
-    const url = new URL(callbackURL);
-    url.searchParams.append('code', token);
-    this.logger.log('url', url);
-
-    const sendMailDto = {
-      to: [user.email],
-      subject: 'Reset Password - TraveEazy',
-      type: MailType.RESET_PASSWORD,
-      data: {
-        firstName: user.firstName || 'User',
-        url,
-      },
-      saveAsNotification: false,
-    };
-
-    await this.mailController.sendMail(sendMailDto);
-  }
-
-  async sendUserCredentials(user, password: string) {
-    const sendMailDto = {
-      to: [user.email],
-      subject: 'Welcome to TravEazy! Here are your login credentials',
-      type: MailType.USER_CREDENTIALS,
-      data: {
-        firstName: user.firstName || 'User',
-        email: user.email,
-        password,
-      },
-      saveAsNotification: false,
-    };
-
-    await this.mailController.sendMail(sendMailDto);
-  }
-}
-````
-
-## File: src/modules/mail/mail.module.ts
-````typescript
-import { Module } from '@nestjs/common';
-import { MailerModule } from '@nestjs-modules/mailer';
-import { EjsAdapter } from '@nestjs-modules/mailer/dist/adapters/ejs.adapter';
-import { join } from 'path';
-import { MailController } from './mail.controller';
-import { MailService } from './mail.service';
-import { SecretsModule } from 'src/global/secrets/module';
-import { SecretsService } from 'src/global/secrets/service';
-import { BullModule } from '@nestjs/bull';
-import { MongooseModule } from '@nestjs/mongoose';
-import { Email, EmailSchema } from './schema/email.schema';
-import { UserModule } from '../user/user.module';
-import { MailEvent } from './mail.event';
-import { EmailProcessor } from './cron-job/email.processor';
-import { TokenSchema, Token } from '../user/schemas/token.schema';
-import { UserSchema, User } from '../user/schemas/user.schema';
-import { roleSchema, Role } from '../user/schemas/role.schema';
-
-@Module({
-  imports: [
-    SecretsModule,
-    UserModule,
-    MailerModule.forRootAsync({
-      useFactory: ({ mailSecret }: SecretsService) => ({
-        transport: {
-          host: mailSecret.MAIL_HOST,
-          port: mailSecret.MAIL_PORT,
-          auth: {
-            user: mailSecret.MAIL_USERNAME,
-            pass: mailSecret.MAIL_PASSWORD,
-          },
-        },
-        pool: true, // Enable connection pooling
-        maxConnections: 5, // Limit number of connections
-        maxMessages: 100, // Limit number of messages per connection
-        tls: {
-          rejectUnauthorized: false,
-        },
-        defaults: {
-          from: '"No Reply" <no-reply@TravEazi.com>',
-        },
-        preview: true,
-        template: {
-          dir: join(__dirname, 'templates'),
-          adapter: new EjsAdapter(),
-          options: {
-            strict: false,
-          },
-        },
-      }),
-      inject: [SecretsService],
-      imports: [SecretsModule],
-    }),
-    // Register Bull queue for email processing
-    BullModule.forRootAsync({
-      useFactory: ({ userSessionRedis }: SecretsService) => ({
-        redis: {
-          host: userSessionRedis.REDIS_HOST,
-          port: userSessionRedis.REDIS_PORT,
-          password: userSessionRedis.REDIS_PASSWORD,
-        },
-      }),
-      inject: [SecretsService],
-      imports: [SecretsModule],
-    }),
-
-    BullModule.registerQueue({
-      name: 'emailQueue', // Name of the queue for email jobs
-    }),
-    MongooseModule.forFeature([
-      {
-        name: Email.name,
-        schema: EmailSchema,
-      },
-      { name: Token.name, schema: TokenSchema },
-      { name: User.name, schema: UserSchema },
-      { name: Role.name, schema: roleSchema },
-    ]),
-  ],
-  controllers: [MailController],
-  providers: [MailService, MailEvent, MailController, EmailProcessor],
-  exports: [MailService, MailEvent, BullModule, MailController],
-})
-export class MailModule {}
-````
-
-## File: src/modules/mail/mail.service.ts
-````typescript
-import { Injectable, Logger } from '@nestjs/common';
-import { MailerService } from '@nestjs-modules/mailer';
-import * as ejs from 'ejs';
-import * as fs from 'fs';
-import { SendMailDto } from './dto/mail.dto';
-import { Email } from './schema/email.schema';
-import { Model } from 'mongoose';
-import { InjectModel } from '@nestjs/mongoose';
-
-@Injectable()
-export class MailService {
-  private logger = new Logger(MailService.name);
-  private from = '"TravEazi Team" <notifications@TravEazi.com>';
-
-  private confirmationTemplate = fs.readFileSync(
-    __dirname + '/templates/confirmation.ejs',
-    { encoding: 'utf-8' },
-  );
-
-  private resetpasswordTemplate = fs.readFileSync(
-    __dirname + '/templates/resetpassword.ejs',
-    { encoding: 'utf-8' },
-  );
-  private credentialsTemplate = fs.readFileSync(
-    __dirname + '/templates/credentials.ejs',
-    { encoding: 'utf-8' },
-  );
-
-  private inAppEmaillTemplate = fs.readFileSync(
-    __dirname + '/templates/marketing.ejs',
-    { encoding: 'utf-8' },
-  );
-
-  constructor(
-    @InjectModel(Email.name)
-    private emailRepo: Model<Email>,
-    private mailerService: MailerService,
-  ) {}
-
-  async sendUserConfirmation(data: SendMailDto) {
-    const renderedEmail = ejs.render(this.confirmationTemplate, {
-      name: data.data['firstName'],
-      email: data.data['email'],
-      code: data.data['code'],
-    });
-
-    return this.mailerService.sendMail({
-      to: data.to,
-      from: this.from,
-      subject: data.subject,
-      template: './confirmation',
-      context: {
-        name: data.data['firstName'],
-        email: data.data['email'],
-        code: data.data['code'],
-      },
-      headers: {
-        'X-Category': data.type,
-      },
-      html: renderedEmail,
-      text: renderedEmail,
-    });
-  }
-
-  async sendResetPassword(data: SendMailDto) {
-    const renderedEmail = ejs.render(this.resetpasswordTemplate, {
-      name: data.data['firstName'],
-      url: data.data['url'],
-    });
-
-    return this.mailerService.sendMail({
-      to: data.to,
-      from: this.from,
-      subject: data.subject,
-      template: './resetpassword',
-      html: renderedEmail,
-      text: renderedEmail,
-      context: {
-        name: data.data['firstName'],
-        url: data.data['url'],
-      },
-      headers: {
-        'X-Category': data.type,
-      },
-    });
-  }
-
-  async sendUserCredentials(data: SendMailDto) {
-    const renderedEmail = ejs.render(this.credentialsTemplate, {
-      name: data.data['firstName'],
-      email: data.data['email'],
-      password: data.data['password'],
-    });
-
-    return this.mailerService.sendMail({
-      to: data.to,
-      from: this.from,
-      subject: data.subject,
-      template: './credentials',
-      context: {
-        name: data.data['firstName'],
-        email: data.data['email'],
-        password: data.data['password'],
-      },
-      headers: {
-        'X-Category': data.type,
-      },
-      html: renderedEmail,
-      text: renderedEmail,
-    });
-  }
-
-  async sendInAppEmailNotification(data: SendMailDto) {
-    const renderedEmail = ejs.render(this.inAppEmaillTemplate, {
-      name: data.data['firstName'],
-      email: data.data['email'],
-      body: data.data['body'],
-    });
-
-    return this.mailerService.sendMail({
-      to: data.to,
-      from: this.from,
-      subject: data.subject,
-      template: './emailnotification',
-      context: {
-        name: data.data['firstName'],
-        email: data.data['email'],
-        body: data.data['body'],
-      },
-      headers: {
-        'X-Category': data.type,
-      },
-      html: renderedEmail,
-      text: renderedEmail,
-    });
-  }
-}
-````
-
 ## File: src/modules/rides/schemas/ride.schema.ts
 ````typescript
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
@@ -10655,6 +10251,21 @@ export class RedisIoAdapter extends IoAdapter {
 }
 ````
 
+## File: src/core/constants/messages.constant.ts
+````typescript
+export const INVALID_EMAIL_OR_PASSWORD = 'Invalid email or password';
+export const INVALID_USER = 'Invalid user';
+export const INVALID_CODE = 'Invalid code or expired';
+export const INVALID_CODE_FORGOT_PASSWORD =
+  "This link has expired. You can't change your password using this link";
+export const INVALID_TOKEN = 'Invalid token';
+export const EMAIL_ALREADY_EXISTS = 'Email already exists';
+export const USER_DOESNT_EXIST = 'User Not Found';
+export const PORTAL_TYPE_ERROR = 'Please specify portal type';
+export const INVALID_PHONE_NUMBER_OR_PASSWORD =
+  'Invalid phone number or password';
+````
+
 ## File: src/core/decorators/user.decorator.ts
 ````typescript
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -10822,6 +10433,112 @@ export class PaginationResultDto<T> {
       itemCount,
       pageOptionsDto: options as PaginationDto,
     });
+  }
+}
+````
+
+## File: src/core/guards/authenticate.guard.ts
+````typescript
+import {
+  CanActivate,
+  ExecutionContext,
+  Injectable,
+  Logger,
+} from '@nestjs/common';
+
+import { ErrorHelper } from '../../core/helpers';
+import { IUser, RequestHeadersEnum } from '../../core/interfaces'; // Ensure IUser is general enough or use a more specific type for decoded token
+import { TokenHelper } from '../../global/utils/token.utils';
+import { UserSessionService } from '../../global/user-session/service';
+
+// Define a more specific type for what the token might contain
+type DecodedTokenPayload = IUser & {
+  sessionId?: string;
+  isPartialToken?: boolean;
+};
+
+@Injectable()
+export class AuthGuard implements CanActivate {
+  private logger = new Logger(AuthGuard.name);
+
+  constructor(
+    private tokenHelper: TokenHelper,
+    private userSession: UserSessionService,
+  ) {}
+
+  async canActivate(context: ExecutionContext): Promise<boolean> {
+    const req = context.switchToHttp().getRequest();
+
+    const authorization =
+      req.headers[RequestHeadersEnum.Authorization] ||
+      String(req.cookies.accessToken);
+
+    if (!authorization) {
+      ErrorHelper.ForbiddenException('Authorization header is required');
+    }
+
+    const user = await this.verifyAccessToken(authorization);
+
+    req.user = user; // Attach the decoded payload (either partial or full)
+
+    return true;
+  }
+
+  async verifyAccessToken(authorization: string): Promise<DecodedTokenPayload> {
+    // Return type updated
+    const [bearer, accessToken] = authorization.split(' ');
+
+    if (bearer == 'Bearer' && accessToken !== '') {
+      const decodedPayload = this.tokenHelper.verify<DecodedTokenPayload>( // Verify and get payload
+        accessToken,
+      );
+
+      // If it's a partial token, bypass session checks
+      if (decodedPayload.isPartialToken) {
+        this.logger.log(
+          `Partial token verified for user ${decodedPayload._id}. Bypassing session check.`,
+        );
+        // Ensure the partial token contains necessary fields like _id
+        if (!decodedPayload._id) {
+          this.logger.error('Partial token is missing _id field.');
+          ErrorHelper.UnauthorizedException('Invalid partial token.');
+        }
+        return decodedPayload; // Return the decoded partial payload
+      }
+
+      // --- For FULL tokens, proceed with session validation ---
+      if (!decodedPayload.sessionId) {
+        this.logger.error(
+          `Full token is missing sessionId for user ${decodedPayload._id}`,
+        );
+        ErrorHelper.UnauthorizedException('Invalid token: Session ID missing.');
+      }
+
+      const session = await this.userSession.get(decodedPayload._id);
+
+      if (!session) {
+        this.logger.error(
+          `verifyAccessToken: Session not found for full token ${decodedPayload._id}`,
+        );
+        ErrorHelper.UnauthorizedException(
+          'Unauthorized! Session expired or not found.',
+        );
+      }
+
+      if (session.sessionId !== decodedPayload.sessionId) {
+        this.logger.error(
+          `verifyAccessToken: SessionId mismatch for full token. DB: ${session.sessionId}, Token: ${decodedPayload.sessionId}`,
+        );
+        ErrorHelper.UnauthorizedException('Unauthorized! Session mismatch.');
+      }
+
+      return decodedPayload; // Return the decoded full user payload
+    } else {
+      this.logger.error(
+        `verifyAccessToken: Invalid token format: ${accessToken}`,
+      );
+      ErrorHelper.UnauthorizedException('Unauthorized! Invalid token format.');
+    }
   }
 }
 ````
@@ -11731,6 +11448,308 @@ export class MailController {
 }
 ````
 
+## File: src/modules/mail/mail.event.ts
+````typescript
+import { Injectable, Logger } from '@nestjs/common';
+import { SecretsService } from 'src/global/secrets/service';
+import { MailType } from './enums';
+import { MailController } from './mail.controller';
+import { Queue } from 'bull';
+import { InjectQueue } from '@nestjs/bull';
+import { UserService } from '../user/user.service';
+
+@Injectable()
+export class MailEvent {
+  private logger = new Logger(MailEvent.name);
+  constructor(
+    @InjectQueue('emailQueue') private emailQueue: Queue,
+    private secretService: SecretsService,
+    private mailController: MailController,
+    private userService: UserService,
+  ) {}
+
+  async sendUserConfirmation(user, code: string) {
+    const sendMailDto = {
+      to: [user.email],
+      subject: 'Welcome to TravEazi! Confirm your Email',
+      type: MailType.USER_CONFIRMATION,
+      data: {
+        firstName: user.firstName || 'User',
+        email: user.email,
+        code,
+      },
+      saveAsNotification: false,
+    };
+
+    await this.mailController.sendMail(sendMailDto);
+  }
+
+  async sendResetPassword(user, token: string, callbackURL?: string) {
+    const url = new URL(callbackURL);
+    url.searchParams.append('code', token);
+    this.logger.log('url', url);
+
+    const sendMailDto = {
+      to: [user.email],
+      subject: 'Reset Password - TraveEazi',
+      type: MailType.RESET_PASSWORD,
+      data: {
+        firstName: user.firstName || 'User',
+        url,
+      },
+      saveAsNotification: false,
+    };
+
+    await this.mailController.sendMail(sendMailDto);
+  }
+
+  async sendUserCredentials(user, password: string) {
+    const sendMailDto = {
+      to: [user.email],
+      subject: 'Welcome to TravEazi! Here are your login credentials',
+      type: MailType.USER_CREDENTIALS,
+      data: {
+        firstName: user.firstName || 'User',
+        email: user.email,
+        password,
+      },
+      saveAsNotification: false,
+    };
+
+    await this.mailController.sendMail(sendMailDto);
+  }
+}
+````
+
+## File: src/modules/mail/mail.module.ts
+````typescript
+import { Module } from '@nestjs/common';
+import { MailerModule } from '@nestjs-modules/mailer';
+import { EjsAdapter } from '@nestjs-modules/mailer/dist/adapters/ejs.adapter';
+import { join } from 'path';
+import { MailController } from './mail.controller';
+import { MailService } from './mail.service';
+import { SecretsModule } from 'src/global/secrets/module';
+import { SecretsService } from 'src/global/secrets/service';
+import { BullModule } from '@nestjs/bull';
+import { MongooseModule } from '@nestjs/mongoose';
+import { Email, EmailSchema } from './schema/email.schema';
+import { UserModule } from '../user/user.module';
+import { MailEvent } from './mail.event';
+import { EmailProcessor } from './cron-job/email.processor';
+import { TokenSchema, Token } from '../user/schemas/token.schema';
+import { UserSchema, User } from '../user/schemas/user.schema';
+import { roleSchema, Role } from '../user/schemas/role.schema';
+
+@Module({
+  imports: [
+    SecretsModule,
+    UserModule,
+    MailerModule.forRootAsync({
+      useFactory: ({ mailSecret }: SecretsService) => ({
+        transport: {
+          host: mailSecret.MAIL_HOST,
+          port: mailSecret.MAIL_PORT,
+          auth: {
+            user: mailSecret.MAIL_USERNAME,
+            pass: mailSecret.MAIL_PASSWORD,
+          },
+        },
+        pool: true, // Enable connection pooling
+        maxConnections: 5, // Limit number of connections
+        maxMessages: 100, // Limit number of messages per connection
+        tls: {
+          rejectUnauthorized: false,
+        },
+        defaults: {
+          from: '"No Reply" <hello@demomailtrap.com>',
+        },
+        preview: true,
+        template: {
+          dir: join(__dirname, 'templates'),
+          adapter: new EjsAdapter(),
+          options: {
+            strict: false,
+          },
+        },
+      }),
+      inject: [SecretsService],
+      imports: [SecretsModule],
+    }),
+    // Register Bull queue for email processing
+    BullModule.forRootAsync({
+      useFactory: ({ userSessionRedis }: SecretsService) => ({
+        redis: {
+          host: userSessionRedis.REDIS_HOST,
+          port: userSessionRedis.REDIS_PORT,
+          password: userSessionRedis.REDIS_PASSWORD,
+        },
+      }),
+      inject: [SecretsService],
+      imports: [SecretsModule],
+    }),
+
+    BullModule.registerQueue({
+      name: 'emailQueue', // Name of the queue for email jobs
+    }),
+    MongooseModule.forFeature([
+      {
+        name: Email.name,
+        schema: EmailSchema,
+      },
+      { name: Token.name, schema: TokenSchema },
+      { name: User.name, schema: UserSchema },
+      { name: Role.name, schema: roleSchema },
+    ]),
+  ],
+  controllers: [MailController],
+  providers: [MailService, MailEvent, MailController, EmailProcessor],
+  exports: [MailService, MailEvent, BullModule, MailController],
+})
+export class MailModule {}
+````
+
+## File: src/modules/mail/mail.service.ts
+````typescript
+import { Injectable, Logger } from '@nestjs/common';
+import { MailerService } from '@nestjs-modules/mailer';
+import * as ejs from 'ejs';
+import * as fs from 'fs';
+import { SendMailDto } from './dto/mail.dto';
+import { Email } from './schema/email.schema';
+import { Model } from 'mongoose';
+import { InjectModel } from '@nestjs/mongoose';
+
+@Injectable()
+export class MailService {
+  private logger = new Logger(MailService.name);
+  private from = '"TravEazi Team" <hello@demomailtrap.com>';
+
+  private confirmationTemplate = fs.readFileSync(
+    __dirname + '/templates/confirmation.ejs',
+    { encoding: 'utf-8' },
+  );
+
+  private resetpasswordTemplate = fs.readFileSync(
+    __dirname + '/templates/resetpassword.ejs',
+    { encoding: 'utf-8' },
+  );
+  private credentialsTemplate = fs.readFileSync(
+    __dirname + '/templates/credentials.ejs',
+    { encoding: 'utf-8' },
+  );
+
+  private inAppEmaillTemplate = fs.readFileSync(
+    __dirname + '/templates/marketing.ejs',
+    { encoding: 'utf-8' },
+  );
+
+  constructor(
+    @InjectModel(Email.name)
+    private emailRepo: Model<Email>,
+    private mailerService: MailerService,
+  ) {}
+
+  async sendUserConfirmation(data: SendMailDto) {
+    const renderedEmail = ejs.render(this.confirmationTemplate, {
+      name: data.data['firstName'],
+      email: data.data['email'],
+      code: data.data['code'],
+    });
+
+    return this.mailerService.sendMail({
+      to: data.to,
+      from: this.from,
+      subject: data.subject,
+      template: './confirmation',
+      context: {
+        name: data.data['firstName'],
+        email: data.data['email'],
+        code: data.data['code'],
+      },
+      headers: {
+        'X-Category': data.type,
+      },
+      html: renderedEmail,
+      text: renderedEmail,
+    });
+  }
+
+  async sendResetPassword(data: SendMailDto) {
+    const renderedEmail = ejs.render(this.resetpasswordTemplate, {
+      name: data.data['firstName'],
+      url: data.data['url'],
+    });
+
+    return this.mailerService.sendMail({
+      to: data.to,
+      from: this.from,
+      subject: data.subject,
+      template: './resetpassword',
+      html: renderedEmail,
+      text: renderedEmail,
+      context: {
+        name: data.data['firstName'],
+        url: data.data['url'],
+      },
+      headers: {
+        'X-Category': data.type,
+      },
+    });
+  }
+
+  async sendUserCredentials(data: SendMailDto) {
+    const renderedEmail = ejs.render(this.credentialsTemplate, {
+      name: data.data['firstName'],
+      email: data.data['email'],
+      password: data.data['password'],
+    });
+
+    return this.mailerService.sendMail({
+      to: data.to,
+      from: this.from,
+      subject: data.subject,
+      template: './credentials',
+      context: {
+        name: data.data['firstName'],
+        email: data.data['email'],
+        password: data.data['password'],
+      },
+      headers: {
+        'X-Category': data.type,
+      },
+      html: renderedEmail,
+      text: renderedEmail,
+    });
+  }
+
+  async sendInAppEmailNotification(data: SendMailDto) {
+    const renderedEmail = ejs.render(this.inAppEmaillTemplate, {
+      name: data.data['firstName'],
+      email: data.data['email'],
+      body: data.data['body'],
+    });
+
+    return this.mailerService.sendMail({
+      to: data.to,
+      from: this.from,
+      subject: data.subject,
+      template: './emailnotification',
+      context: {
+        name: data.data['firstName'],
+        email: data.data['email'],
+        body: data.data['body'],
+      },
+      headers: {
+        'X-Category': data.type,
+      },
+      html: renderedEmail,
+      text: renderedEmail,
+    });
+  }
+}
+````
+
 ## File: src/modules/rides/rides.module.ts
 ````typescript
 import { Module } from '@nestjs/common';
@@ -12136,6 +12155,117 @@ export class RidesService {
 }
 ````
 
+## File: nest-cli.json
+````json
+{
+  "$schema": "https://json.schemastore.org/nest-cli",
+  "collection": "@nestjs/schematics",
+  "sourceRoot": "src",
+  "compilerOptions": {
+    "deleteOutDir": true,
+    "assets": [
+      {
+        "include": "modules/mail/templates/**/*",
+        "outDir": "dist"
+      }
+    ]
+  }
+}
+````
+
+## File: src/core/guards/index.ts
+````typescript
+export * from './authenticate.guard';
+export * from './ws.guard';
+export * from './role.guards';
+````
+
+## File: src/core/interfaces/user/user.interface.ts
+````typescript
+/* eslint-disable @typescript-eslint/no-explicit-any */
+import { Types } from 'mongoose';
+import { UserGender } from 'src/core/enums/user.enum';
+import { UserStatus } from 'src/core/enums/user.enum';
+import { Role } from 'src/modules/user/schemas/role.schema';
+
+export interface IUser {
+  _id: string;
+  email?: string;
+  firstName?: string;
+  lastName?: string;
+  avatar?: string;
+  about?: string;
+  country?: string;
+  gender?: UserGender;
+  phoneNumber?: string;
+  emailConfirm: boolean;
+  createdAt?: Date;
+  lastSeen?: Date;
+  status?: UserStatus;
+  roles?: Types.ObjectId[] | Role[];
+}
+
+export interface IDriver {
+  _id: string;
+  email?: string;
+  firstName?: string;
+  lastName?: string;
+  avatar?: string;
+  about?: string;
+  country?: string;
+  gender?: UserGender;
+  phoneNumber?: string;
+  emailConfirm: boolean;
+  createdAt?: Date;
+  lastSeen?: Date;
+  status?: UserStatus;
+}
+
+export interface IPassenger {
+  _id: string;
+  email?: string;
+  firstName: string;
+  lastName: string;
+  avatar?: string;
+  about?: string;
+  country?: string;
+  gender?: UserGender;
+  phoneNumber?: string;
+  emailConfirm?: boolean;
+  createdAt?: Date;
+  lastSeen?: Date;
+  status?: UserStatus;
+}
+
+export interface IAdmin {
+  _id?: string;
+  email: string;
+  firstName: string;
+  lastName: string;
+  avatar?: string;
+  about?: string;
+  country?: string;
+  gender?: UserGender;
+  phoneNumber?: string;
+  emailConfirm: boolean;
+  createdAt?: Date;
+  lastSeen?: Date;
+  status?: UserStatus;
+}
+
+export interface IUserMail {
+  email: string;
+  firstName: string;
+}
+
+export enum UserLoginStrategy {
+  LOCAL = 'local',
+  GOOGLE = 'google',
+  FACEBOOK = 'facebook',
+  APPLE = 'apple',
+}
+````
+
 ## File: src/modules/user/schemas/user.schema.ts
 ````typescript
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
@@ -12153,10 +12283,10 @@ export type UserDocument = User & Document;
 
 @Schema({ timestamps: true })
 export class User {
-  @Prop({ type: String, required: true, trim: true })
+  @Prop({ type: String, required: false, trim: true })
   firstName: string;
 
-  @Prop({ type: String, required: true, trim: true })
+  @Prop({ type: String, required: false, trim: true })
   lastName: string;
 
   @Prop({
@@ -12310,7 +12440,7 @@ export class UserService {
     user: IDriver | IPassenger,
     options = {
       numberOnly: true,
-      length: 4,
+      length: 6,
     },
     expirationTimeInMinutes = 15,
   ): Promise<string> {
@@ -12465,205 +12595,6 @@ export class UserService {
 }
 ````
 
-## File: nest-cli.json
-````json
-{
-  "$schema": "https://json.schemastore.org/nest-cli",
-  "collection": "@nestjs/schematics",
-  "sourceRoot": "src",
-  "compilerOptions": {
-    "deleteOutDir": true,
-    "assets": [
-      {
-        "include": "modules/mail/templates/**/*",
-        "outDir": "dist"
-      }
-    ]
-  }
-}
-````
-
-## File: src/core/guards/index.ts
-````typescript
-export * from './authenticate.guard';
-export * from './ws.guard';
-export * from './role.guards';
-````
-
-## File: src/core/interfaces/user/user.interface.ts
-````typescript
-/* eslint-disable @typescript-eslint/no-explicit-any */
-import { Types } from 'mongoose';
-import { UserGender } from 'src/core/enums/user.enum';
-import { UserStatus } from 'src/core/enums/user.enum';
-import { Role } from 'src/modules/user/schemas/role.schema';
-
-export interface IUser {
-  _id: string;
-  email?: string;
-  firstName?: string;
-  lastName?: string;
-  avatar?: string;
-  about?: string;
-  country?: string;
-  gender?: UserGender;
-  phoneNumber?: string;
-  emailConfirm: boolean;
-  createdAt?: Date;
-  lastSeen?: Date;
-  status?: UserStatus;
-  roles?: Types.ObjectId[] | Role[];
-}
-
-export interface IDriver {
-  _id: string;
-  email?: string;
-  firstName?: string;
-  lastName?: string;
-  avatar?: string;
-  about?: string;
-  country?: string;
-  gender?: UserGender;
-  phoneNumber?: string;
-  emailConfirm: boolean;
-  createdAt?: Date;
-  lastSeen?: Date;
-  status?: UserStatus;
-}
-
-export interface IPassenger {
-  _id: string;
-  email?: string;
-  firstName: string;
-  lastName: string;
-  avatar?: string;
-  about?: string;
-  country?: string;
-  gender?: UserGender;
-  phoneNumber?: string;
-  emailConfirm?: boolean;
-  createdAt?: Date;
-  lastSeen?: Date;
-  status?: UserStatus;
-}
-
-export interface IAdmin {
-  _id?: string;
-  email: string;
-  firstName: string;
-  lastName: string;
-  avatar?: string;
-  about?: string;
-  country?: string;
-  gender?: UserGender;
-  phoneNumber?: string;
-  emailConfirm: boolean;
-  createdAt?: Date;
-  lastSeen?: Date;
-  status?: UserStatus;
-}
-
-export interface IUserMail {
-  email: string;
-  firstName: string;
-}
-
-export enum UserLoginStrategy {
-  LOCAL = 'local',
-  GOOGLE = 'google',
-  FACEBOOK = 'facebook',
-  APPLE = 'apple',
-}
-````
-
-## File: src/modules/auth/dto/auth.dto.ts
-````typescript
-import {
-  IsBoolean,
-  IsEmail,
-  IsEnum,
-  IsOptional,
-  IsString,
-  IsUrl,
-} from 'class-validator';
-import { PortalType } from 'src/core/enums/auth.enum';
-import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-
-export class EmailConfirmationDto {
-  @ApiProperty({ description: 'Email verification code' })
-  @IsString()
-  code: string;
-}
-
-export class TCodeLoginDto {
-  @ApiProperty({ description: 'Temporary authentication code' })
-  @IsString()
-  tCode: string;
-
-  @ApiProperty({
-    description: 'Type of portal user is accessing',
-    enum: PortalType,
-  })
-  @IsString()
-  portalType: PortalType;
-}
-
-export class CallbackURLDto {
-  @ApiPropertyOptional({
-    description: 'URL to redirect after action',
-    required: false,
-  })
-  @IsUrl({ require_tld: false })
-  @IsOptional()
-  callbackURL: string;
-}
-
-export class RefreshTokenDto {
-  @ApiProperty({ description: 'Refresh token for getting new access token' })
-  @IsString()
-  token: string;
-}
-
-export class ForgotPasswordDto {
-  @ApiProperty({
-    description: 'Email address for password reset',
-    example: 'user@example.com',
-  })
-  @IsString()
-  @IsEmail()
-  email: string;
-}
-
-export class LoginDto {
-  @ApiProperty({
-    description: "User's email address",
-    example: 'user@example.com',
-  })
-  @IsString()
-  @IsEmail()
-  email: string;
-
-  @ApiProperty({ description: "User's password" })
-  @IsString()
-  password: string;
-
-  @ApiProperty({
-    description: 'Type of portal user is accessing',
-    enum: PortalType,
-  })
-  @IsEnum(PortalType)
-  portalType: PortalType;
-
-  @ApiPropertyOptional({
-    description: 'Whether to keep user logged in',
-    default: false,
-  })
-  @IsOptional()
-  @IsBoolean()
-  rememberMe = false;
-}
-````
-
 ## File: src/main.ts
 ````typescript
 import { NestFactory } from '@nestjs/core';
@@ -12726,6 +12657,101 @@ async function bootstrap() {
   await app.listen(PORT);
 }
 bootstrap();
+````
+
+## File: src/modules/auth/dto/auth.dto.ts
+````typescript
+import {
+  IsBoolean,
+  IsEmail,
+  IsEnum,
+  IsOptional,
+  IsString,
+  IsUrl,
+  IsNotEmpty,
+  IsPhoneNumber,
+} from 'class-validator';
+import { PortalType } from 'src/core/enums/auth.enum';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+
+export class EmailConfirmationDto {
+  @ApiProperty({ description: 'Email verification code' })
+  @IsString()
+  code: string;
+}
+
+export class TCodeLoginDto {
+  @ApiProperty({ description: 'Temporary authentication code' })
+  @IsString()
+  tCode: string;
+
+  @ApiProperty({
+    description: 'Type of portal user is accessing',
+    enum: PortalType,
+  })
+  @IsString()
+  portalType: PortalType;
+}
+
+export class CallbackURLDto {
+  @ApiPropertyOptional({
+    description: 'URL to redirect after action',
+    required: false,
+  })
+  @IsUrl({ require_tld: false })
+  @IsOptional()
+  callbackURL: string;
+}
+
+export class RefreshTokenDto {
+  @ApiProperty({ description: 'Refresh token for getting new access token' })
+  @IsString()
+  token: string;
+}
+
+export class ForgotPasswordDto {
+  @ApiProperty({
+    description: 'Email address for password reset',
+    example: 'user@example.com',
+  })
+  @IsString()
+  @IsEmail()
+  email: string;
+}
+
+export class LoginDto {
+  @ApiProperty({
+    description: "User's phone number",
+    example: '+234567890123',
+    type: String,
+  })
+  @IsString()
+  @IsNotEmpty()
+  @IsPhoneNumber('NG', {
+    message:
+      'Please provide a valid Nigerian phone number in E.164 format (e.g., +23480...)',
+  })
+  phoneNumber: string; // Expecting E.164 format
+
+  @ApiProperty({ description: "User's password" })
+  @IsString()
+  password: string;
+
+  @ApiProperty({
+    description: 'Type of portal user is accessing',
+    enum: PortalType,
+  })
+  @IsEnum(PortalType)
+  portalType: PortalType;
+
+  @ApiPropertyOptional({
+    description: 'Whether to keep user logged in',
+    default: false,
+  })
+  @IsOptional()
+  @IsBoolean()
+  rememberMe = false;
+}
 ````
 
 ## File: src/global/secrets/service.ts
@@ -12857,782 +12883,6 @@ export class SecretsService extends ConfigService {
       );
     }
     return { serviceAccountPath };
-  }
-}
-````
-
-## File: src/modules/auth/auth.service.ts
-````typescript
-import { Injectable, Logger } from '@nestjs/common';
-import {
-  EMAIL_ALREADY_EXISTS,
-  INVALID_CODE,
-  INVALID_CODE_FORGOT_PASSWORD,
-  INVALID_EMAIL_OR_PASSWORD,
-  INVALID_USER,
-  PORTAL_TYPE_ERROR,
-} from 'src/core/constants/messages.constant';
-import { EncryptHelper, ErrorHelper } from 'src/core/helpers';
-import { UserLoginStrategy, IDriver, IPassenger } from 'src/core/interfaces';
-import { PassengerRegistrationDto } from '../passenger/dto/passenger.dto';
-import { DriverRegistrationDto } from '../driver/dto/driver-registration.dto';
-import { UserService } from '../user/user.service';
-import { InjectModel } from '@nestjs/mongoose';
-import { Model } from 'mongoose';
-import { Token } from '../user/schemas/token.schema';
-import { MailEvent } from '../mail/mail.event';
-import { UserSessionService } from 'src/global/user-session/service';
-import { TokenHelper } from 'src/global/utils/token.utils';
-import { PortalType } from 'src/core/enums/auth.enum';
-import { UpdateUserDto } from './dto/update-user.dto';
-import { AwsS3Service } from '../storage';
-import { Role } from '../user/schemas/role.schema';
-import { User } from '../user/schemas/user.schema';
-import { IUser } from 'src/core/interfaces';
-import { LoginDto } from './dto/auth.dto';
-import { UserStatus } from 'src/core/enums/user.enum';
-import { TwilioService } from '../twilio/twilio.service';
-import { SendPhoneOtpDto, VerifyPhoneOtpDto } from './dto/send-phone-otp.dto';
-import { SendEmailOtpDto } from './dto/send-email-otp.dto';
-import { VerifyEmailOtpDto } from './dto/verify-email-otp.dto';
-import { CompleteProfileDto } from './dto/complete-profile.dto';
-import { RoleNameEnum } from 'src/core/interfaces';
-import { SecretsService } from 'src/global/secrets/service';
-import * as jwt from 'jsonwebtoken';
-
-@Injectable()
-export class AuthService {
-  private logger = new Logger(AuthService.name);
-
-  constructor(
-    @InjectModel(Token.name) private tokenRepo: Model<Token>,
-    @InjectModel(Role.name) private roleRepo: Model<Role>,
-    @InjectModel(User.name) private userRepo: Model<User>,
-    private userService: UserService,
-    private mailEvent: MailEvent,
-    private encryptHelper: EncryptHelper,
-    private tokenHelper: TokenHelper,
-    private userSessionService: UserSessionService,
-    private awsS3Service: AwsS3Service,
-    private twilioService: TwilioService,
-    private secretsService: SecretsService,
-  ) {}
-
-  async sendPhoneVerificationOtp(
-    dto: SendPhoneOtpDto,
-  ): Promise<{ message: string }> {
-    const { phoneNumber } = dto;
-
-    // 1. Check if phone number is already registered and verified (optional but recommended)
-    const existingVerifiedUser = await this.userRepo.findOne({
-      phoneNumber,
-      phoneVerified: true,
-      status: { $ne: UserStatus.INACTIVE },
-    }); // Check active/pending etc.
-    if (existingVerifiedUser) {
-      ErrorHelper.ConflictException(
-        'This phone number is already linked to a verified account.',
-      );
-    }
-
-    // 2. Send verification via Twilio Verify
-    try {
-      const sent = await this.twilioService.sendVerificationToken(
-        phoneNumber,
-        'sms',
-      );
-      if (sent) {
-        return { message: 'Verification code sent successfully via SMS.' };
-      } else {
-        // Should not happen if sendVerificationToken throws on failure, but as fallback
-        ErrorHelper.InternalServerErrorException(
-          'Could not send verification code.',
-        );
-      }
-    } catch (error) {
-      // Error is already logged in TwilioService, rethrow specific message
-      ErrorHelper.InternalServerErrorException(
-        error.message || 'Could not send verification code.',
-      );
-    }
-  }
-
-  async verifyPhoneNumberOtp(
-    dto: VerifyPhoneOtpDto,
-  ): Promise<{ partialToken: string; message: string }> {
-    const { phoneNumber, otp } = dto;
-    let userId: string;
-
-    // 1. Check verification using Twilio Verify
-    const isApproved = await this.twilioService.checkVerificationToken(
-      phoneNumber,
-      otp,
-    );
-    if (!isApproved) {
-      ErrorHelper.BadRequestException('Invalid or expired verification code.');
-    }
-
-    // 2. Check/Create User
-    let user = await this.userRepo.findOne({ phoneNumber });
-
-    if (user) {
-      // User exists
-      if (
-        user.phoneVerified &&
-        user.status !== UserStatus.PENDING_EMAIL_VERIFICATION
-      ) {
-        // Phone already verified and likely active/profile complete - maybe initiate login instead?
-        // For now, let's prevent proceeding with signup flow.
-        ErrorHelper.ConflictException(
-          'Phone number already linked to a verified account. Please log in.',
-        );
-      }
-      // User exists but phone wasn't verified, mark as verified
-      user.phoneVerified = true;
-      // Ensure status allows proceeding
-      if (user.status !== UserStatus.PENDING_EMAIL_VERIFICATION) {
-        user.status = UserStatus.PENDING_EMAIL_VERIFICATION;
-      }
-      await user.save();
-      userId = user._id.toString();
-      this.logger.log(`Updated existing user ${userId} - phone verified.`);
-    } else {
-      // No user exists, create one
-      // Determine default role (e.g., Passenger)
-      const defaultRole = await this.roleRepo.findOne({
-        name: RoleNameEnum.Passenger,
-      });
-      if (!defaultRole) throw new Error('Default role not found'); // Internal config error
-
-      user = await this.userRepo.create({
-        phoneNumber: phoneNumber,
-        phoneVerified: true,
-        status: UserStatus.PENDING_EMAIL_VERIFICATION,
-        roles: [defaultRole._id], // Assign default role
-        // Other fields (email, password, name) are null/undefined initially
-      });
-      userId = user._id.toString();
-      this.logger.log(`Created new user ${userId} after phone verification.`);
-    }
-
-    // 3. Generate Partial JWT
-    // This token proves phone is verified and identifies the user for next steps
-    const partialPayload = {
-      _id: userId,
-      phone: phoneNumber, // Include phone for reference if needed
-      isPhoneVerified: true,
-      isPartialToken: true, // Flag to distinguish from full login token
-    };
-    // Use a shorter expiry for partial tokens? e.g., 1 hour
-    const partialToken = this.tokenHelper.verify<any>( // Use standard generation but verify type below
-      jwt.sign(partialPayload, this.secretsService.jwtSecret.JWT_SECRET, {
-        expiresIn: '1h',
-      }),
-    );
-
-    return {
-      message: 'Phone number verified successfully.',
-      partialToken: partialToken, // Contains userId etc.
-    };
-  }
-
-  // --- Email Verification ---
-
-  async sendEmailVerificationOtp(
-    userId: string,
-    dto: SendEmailOtpDto,
-  ): Promise<{ message: string }> {
-    const { email } = dto;
-    this.logger.log(
-      `User ${userId} requesting email verification OTP for ${email}`,
-    );
-
-    // Optional: Check if email is already verified on *another* account
-    const emailExists = await this.userRepo.findOne({
-      email: email.toLowerCase(),
-      _id: { $ne: userId },
-      emailConfirm: true,
-    });
-    if (emailExists) {
-      ErrorHelper.ConflictException(
-        'This email address is already linked to another verified account.',
-      );
-    }
-
-    const user = await this.userRepo.findById(userId);
-    if (!user) ErrorHelper.NotFoundException('User not found.'); // Should not happen with valid partial JWT
-    if (!user.phoneVerified)
-      ErrorHelper.ForbiddenException('Phone number must be verified first.'); // Belt-and-suspenders check
-
-    // Generate and send email OTP using existing UserService logic
-    try {
-      const emailOtp = await this.userService.generateOtpCode({
-        _id: userId,
-      } as IUser); // Pass minimal user object
-      await this.mailEvent.sendUserConfirmation(
-        { email, firstName: user.firstName || 'User' },
-        emailOtp,
-      ); // Pass email and name
-      this.logger.log(
-        `Sent email verification OTP to ${email} for user ${userId}`,
-      );
-      return { message: 'Verification code sent to your email.' };
-    } catch (error) {
-      this.logger.error(
-        `Failed to send email OTP for user ${userId}: ${error.message}`,
-        error.stack,
-      );
-      ErrorHelper.InternalServerErrorException(
-        'Could not send email verification code.',
-      );
-    }
-  }
-
-  async verifyEmailOtp(
-    userId: string,
-    dto: VerifyEmailOtpDto,
-  ): Promise<{ message: string }> {
-    const { email, otp } = dto;
-    this.logger.log(
-      `User ${userId} attempting to verify email ${email} with OTP`,
-    );
-
-    const user = await this.userRepo.findById(userId);
-    if (!user) ErrorHelper.NotFoundException('User not found.');
-    if (!user.phoneVerified)
-      ErrorHelper.ForbiddenException('Phone number must be verified first.');
-
-    // Verify email OTP using UserService
-    const isEmailOtpValid = await this.userService.verifyOtpCode(
-      { _id: userId } as IUser,
-      otp,
-      'Invalid or expired email verification code.',
-    );
-    if (!isEmailOtpValid) {
-      // verifyOtpCode throws on failure, so this might be redundant
-      ErrorHelper.BadRequestException(
-        'Invalid or expired email verification code.',
-      );
-    }
-
-    // Update user document
-    user.email = email.toLowerCase();
-    user.emailConfirm = true;
-    if (user.status === UserStatus.PENDING_EMAIL_VERIFICATION) {
-      user.status = UserStatus.PENDING_PROFILE_COMPLETION; // Move to next status
-    }
-    await user.save();
-
-    this.logger.log(`Email ${email} verified successfully for user ${userId}.`);
-    return { message: 'Email verified successfully.' };
-  }
-
-  // --- Profile Completion ---
-
-  async completeUserProfile(
-    userId: string,
-    dto: CompleteProfileDto,
-  ): Promise<{ token: any; user: IUser }> {
-    this.logger.log(`User ${userId} completing profile.`);
-
-    const user = await this.userRepo.findById(userId);
-    if (!user) ErrorHelper.NotFoundException('User not found.');
-
-    // Verify preconditions (phone and email must be verified)
-    if (
-      !user.phoneVerified ||
-      !user.emailConfirm ||
-      user.email?.toLowerCase() !== dto.email.toLowerCase()
-    ) {
-      ErrorHelper.ForbiddenException(
-        'Phone and email must be verified, and email must match the verified address, before completing profile.',
-      );
-    }
-    if (user.status !== UserStatus.PENDING_PROFILE_COMPLETION) {
-      // Allow completion even if ACTIVE? Or only if PENDING_PROFILE_COMPLETION?
-      // this.logger.warn(`User ${userId} attempting to complete profile with status ${user.status}`);
-      // throw new BadRequestException('Profile completion not applicable for current user status.');
-    }
-
-    // Update user details
-    user.firstName = dto.firstName;
-    user.lastName = dto.lastName;
-    user.password = await this.encryptHelper.hash(dto.password);
-    user.country = dto.country;
-    user.gender = dto.gender;
-    user.status = UserStatus.ACTIVE; // Set status to ACTIVE
-    // Handle portalType change if included in DTO and logic is needed
-
-    await user.save();
-    this.logger.log(
-      `Profile completed for user ${userId}. Status set to ACTIVE.`,
-    );
-
-    // Generate FULL JWT session
-    const fullUser = { ...user.toObject(), _id: user._id.toString() } as IUser; // Ensure ID is string
-    const tokenInfo = await this.generateUserSession(fullUser); // Use existing method
-
-    return {
-      token: tokenInfo,
-      user: fullUser,
-    };
-  }
-
-  // async createPortalUser(
-  //   payload: DriverRegistrationDto | PassengerRegistrationDto,
-  //   portalType: PortalType,
-  // ): Promise<any> {
-  //   try {
-  //     const user = await this.createUser(payload, {
-  //       strategy: UserLoginStrategy.LOCAL,
-  //       portalType,
-  //     });
-
-  //     const tokenInfo = await this.generateUserSession(user);
-
-  //     return {
-  //       token: tokenInfo,
-  //       user: user,
-  //     };
-  //   } catch (error) {
-  //     ErrorHelper.ConflictException('Email Already Exist');
-  //     this.logger.log('createPortalUser', { error });
-  //   }
-  // }
-
-  private async generateUserSession(
-    user: IDriver | IPassenger,
-    rememberMe = true,
-  ) {
-    const tokenInfo = this.tokenHelper.generate(user);
-
-    await this.userSessionService.create(user, {
-      sessionId: tokenInfo.sessionId,
-      rememberMe,
-    });
-
-    return tokenInfo;
-  }
-
-  async createUser(
-    payload: DriverRegistrationDto | PassengerRegistrationDto,
-    options: {
-      strategy: UserLoginStrategy;
-      portalType: PortalType;
-      adminCreated?: boolean;
-    },
-  ): Promise<IPassenger | IDriver> {
-    const { email, phoneNumber } = payload;
-    const { strategy, portalType } = options;
-
-    const emailQuery = {
-      email: email.toLowerCase(),
-    };
-
-    if (!portalType) {
-      ErrorHelper.BadRequestException(PORTAL_TYPE_ERROR);
-    }
-
-    const emailExist = await this.userRepo.findOne(emailQuery, {
-      getDeleted: true,
-    });
-
-    if (emailExist) {
-      ErrorHelper.BadRequestException(EMAIL_ALREADY_EXISTS);
-    }
-
-    //  let phoneVerifiedStatus = false;
-    if (phoneNumber) {
-      const phoneExist = await this.userRepo.findOne({
-        phoneNumber: phoneNumber,
-      });
-      if (phoneExist?.phoneVerified) {
-        ErrorHelper.ConflictException(
-          'Phone number already linked to a verified account.',
-        );
-      }
-    }
-
-    const roleData = await this.roleRepo.findOne({ name: portalType });
-
-    const user = await this.userRepo.create({
-      email: payload.email.toLowerCase(),
-      password: await this.encryptHelper.hash(payload.password),
-      firstName: payload.firstName,
-      lastName: payload.lastName,
-      country: payload.country,
-      strategy,
-      emailConfirm: strategy === UserLoginStrategy.LOCAL ? false : true,
-      portalType: portalType,
-      roles: [roleData],
-    });
-
-    return { ...user.toObject(), _id: user._id.toString() };
-  }
-
-  async login(params: LoginDto) {
-    try {
-      const { email, password, portalType } = params;
-
-      const user = await this.validateUser(email, password, portalType);
-
-      if (
-        user.status === UserStatus.PENDING_EMAIL_VERIFICATION ||
-        user.status === UserStatus.PENDING_PROFILE_COMPLETION
-      ) {
-        ErrorHelper.ForbiddenException(
-          'Please complete your registration process before logging in.',
-        );
-      }
-
-      const tokenInfo = await this.generateUserSession(user, params.rememberMe);
-
-      await this.userRepo.updateOne(
-        { _id: user._id },
-        { lastSeen: new Date() },
-      );
-
-      return {
-        token: tokenInfo,
-        user,
-      };
-    } catch (error) {
-      ErrorHelper.BadRequestException(error);
-    }
-  }
-
-  async validateUser(
-    email: string,
-    password: string,
-    portalType?: PortalType,
-  ): Promise<IDriver | IPassenger> {
-    const emailQuery = {
-      email: email.toLowerCase(),
-    };
-
-    const user = await this.userRepo
-      .findOne(emailQuery)
-      .populate('roles', 'name');
-
-    if (!user) {
-      ErrorHelper.BadRequestException(INVALID_EMAIL_OR_PASSWORD);
-    }
-
-    const passwordMatch = await this.encryptHelper.compare(
-      password,
-      user.password,
-    );
-    if (!passwordMatch) {
-      ErrorHelper.BadRequestException(INVALID_EMAIL_OR_PASSWORD);
-    }
-
-    if (user.status === UserStatus.INACTIVE) {
-      ErrorHelper.BadRequestException('Your account is inactive');
-    }
-
-    const roleNames = user.roles.map((role) => role.name);
-
-    if (!roleNames.includes(portalType as any)) {
-      ErrorHelper.ForbiddenException(
-        'Forbidden: You does not have the required role to access this route.',
-      );
-    }
-
-    return { ...user.toObject(), _id: user._id.toString() };
-  }
-
-  async resendVerificationEmail(userId: string) {
-    const user = await this.userRepo.findById(userId);
-
-    if (!user) {
-      ErrorHelper.BadRequestException('User not found');
-    }
-
-    if (user.emailConfirm) {
-      ErrorHelper.BadRequestException('Email already confirmed');
-    }
-
-    const confirmationCode = await this.userService.generateOtpCode({
-      ...user.toObject(),
-      _id: user._id.toString(),
-    });
-
-    await this.mailEvent.sendUserConfirmation(user, confirmationCode);
-
-    return user;
-  }
-
-  async forgotPassword(email: string, callbackURL: string) {
-    const emailQuery = {
-      email: email.toLowerCase(),
-    };
-
-    if (!callbackURL) {
-      ErrorHelper.BadRequestException('Please input a valid callbackURL');
-    }
-
-    const user = await this.userRepo.findOne(emailQuery);
-
-    if (!user) {
-      ErrorHelper.BadRequestException('User does not exist');
-    }
-
-    const confirmationCode = await this.userService.generateOtpCode(
-      { ...user.toObject(), _id: user._id.toString() },
-      {
-        numberOnly: false,
-        length: 21,
-      },
-    );
-
-    await this.mailEvent.sendResetPassword(user, confirmationCode, callbackURL);
-
-    return {
-      success: true,
-    };
-  }
-
-  async resetPassword(code: string, password: string) {
-    const token = await this.tokenRepo.findOne({ code });
-
-    if (!token) {
-      ErrorHelper.BadRequestException(INVALID_CODE_FORGOT_PASSWORD);
-    }
-
-    const user = await this.userRepo.findById(token.user);
-
-    if (!user) {
-      ErrorHelper.BadRequestException(INVALID_USER);
-    }
-
-    // Ensure new password is not the same as the old password
-    const passwordMatch = await this.encryptHelper.compare(
-      password,
-      user.password,
-    );
-    if (passwordMatch) {
-      ErrorHelper.BadRequestException(
-        'New password cannot be the same as the previous password',
-      );
-    }
-
-    await this.userService.verifyOtpCode(
-      { ...user.toObject(), _id: user._id.toString() },
-      code,
-    );
-
-    const hashedPassword = await this.encryptHelper.hash(password);
-
-    await this.userRepo.findByIdAndUpdate(user._id, {
-      password: hashedPassword,
-      hasChangedPassword: true, // Mark password as changed
-    });
-
-    return {
-      success: true,
-    };
-  }
-
-  async verifyUserEmail(userId: string, code: string) {
-    const errorMessage = 'OTP has expired';
-
-    const user = await this.userRepo.findById(userId);
-
-    if (!user) {
-      ErrorHelper.BadRequestException('User not found');
-    }
-
-    await this.userService.verifyOtpCode(
-      { ...user.toObject(), _id: user._id.toString() },
-      code,
-      errorMessage,
-    );
-
-    const updatedUser = await this.userRepo.findByIdAndUpdate(
-      user._id,
-      { emailConfirm: true },
-      { new: true },
-    );
-
-    return updatedUser;
-  }
-
-  async logoutUser(userId: string) {
-    return await this.userService.logout(userId);
-  }
-
-  async tCodeLogin(code: string) {
-    const token = await this.tokenRepo.findOne({ code });
-
-    if (!token) {
-      ErrorHelper.BadRequestException(INVALID_CODE);
-    }
-
-    let user = null;
-
-    user = await this.userRepo.findById(token.user);
-
-    if (!user) {
-      ErrorHelper.BadRequestException(INVALID_USER);
-    }
-
-    await this.userService.verifyOtpCode(user.toObject(), code);
-    const tokenInfo = await this.generateUserSession(user.toObject());
-
-    return {
-      token: tokenInfo,
-      user: user.toObject(),
-    };
-  }
-
-  async getAllUsers() {
-    return await this.userRepo.find({});
-  }
-
-  async getUserInfo(email: string): Promise<IUser> {
-    const user = await this.userRepo.findOne({ email });
-
-    if (!user) {
-      ErrorHelper.NotFoundException('No User Found.');
-    }
-
-    return { ...user.toJSON(), _id: user._id.toString() };
-  }
-
-  async updateUserInfo(
-    userId: string,
-    updateUserDto: UpdateUserDto,
-  ): Promise<IDriver | IPassenger> {
-    const updatedUser = await this.userRepo.findByIdAndUpdate(
-      userId,
-      { $set: updateUserDto },
-      { new: true, runValidators: true },
-    );
-
-    if (!updatedUser) {
-      ErrorHelper.NotFoundException(INVALID_USER);
-    }
-
-    return { ...updatedUser.toObject(), _id: updatedUser._id.toString() };
-  }
-
-  async uploadAvatar(userId: string, file: Express.Multer.File) {
-    const user = await this.userRepo.findById(userId);
-
-    if (!user) {
-      ErrorHelper.NotFoundException('User not found');
-    }
-
-    if (!file) {
-      ErrorHelper.BadRequestException('Image is required');
-    }
-
-    const allowedMimeTypes = ['image/jpeg', 'image/png', 'image/gif'];
-    if (!allowedMimeTypes.includes(file.mimetype)) {
-      ErrorHelper.BadRequestException(
-        'Unsupported file type. Please upload a JPEG, PNG, or GIF image.',
-      );
-    }
-
-    const maxSizeInBytes = 5 * 1024 * 1024; // 5 MB
-    if (file.size > maxSizeInBytes) {
-      ErrorHelper.BadRequestException(
-        'File size exceeds the maximum limit of 5 MB.',
-      );
-    }
-
-    const uploadedUrl = await this.awsS3Service.uploadAttachment(file);
-
-    await this.userRepo.findByIdAndUpdate(userId, { avatar: uploadedUrl });
-
-    return { avatar: uploadedUrl };
-  }
-
-  async changePasswordConfirmation(
-    user: IPassenger | IDriver,
-    oldPassword: string,
-  ) {
-    const _user = await this.userRepo.findById(user._id);
-
-    if (_user.strategy !== UserLoginStrategy.LOCAL && !_user.password) {
-      ErrorHelper.ForbiddenException(
-        'You can not change your password since you do not have one, please use the forgot password to get a password',
-      );
-    }
-
-    const passwordMatch = await this.encryptHelper.compare(
-      oldPassword,
-      _user.password,
-    );
-
-    if (!passwordMatch) {
-      ErrorHelper.BadRequestException('Please enter a valid current password');
-    }
-
-    const confirmationCode = await this.userService.generateOtpCode(user);
-
-    await this.mailEvent.sendUserConfirmation(
-      user as IDriver | IPassenger,
-      confirmationCode,
-    );
-
-    return {
-      success: true,
-    };
-  }
-
-  async verifychangePasswordConfirmation(
-    user: IDriver | IPassenger,
-    code: string,
-  ) {
-    const errorMessage = 'OTP has expired’';
-
-    await this.userService.verifyOtpCode(user, code, errorMessage);
-
-    return {
-      success: true,
-    };
-  }
-
-  async updatePassword(user: IDriver | IPassenger, password: string) {
-    const userDoc = await this.userRepo.findById(user._id);
-
-    const hashedPassword = await this.encryptHelper.hash(password);
-    userDoc.password = hashedPassword;
-
-    await this.userRepo.updateOne(
-      {
-        _id: user._id,
-      },
-      {
-        password: hashedPassword,
-        hasChangedPassword: true,
-      },
-    );
-  }
-
-  async getAllRoles() {
-    return await this.roleRepo.find({});
-  }
-
-  async getAllUserRoles() {
-    return await this.userRepo.find().populate('roles');
-  }
-
-  async sessionExists(params: LoginDto): Promise<{
-    exists: boolean;
-    user: IDriver | IPassenger;
-  }> {
-    const { email, password } = params;
-
-    const user = await this.validateUser(email, password);
-
-    const session = await this.userSessionService.checkSession(user._id);
-
-    return {
-      exists: !!session,
-      user,
-    };
   }
 }
 ````
@@ -14198,6 +13448,781 @@ export class AuthController {
     return {
       data,
       message: 'All Users Successfully',
+    };
+  }
+}
+````
+
+## File: src/modules/auth/auth.service.ts
+````typescript
+import { Injectable, Logger } from '@nestjs/common';
+import {
+  EMAIL_ALREADY_EXISTS,
+  INVALID_CODE,
+  INVALID_CODE_FORGOT_PASSWORD,
+  INVALID_EMAIL_OR_PASSWORD,
+  INVALID_USER,
+  PORTAL_TYPE_ERROR,
+  INVALID_PHONE_NUMBER_OR_PASSWORD,
+} from 'src/core/constants/messages.constant';
+import { EncryptHelper, ErrorHelper } from 'src/core/helpers';
+import { UserLoginStrategy, IDriver, IPassenger } from 'src/core/interfaces';
+import { PassengerRegistrationDto } from '../passenger/dto/passenger.dto';
+import { DriverRegistrationDto } from '../driver/dto/driver-registration.dto';
+import { UserService } from '../user/user.service';
+import { InjectModel } from '@nestjs/mongoose';
+import { Model } from 'mongoose';
+import { Token } from '../user/schemas/token.schema';
+import { MailEvent } from '../mail/mail.event';
+import { UserSessionService } from 'src/global/user-session/service';
+import { TokenHelper } from 'src/global/utils/token.utils';
+import { PortalType } from 'src/core/enums/auth.enum';
+import { UpdateUserDto } from './dto/update-user.dto';
+import { AwsS3Service } from '../storage';
+import { Role } from '../user/schemas/role.schema';
+import { User } from '../user/schemas/user.schema';
+import { IUser } from 'src/core/interfaces';
+import { LoginDto } from './dto/auth.dto';
+import { UserStatus } from 'src/core/enums/user.enum';
+import { TwilioService } from '../twilio/twilio.service';
+import { SendPhoneOtpDto, VerifyPhoneOtpDto } from './dto/send-phone-otp.dto';
+import { SendEmailOtpDto } from './dto/send-email-otp.dto';
+import { VerifyEmailOtpDto } from './dto/verify-email-otp.dto';
+import { CompleteProfileDto } from './dto/complete-profile.dto';
+import { RoleNameEnum } from 'src/core/interfaces';
+import { SecretsService } from 'src/global/secrets/service';
+import * as jwt from 'jsonwebtoken';
+
+@Injectable()
+export class AuthService {
+  private logger = new Logger(AuthService.name);
+
+  constructor(
+    @InjectModel(Token.name) private tokenRepo: Model<Token>,
+    @InjectModel(Role.name) private roleRepo: Model<Role>,
+    @InjectModel(User.name) private userRepo: Model<User>,
+    private userService: UserService,
+    private mailEvent: MailEvent,
+    private encryptHelper: EncryptHelper,
+    private tokenHelper: TokenHelper,
+    private userSessionService: UserSessionService,
+    private awsS3Service: AwsS3Service,
+    private twilioService: TwilioService,
+    private secretsService: SecretsService,
+  ) {}
+
+  async sendPhoneVerificationOtp(
+    dto: SendPhoneOtpDto,
+  ): Promise<{ message: string }> {
+    const { phoneNumber } = dto;
+
+    // 1. Check if phone number is already registered and verified (optional but recommended)
+    const existingVerifiedUser = await this.userRepo.findOne({
+      phoneNumber,
+      phoneVerified: true,
+      status: { $ne: UserStatus.INACTIVE },
+    }); // Check active/pending etc.
+    if (existingVerifiedUser) {
+      ErrorHelper.ConflictException(
+        'This phone number is already linked to a verified account.',
+      );
+    }
+
+    // 2. Send verification via Twilio Verify
+    try {
+      const sent = await this.twilioService.sendVerificationToken(
+        phoneNumber,
+        'sms',
+      );
+      if (sent) {
+        return { message: 'Verification code sent successfully via SMS.' };
+      } else {
+        // Should not happen if sendVerificationToken throws on failure, but as fallback
+        ErrorHelper.InternalServerErrorException(
+          'Could not send verification code.',
+        );
+      }
+    } catch (error) {
+      // Error is already logged in TwilioService, rethrow specific message
+      ErrorHelper.InternalServerErrorException(
+        error.message || 'Could not send verification code.',
+      );
+    }
+  }
+
+  async verifyPhoneNumberOtp(
+    dto: VerifyPhoneOtpDto,
+  ): Promise<{ partialToken: string; message: string }> {
+    const { phoneNumber, otp } = dto;
+    let userId: string;
+
+    // 1. Check verification using Twilio Verify
+    const isApproved = await this.twilioService.checkVerificationToken(
+      phoneNumber,
+      otp,
+    );
+    if (!isApproved) {
+      ErrorHelper.BadRequestException('Invalid or expired verification code.');
+    }
+
+    // 2. Check/Create User
+    let user = await this.userRepo.findOne({ phoneNumber });
+
+    if (user) {
+      // User exists
+      if (
+        user.phoneVerified &&
+        user.status !== UserStatus.PENDING_EMAIL_VERIFICATION
+      ) {
+        // Phone already verified and likely active/profile complete - maybe initiate login instead?
+        // For now, let's prevent proceeding with signup flow.
+        ErrorHelper.ConflictException(
+          'Phone number already linked to a verified account. Please log in.',
+        );
+      }
+      // User exists but phone wasn't verified, mark as verified
+      user.phoneVerified = true;
+      // Ensure status allows proceeding
+      if (user.status !== UserStatus.PENDING_EMAIL_VERIFICATION) {
+        user.status = UserStatus.PENDING_EMAIL_VERIFICATION;
+      }
+      await user.save();
+      userId = user._id.toString();
+      this.logger.log(`Updated existing user ${userId} - phone verified.`);
+    } else {
+      // No user exists, create one
+      // Determine default role (e.g., Passenger)
+      const defaultRole = await this.roleRepo.findOne({
+        name: RoleNameEnum.Passenger,
+      });
+      if (!defaultRole) throw new Error('Default role not found'); // Internal config error
+
+      user = await this.userRepo.create({
+        phoneNumber: phoneNumber,
+        phoneVerified: true,
+        status: UserStatus.PENDING_EMAIL_VERIFICATION,
+        roles: [defaultRole._id], // Assign default role
+        // Other fields (email, password, name) are null/undefined initially
+      });
+      userId = user._id.toString();
+      this.logger.log(`Created new user ${userId} after phone verification.`);
+    }
+
+    // 3. Generate Partial JWT
+    // This token proves phone is verified and identifies the user for next steps
+    const partialPayload = {
+      _id: userId,
+      phone: phoneNumber, // Include phone for reference if needed
+      isPhoneVerified: true,
+      isPartialToken: true, // Flag to distinguish from full login token
+    };
+
+    const jwtString = jwt.sign(
+      partialPayload,
+      this.secretsService.jwtSecret.JWT_SECRET,
+      {
+        expiresIn: '1h',
+      },
+    );
+
+    return {
+      message: 'Phone number verified successfully.',
+      partialToken: jwtString, // Contains userId etc.
+    };
+  }
+
+  // --- Email Verification ---
+
+  async sendEmailVerificationOtp(
+    userId: string,
+    dto: SendEmailOtpDto,
+  ): Promise<{ message: string }> {
+    const { email } = dto;
+    this.logger.log(
+      `User ${userId} requesting email verification OTP for ${email}`,
+    );
+
+    // Optional: Check if email is already verified on *another* account
+    const emailExists = await this.userRepo.findOne({
+      email: email.toLowerCase(),
+      _id: { $ne: userId },
+      emailConfirm: true,
+    });
+    if (emailExists) {
+      ErrorHelper.ConflictException(
+        'This email address is already linked to another verified account.',
+      );
+    }
+
+    const user = await this.userRepo.findById(userId);
+    if (!user) ErrorHelper.NotFoundException('User not found.'); // Should not happen with valid partial JWT
+    if (!user.phoneVerified)
+      ErrorHelper.ForbiddenException('Phone number must be verified first.'); // Belt-and-suspenders check
+
+    // Generate and send email OTP using existing UserService logic
+    try {
+      const emailOtp = await this.userService.generateOtpCode({
+        _id: userId,
+      } as IUser); // Pass minimal user object
+      await this.mailEvent.sendUserConfirmation(
+        { email, firstName: user.firstName || 'User' },
+        emailOtp,
+      ); // Pass email and name
+      this.logger.log(
+        `Sent email verification OTP to ${email} for user ${userId}`,
+      );
+      return { message: 'Verification code sent to your email.' };
+    } catch (error) {
+      this.logger.error(
+        `Failed to send email OTP for user ${userId}: ${error.message}`,
+        error.stack,
+      );
+      ErrorHelper.InternalServerErrorException(
+        'Could not send email verification code.',
+      );
+    }
+  }
+
+  async verifyEmailOtp(
+    userId: string,
+    dto: VerifyEmailOtpDto,
+  ): Promise<{ message: string }> {
+    const { email, otp } = dto;
+    this.logger.log(
+      `User ${userId} attempting to verify email ${email} with OTP`,
+    );
+
+    const user = await this.userRepo.findById(userId);
+    if (!user) ErrorHelper.NotFoundException('User not found.');
+    if (!user.phoneVerified)
+      ErrorHelper.ForbiddenException('Phone number must be verified first.');
+
+    // Verify email OTP using UserService
+    const isEmailOtpValid = await this.userService.verifyOtpCode(
+      { _id: userId } as IUser,
+      otp,
+      'Invalid or expired email verification code.',
+    );
+    if (!isEmailOtpValid) {
+      // verifyOtpCode throws on failure, so this might be redundant
+      ErrorHelper.BadRequestException(
+        'Invalid or expired email verification code.',
+      );
+    }
+
+    // Update user document
+    user.email = email.toLowerCase();
+    user.emailConfirm = true;
+    if (user.status === UserStatus.PENDING_EMAIL_VERIFICATION) {
+      user.status = UserStatus.PENDING_PROFILE_COMPLETION; // Move to next status
+    }
+    await user.save();
+
+    this.logger.log(`Email ${email} verified successfully for user ${userId}.`);
+    return { message: 'Email verified successfully.' };
+  }
+
+  // --- Profile Completion ---
+
+  async completeUserProfile(
+    userId: string,
+    dto: CompleteProfileDto,
+  ): Promise<{ token: any; user: IUser }> {
+    this.logger.log(`User ${userId} completing profile.`);
+
+    const user = await this.userRepo.findById(userId);
+    if (!user) ErrorHelper.NotFoundException('User not found.');
+
+    // Verify preconditions (phone and email must be verified)
+    if (!user.phoneVerified || !user.emailConfirm) {
+      ErrorHelper.ForbiddenException(
+        'Phone and email must be verified, and email must match the verified address, before completing profile.',
+      );
+    }
+    if (user.status !== UserStatus.PENDING_PROFILE_COMPLETION) {
+      // Allow completion even if ACTIVE? Or only if PENDING_PROFILE_COMPLETION?
+      // this.logger.warn(`User ${userId} attempting to complete profile with status ${user.status}`);
+      // throw new BadRequestException('Profile completion not applicable for current user status.');
+    }
+
+    // Update user details
+    user.firstName = dto.firstName;
+    user.lastName = dto.lastName;
+    user.password = await this.encryptHelper.hash(dto.password);
+    user.country = dto.country;
+    user.gender = dto.gender;
+    user.status = UserStatus.ACTIVE; // Set status to ACTIVE
+    // Handle portalType change if included in DTO and logic is needed
+
+    await user.save();
+    this.logger.log(
+      `Profile completed for user ${userId}. Status set to ACTIVE.`,
+    );
+
+    // Generate FULL JWT session
+    const fullUser = { ...user.toObject(), _id: user._id.toString() } as IUser; // Ensure ID is string
+    const tokenInfo = await this.generateUserSession(fullUser); // Use existing method
+
+    return {
+      token: tokenInfo,
+      user: fullUser,
+    };
+  }
+
+  // async createPortalUser(
+  //   payload: DriverRegistrationDto | PassengerRegistrationDto,
+  //   portalType: PortalType,
+  // ): Promise<any> {
+  //   try {
+  //     const user = await this.createUser(payload, {
+  //       strategy: UserLoginStrategy.LOCAL,
+  //       portalType,
+  //     });
+
+  //     const tokenInfo = await this.generateUserSession(user);
+
+  //     return {
+  //       token: tokenInfo,
+  //       user: user,
+  //     };
+  //   } catch (error) {
+  //     ErrorHelper.ConflictException('Email Already Exist');
+  //     this.logger.log('createPortalUser', { error });
+  //   }
+  // }
+
+  private async generateUserSession(
+    user: IDriver | IPassenger,
+    rememberMe = true,
+  ) {
+    const tokenInfo = this.tokenHelper.generate(user);
+
+    await this.userSessionService.create(user, {
+      sessionId: tokenInfo.sessionId,
+      rememberMe,
+    });
+
+    return tokenInfo;
+  }
+
+  async createUser(
+    payload: DriverRegistrationDto | PassengerRegistrationDto,
+    options: {
+      strategy: UserLoginStrategy;
+      portalType: PortalType;
+      adminCreated?: boolean;
+    },
+  ): Promise<IPassenger | IDriver> {
+    const { email, phoneNumber } = payload;
+    const { strategy, portalType } = options;
+
+    const emailQuery = {
+      email: email.toLowerCase(),
+    };
+
+    if (!portalType) {
+      ErrorHelper.BadRequestException(PORTAL_TYPE_ERROR);
+    }
+
+    const emailExist = await this.userRepo.findOne(emailQuery, {
+      getDeleted: true,
+    });
+
+    if (emailExist) {
+      ErrorHelper.BadRequestException(EMAIL_ALREADY_EXISTS);
+    }
+
+    //  let phoneVerifiedStatus = false;
+    if (phoneNumber) {
+      const phoneExist = await this.userRepo.findOne({
+        phoneNumber: phoneNumber,
+      });
+      if (phoneExist?.phoneVerified) {
+        ErrorHelper.ConflictException(
+          'Phone number already linked to a verified account.',
+        );
+      }
+    }
+
+    const roleData = await this.roleRepo.findOne({ name: portalType });
+
+    const user = await this.userRepo.create({
+      email: payload.email.toLowerCase(),
+      password: await this.encryptHelper.hash(payload.password),
+      firstName: payload.firstName,
+      lastName: payload.lastName,
+      country: payload.country,
+      strategy,
+      emailConfirm: strategy === UserLoginStrategy.LOCAL ? false : true,
+      portalType: portalType,
+      roles: [roleData],
+    });
+
+    return { ...user.toObject(), _id: user._id.toString() };
+  }
+
+  async login(params: LoginDto) {
+    try {
+      const { phoneNumber, password, portalType } = params;
+
+      const user = await this.validateUser(phoneNumber, password, portalType);
+
+      if (
+        user.status === UserStatus.PENDING_EMAIL_VERIFICATION ||
+        user.status === UserStatus.PENDING_PROFILE_COMPLETION
+      ) {
+        ErrorHelper.ForbiddenException(
+          'Please complete your registration process before logging in.',
+        );
+      }
+
+      const tokenInfo = await this.generateUserSession(user, params.rememberMe);
+
+      await this.userRepo.updateOne(
+        { _id: user._id },
+        { lastSeen: new Date() },
+      );
+
+      return {
+        token: tokenInfo,
+        user,
+      };
+    } catch (error) {
+      ErrorHelper.BadRequestException(error);
+    }
+  }
+
+  async validateUser(
+    phone: string,
+    password: string,
+    portalType?: PortalType,
+  ): Promise<IDriver | IPassenger> {
+    const phoneQuery = {
+      phoneNumber: phone,
+    };
+
+    const user = await this.userRepo
+      .findOne(phoneQuery)
+      .populate('roles', 'name');
+
+    if (!user) {
+      ErrorHelper.BadRequestException(INVALID_PHONE_NUMBER_OR_PASSWORD);
+    }
+
+    const passwordMatch = await this.encryptHelper.compare(
+      password,
+      user.password,
+    );
+    if (!passwordMatch) {
+      ErrorHelper.BadRequestException(INVALID_EMAIL_OR_PASSWORD);
+    }
+
+    if (user.status === UserStatus.INACTIVE) {
+      ErrorHelper.BadRequestException('Your account is inactive');
+    }
+
+    const roleNames = user.roles.map((role) => role.name);
+
+    if (!roleNames.includes(portalType as any)) {
+      ErrorHelper.ForbiddenException(
+        'Forbidden: You does not have the required role to access this route.',
+      );
+    }
+
+    return { ...user.toObject(), _id: user._id.toString() };
+  }
+
+  async resendVerificationEmail(userId: string) {
+    const user = await this.userRepo.findById(userId);
+
+    if (!user) {
+      ErrorHelper.BadRequestException('User not found');
+    }
+
+    if (user.emailConfirm) {
+      ErrorHelper.BadRequestException('Email already confirmed');
+    }
+
+    const confirmationCode = await this.userService.generateOtpCode({
+      ...user.toObject(),
+      _id: user._id.toString(),
+    });
+
+    await this.mailEvent.sendUserConfirmation(user, confirmationCode);
+
+    return user;
+  }
+
+  async forgotPassword(email: string, callbackURL: string) {
+    const emailQuery = {
+      email: email.toLowerCase(),
+    };
+
+    if (!callbackURL) {
+      ErrorHelper.BadRequestException('Please input a valid callbackURL');
+    }
+
+    const user = await this.userRepo.findOne(emailQuery);
+
+    if (!user) {
+      ErrorHelper.BadRequestException('User does not exist');
+    }
+
+    const confirmationCode = await this.userService.generateOtpCode(
+      { ...user.toObject(), _id: user._id.toString() },
+      {
+        numberOnly: false,
+        length: 21,
+      },
+    );
+
+    await this.mailEvent.sendResetPassword(user, confirmationCode, callbackURL);
+
+    return {
+      success: true,
+    };
+  }
+
+  async resetPassword(code: string, password: string) {
+    const token = await this.tokenRepo.findOne({ code });
+
+    if (!token) {
+      ErrorHelper.BadRequestException(INVALID_CODE_FORGOT_PASSWORD);
+    }
+
+    const user = await this.userRepo.findById(token.user);
+
+    if (!user) {
+      ErrorHelper.BadRequestException(INVALID_USER);
+    }
+
+    // Ensure new password is not the same as the old password
+    const passwordMatch = await this.encryptHelper.compare(
+      password,
+      user.password,
+    );
+    if (passwordMatch) {
+      ErrorHelper.BadRequestException(
+        'New password cannot be the same as the previous password',
+      );
+    }
+
+    await this.userService.verifyOtpCode(
+      { ...user.toObject(), _id: user._id.toString() },
+      code,
+    );
+
+    const hashedPassword = await this.encryptHelper.hash(password);
+
+    await this.userRepo.findByIdAndUpdate(user._id, {
+      password: hashedPassword,
+      hasChangedPassword: true, // Mark password as changed
+    });
+
+    return {
+      success: true,
+    };
+  }
+
+  async verifyUserEmail(userId: string, code: string) {
+    const errorMessage = 'OTP has expired';
+
+    const user = await this.userRepo.findById(userId);
+
+    if (!user) {
+      ErrorHelper.BadRequestException('User not found');
+    }
+
+    await this.userService.verifyOtpCode(
+      { ...user.toObject(), _id: user._id.toString() },
+      code,
+      errorMessage,
+    );
+
+    const updatedUser = await this.userRepo.findByIdAndUpdate(
+      user._id,
+      { emailConfirm: true },
+      { new: true },
+    );
+
+    return updatedUser;
+  }
+
+  async logoutUser(userId: string) {
+    return await this.userService.logout(userId);
+  }
+
+  async tCodeLogin(code: string) {
+    const token = await this.tokenRepo.findOne({ code });
+
+    if (!token) {
+      ErrorHelper.BadRequestException(INVALID_CODE);
+    }
+
+    let user = null;
+
+    user = await this.userRepo.findById(token.user);
+
+    if (!user) {
+      ErrorHelper.BadRequestException(INVALID_USER);
+    }
+
+    await this.userService.verifyOtpCode(user.toObject(), code);
+    const tokenInfo = await this.generateUserSession(user.toObject());
+
+    return {
+      token: tokenInfo,
+      user: user.toObject(),
+    };
+  }
+
+  async getAllUsers() {
+    return await this.userRepo.find({});
+  }
+
+  async getUserInfo(email: string): Promise<IUser> {
+    const user = await this.userRepo.findOne({ email });
+
+    if (!user) {
+      ErrorHelper.NotFoundException('No User Found.');
+    }
+
+    return { ...user.toJSON(), _id: user._id.toString() };
+  }
+
+  async updateUserInfo(
+    userId: string,
+    updateUserDto: UpdateUserDto,
+  ): Promise<IDriver | IPassenger> {
+    const updatedUser = await this.userRepo.findByIdAndUpdate(
+      userId,
+      { $set: updateUserDto },
+      { new: true, runValidators: true },
+    );
+
+    if (!updatedUser) {
+      ErrorHelper.NotFoundException(INVALID_USER);
+    }
+
+    return { ...updatedUser.toObject(), _id: updatedUser._id.toString() };
+  }
+
+  async uploadAvatar(userId: string, file: Express.Multer.File) {
+    const user = await this.userRepo.findById(userId);
+
+    if (!user) {
+      ErrorHelper.NotFoundException('User not found');
+    }
+
+    if (!file) {
+      ErrorHelper.BadRequestException('Image is required');
+    }
+
+    const allowedMimeTypes = ['image/jpeg', 'image/png', 'image/gif'];
+    if (!allowedMimeTypes.includes(file.mimetype)) {
+      ErrorHelper.BadRequestException(
+        'Unsupported file type. Please upload a JPEG, PNG, or GIF image.',
+      );
+    }
+
+    const maxSizeInBytes = 5 * 1024 * 1024; // 5 MB
+    if (file.size > maxSizeInBytes) {
+      ErrorHelper.BadRequestException(
+        'File size exceeds the maximum limit of 5 MB.',
+      );
+    }
+
+    const uploadedUrl = await this.awsS3Service.uploadAttachment(file);
+
+    await this.userRepo.findByIdAndUpdate(userId, { avatar: uploadedUrl });
+
+    return { avatar: uploadedUrl };
+  }
+
+  async changePasswordConfirmation(
+    user: IPassenger | IDriver,
+    oldPassword: string,
+  ) {
+    const _user = await this.userRepo.findById(user._id);
+
+    if (_user.strategy !== UserLoginStrategy.LOCAL && !_user.password) {
+      ErrorHelper.ForbiddenException(
+        'You can not change your password since you do not have one, please use the forgot password to get a password',
+      );
+    }
+
+    const passwordMatch = await this.encryptHelper.compare(
+      oldPassword,
+      _user.password,
+    );
+
+    if (!passwordMatch) {
+      ErrorHelper.BadRequestException('Please enter a valid current password');
+    }
+
+    const confirmationCode = await this.userService.generateOtpCode(user);
+
+    await this.mailEvent.sendUserConfirmation(
+      user as IDriver | IPassenger,
+      confirmationCode,
+    );
+
+    return {
+      success: true,
+    };
+  }
+
+  async verifychangePasswordConfirmation(
+    user: IDriver | IPassenger,
+    code: string,
+  ) {
+    const errorMessage = 'OTP has expired’';
+
+    await this.userService.verifyOtpCode(user, code, errorMessage);
+
+    return {
+      success: true,
+    };
+  }
+
+  async updatePassword(user: IDriver | IPassenger, password: string) {
+    const userDoc = await this.userRepo.findById(user._id);
+
+    const hashedPassword = await this.encryptHelper.hash(password);
+    userDoc.password = hashedPassword;
+
+    await this.userRepo.updateOne(
+      {
+        _id: user._id,
+      },
+      {
+        password: hashedPassword,
+        hasChangedPassword: true,
+      },
+    );
+  }
+
+  async getAllRoles() {
+    return await this.roleRepo.find({});
+  }
+
+  async getAllUserRoles() {
+    return await this.userRepo.find().populate('roles');
+  }
+
+  async sessionExists(params: LoginDto): Promise<{
+    exists: boolean;
+    user: IDriver | IPassenger;
+  }> {
+    const { phoneNumber, password } = params;
+
+    const user = await this.validateUser(phoneNumber, password);
+
+    const session = await this.userSessionService.checkSession(user._id);
+
+    return {
+      exists: !!session,
+      user,
     };
   }
 }

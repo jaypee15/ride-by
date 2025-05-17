@@ -438,7 +438,6 @@ export class AuthService {
   async validateUser(
     phone: string,
     password: string,
-    portalType?: PortalType,
   ): Promise<IDriver | IPassenger> {
     const phoneQuery = {
       phoneNumber: phone,
@@ -446,6 +445,7 @@ export class AuthService {
 
     const user = await this.userRepo
       .findOne(phoneQuery)
+      .select('+password')
       .populate('roles', 'name');
 
     if (!user) {
@@ -464,13 +464,13 @@ export class AuthService {
       ErrorHelper.BadRequestException('Your account is inactive');
     }
 
-    const roleNames = user.roles.map((role) => role.name);
+    // const roleNames = user.roles.map((role) => role.name);
 
-    if (!roleNames.includes(portalType as any)) {
-      ErrorHelper.ForbiddenException(
-        'Forbidden: You does not have the required role to access this route.',
-      );
-    }
+    // if (!roleNames.includes(portalType as any)) {
+    //   ErrorHelper.ForbiddenException(
+    //     'Forbidden: You does not have the required role to access this route.',
+    //   );
+    // }
 
     return { ...user.toObject(), _id: user._id.toString() };
   }
