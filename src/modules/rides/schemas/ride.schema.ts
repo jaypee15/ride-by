@@ -90,5 +90,3 @@ export const RideSchema = SchemaFactory.createForClass(Ride);
 
 // Geospatial index for efficient location-based searching
 RideSchema.index({ origin: '2dsphere', destination: '2dsphere' });
-// Optional: Index departure time for sorting/filtering
-RideSchema.index({ departureTime: 1 });

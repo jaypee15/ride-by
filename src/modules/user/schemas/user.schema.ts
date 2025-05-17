@@ -21,11 +21,12 @@ export class User {
 
   @Prop({
     type: String,
-    unique: true,
     lowercase: true,
     trim: true,
     index: true,
     sparse: true,
+    unique: true,
+    required: false,
   })
   email?: string;
 

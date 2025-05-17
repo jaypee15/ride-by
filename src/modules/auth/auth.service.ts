@@ -273,19 +273,23 @@ export class AuthService {
   ): Promise<{ token: any; user: IUser }> {
     this.logger.log(`User ${userId} completing profile.`);
 
-    const user = await this.userRepo.findById(userId);
+    const user = await this.userRepo.findById(userId).populate('roles');
     if (!user) ErrorHelper.NotFoundException('User not found.');
 
     // Verify preconditions (phone and email must be verified)
     if (!user.phoneVerified || !user.emailConfirm) {
       ErrorHelper.ForbiddenException(
-        'Phone and email must be verified, and email must match the verified address, before completing profile.',
+        'Phone and email must be verified before completing profile.',
       );
     }
     if (user.status !== UserStatus.PENDING_PROFILE_COMPLETION) {
       // Allow completion even if ACTIVE? Or only if PENDING_PROFILE_COMPLETION?
-      // this.logger.warn(`User ${userId} attempting to complete profile with status ${user.status}`);
-      // throw new BadRequestException('Profile completion not applicable for current user status.');
+      this.logger.warn(
+        `User ${userId} attempting to complete profile with status ${user.status}`,
+      );
+      ErrorHelper.BadRequestException(
+        'Profile completion not applicable for current user status.',
+      );
     }
 
     // Update user details
@@ -295,7 +299,48 @@ export class AuthService {
     user.country = dto.country;
     user.gender = dto.gender;
     user.status = UserStatus.ACTIVE; // Set status to ACTIVE
-    // Handle portalType change if included in DTO and logic is needed
+
+    if (dto.portalType) {
+      const targetRoleName = dto.portalType as unknown as RoleNameEnum;
+      this.logger.log(`Assigning role: ${targetRoleName} to user ${userId}`);
+
+      const roleToAssign = await this.roleRepo.findOne({
+        name: targetRoleName,
+      });
+      if (!roleToAssign) {
+        this.logger.error(`Role ${targetRoleName} not found in database`);
+        ErrorHelper.InternalServerErrorException(
+          `Configuration Errror: Role ${targetRoleName} not found.`,
+        );
+      }
+
+      const userHasRole = user.roles.some((userRoleDoc: Role) => {
+        if (
+          userRoleDoc &&
+          userRoleDoc._id &&
+          roleToAssign &&
+          roleToAssign._id
+        ) {
+          return userRoleDoc._id.toString() === roleToAssign._id.toString();
+        }
+        return false;
+      });
+
+      if (!userHasRole) {
+        user.roles = [roleToAssign];
+        this.logger.log(
+          `Role ${roleToAssign.name} assigned to user ${userId}.`,
+        );
+      } else {
+        this.logger.log(
+          `User ${userId} already has role ${roleToAssign.name}. No changes to roles needed.`,
+        );
+      }
+    } else {
+      this.logger.log(
+        `No portalType provided in DTO for user ${userId}. Roles remain unchanged.`,
+      );
+    }
 
     await user.save();
     this.logger.log(
@@ -465,13 +510,14 @@ export class AuthService {
       ErrorHelper.BadRequestException('Your account is inactive');
     }
 
-    // const roleNames = user.roles.map((role) => role.name);
+    const roleNames = user.roles.map((role) => role.name);
+    console.log('roles', roleNames);
 
-    // if (!roleNames.includes(portalType as any)) {
-    //   ErrorHelper.ForbiddenException(
-    //     'Forbidden: You does not have the required role to access this route.',
-    //   );
-    // }
+    if (!roleNames.includes(portalType as any)) {
+      ErrorHelper.ForbiddenException(
+        'Forbidden: You does not have the required role to access this route.',
+      );
+    }
 
     return { ...user.toObject(), _id: user._id.toString() };
   }
