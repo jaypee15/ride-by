@@ -76,4 +76,38 @@ export class TwilioService {
       throw new Error(`Failed to verify code: ${error.message}`);
     }
   }
+
+  async sendSms(to: string, body: string): Promise<boolean> {
+    if (!this.twilioClient) {
+      this.logger.error('Twilio client not initialized for sending SMS.');
+      throw new Error('SMS service is not configured properly.');
+    }
+    const { TWILIO_PHONE_NUMBER } = this.secretsService.twilio;
+    if (!TWILIO_PHONE_NUMBER) {
+      this.logger.error('Twilio phone number (sender ID) not configured.');
+      throw new Error('SMS service sender ID is not configured.');
+    }
+
+    try {
+      const message = await this.twilioClient.messages.create({
+        body: body,
+        from: TWILIO_PHONE_NUMBER,
+        to: to,
+      });
+      this.logger.log(
+        `SMS sent to ${to}. SID: ${message.sid}, Status: ${message.status}`,
+      );
+      return (
+        message.status === 'queued' ||
+        message.status === 'sent' ||
+        message.status === 'delivered'
+      );
+    } catch (error) {
+      this.logger.error(
+        `Failed to send SMS to ${to}: ${error.message}`,
+        error.stack,
+      );
+      throw new Error(`Failed to send SMS: ${error.message}`);
+    }
+  }
 }

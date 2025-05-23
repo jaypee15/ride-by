@@ -19,6 +19,7 @@ export interface IUser {
   lastSeen?: Date;
   status?: UserStatus;
   roles?: Types.ObjectId[] | Role[];
+  strategy?: UserLoginStrategy;
 }
 
 export interface IDriver {

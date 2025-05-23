@@ -35,6 +35,11 @@ import { CompleteProfileDto } from './dto/complete-profile.dto';
 import { RoleNameEnum } from 'src/core/interfaces';
 import { SecretsService } from 'src/global/secrets/service';
 import * as jwt from 'jsonwebtoken';
+import { LoginWithEmailDto } from './dto/login-email.dto';
+import {
+  LoginWithPhoneOtpDto,
+  SendLoginOtpToPhoneDto,
+} from './dto/login-phone-otp.dto';
 
 @Injectable()
 export class AuthService {
@@ -449,35 +454,200 @@ export class AuthService {
     return { ...user.toObject(), _id: user._id.toString() };
   }
 
-  async login(params: LoginDto) {
-    try {
-      const { phoneNumber, password, portalType } = params;
+  async loginWithEmail(
+    params: LoginWithEmailDto,
+  ): Promise<{ token: any; user: IUser }> {
+    this.logger.log(`Attempting email login for: ${params.email}`);
+    const { email, password, portalType, rememberMe } = params;
 
-      const user = await this.validateUser(phoneNumber, password, portalType);
+    const user = await this.validateUserByEmail(email, password, portalType);
 
-      if (
-        user.status === UserStatus.PENDING_EMAIL_VERIFICATION ||
-        user.status === UserStatus.PENDING_PROFILE_COMPLETION
-      ) {
-        ErrorHelper.ForbiddenException(
-          'Please complete your registration process before logging in.',
-        );
-      }
-
-      const tokenInfo = await this.generateUserSession(user, params.rememberMe);
-
-      await this.userRepo.updateOne(
-        { _id: user._id },
-        { lastSeen: new Date() },
+    if (
+      user.status === UserStatus.PENDING_EMAIL_VERIFICATION ||
+      user.status === UserStatus.PENDING_PROFILE_COMPLETION
+    ) {
+      ErrorHelper.ForbiddenException(
+        'Please complete your registration process before logging in.',
       );
-
-      return {
-        token: tokenInfo,
-        user,
-      };
-    } catch (error) {
-      ErrorHelper.BadRequestException(error);
     }
+    if (
+      user.status === UserStatus.INACTIVE ||
+      user.status === UserStatus.BANNED ||
+      user.status === UserStatus.SUSPENDED
+    ) {
+      ErrorHelper.ForbiddenException(
+        'Your account is currently inactive or suspended.',
+      );
+    }
+    if (!user.emailConfirm && user.strategy === UserLoginStrategy.LOCAL) {
+      // Check if email is confirmed for local strategy
+      ErrorHelper.ForbiddenException(
+        'Please verify your email address before logging in.',
+      );
+    }
+
+    const tokenInfo = await this.generateUserSession(user, rememberMe);
+    await this.userRepo.updateOne({ _id: user._id }, { lastSeen: new Date() });
+
+    return {
+      token: tokenInfo,
+      user,
+    };
+  }
+
+  async validateUserByEmail(
+    email: string,
+    passwordPlain: string,
+    portalType: PortalType,
+  ): Promise<IUser> {
+    const lowercasedEmail = email.toLowerCase();
+    const userDoc = await this.userRepo
+      .findOne({ email: lowercasedEmail })
+      .select('+password') // Ensure password is selected
+      .populate('roles', 'name');
+
+    if (!userDoc) {
+      ErrorHelper.UnauthorizedException(INVALID_EMAIL_OR_PASSWORD);
+    }
+
+    if (!userDoc.password) {
+      // User might exist via social login or incomplete registration
+      this.logger.warn(
+        `User ${userDoc.email} has no password set. Strategy: ${userDoc.strategy}`,
+      );
+      ErrorHelper.UnauthorizedException(INVALID_EMAIL_OR_PASSWORD);
+    }
+
+    const passwordMatch = await this.encryptHelper.compare(
+      passwordPlain,
+      userDoc.password,
+    );
+    if (!passwordMatch) {
+      ErrorHelper.UnauthorizedException(INVALID_EMAIL_OR_PASSWORD);
+    }
+
+    const roleNames = userDoc.roles.map((role: any) => role.name as string);
+    if (!roleNames.includes(portalType as string)) {
+      ErrorHelper.ForbiddenException(
+        'You do not have the required role to access this portal.',
+      );
+    }
+    // Convert to IUser, ensuring _id is string
+    return { ...userDoc.toObject(), _id: userDoc._id.toString() };
+  }
+
+  async sendLoginOtpToPhone(dto: SendLoginOtpToPhoneDto): Promise<void> {
+    const { phoneNumber, portalType } = dto;
+    this.logger.log(
+      `Sending login OTP to phone: ${phoneNumber} for portal: ${portalType}`,
+    );
+
+    const user = await this.userRepo
+      .findOne({ phoneNumber })
+      .populate('roles', 'name');
+
+    if (!user) {
+      ErrorHelper.NotFoundException('User with this phone number not found.');
+    }
+    if (
+      user.status === UserStatus.INACTIVE ||
+      user.status === UserStatus.BANNED ||
+      user.status === UserStatus.SUSPENDED
+    ) {
+      ErrorHelper.ForbiddenException(
+        'Your account is currently inactive or suspended.',
+      );
+    }
+    // Check if user has the required role for the portalType
+    const roleNames = user.roles.map((role: any) => role.name as string);
+    if (!roleNames.includes(portalType as string)) {
+      ErrorHelper.ForbiddenException(
+        `You are not registered for the ${portalType} portal with this phone number.`,
+      );
+    }
+
+    // Generate OTP - you might want a different type of token/OTP for login vs. verification
+    // For simplicity, reusing the existing OTP generation.
+    // Consider a specific OTP purpose if you store OTPs with types.
+    const loginOtp = await this.userService.generateOtpCode(
+      { _id: user._id.toString() } as IUser, // Pass minimal user object
+      { length: 6, numberOnly: true },
+      5, // Shorter expiry for login OTPs, e.g., 5 minutes
+    );
+
+    // Send OTP via Twilio SMS (not verify service for this, direct SMS)
+    try {
+      // This assumes you have a generic SMS sending capability in TwilioService
+      // or you use Twilio Verify again, but conceptually it's for login.
+      await this.twilioService.sendSms(
+        // You'll need to implement sendSms if not present
+        phoneNumber,
+        `Your TravEazi login OTP is: ${loginOtp}. It expires in 5 minutes.`,
+      );
+      this.logger.log(
+        `Login OTP ${loginOtp} sent to ${phoneNumber} for user ${user._id}`,
+      );
+    } catch (error) {
+      this.logger.error(
+        `Failed to send login OTP SMS to ${phoneNumber}: ${error.message}`,
+        error.stack,
+      );
+      ErrorHelper.InternalServerErrorException('Could not send login OTP.');
+    }
+  }
+
+  async loginWithPhoneOtp(
+    params: LoginWithPhoneOtpDto,
+  ): Promise<{ token: any; user: IUser }> {
+    const { phoneNumber, otp, portalType, rememberMe } = params;
+    this.logger.log(`Attempting phone OTP login for: ${phoneNumber}`);
+
+    const userDoc = await this.userRepo
+      .findOne({ phoneNumber })
+      .populate('roles', 'name');
+
+    if (!userDoc) {
+      ErrorHelper.NotFoundException('User with this phone number not found.');
+    }
+    if (
+      userDoc.status === UserStatus.INACTIVE ||
+      userDoc.status === UserStatus.BANNED ||
+      userDoc.status === UserStatus.SUSPENDED
+    ) {
+      ErrorHelper.ForbiddenException(
+        'Your account is currently inactive or suspended.',
+      );
+    }
+
+    const roleNames = userDoc.roles.map((role: any) => role.name as string);
+    if (!roleNames.includes(portalType as string)) {
+      ErrorHelper.ForbiddenException(
+        `You are not registered for the ${portalType} portal with this phone number.`,
+      );
+    }
+
+    // Verify the OTP (make sure it's specifically a login OTP if you differentiate)
+    const isOtpValid = await this.userService.verifyOtpCode(
+      { _id: userDoc._id.toString() } as IUser,
+      otp,
+      'Invalid or expired login OTP.', // Specific message for login OTP
+    );
+
+    if (!isOtpValid) {
+      // verifyOtpCode should throw, but as a safeguard:
+      ErrorHelper.UnauthorizedException('Invalid or expired login OTP.');
+    }
+
+    // Convert to IUser
+    const user = { ...userDoc.toObject(), _id: userDoc._id.toString() };
+
+    const tokenInfo = await this.generateUserSession(user, rememberMe);
+    await this.userRepo.updateOne({ _id: user._id }, { lastSeen: new Date() });
+
+    return {
+      token: tokenInfo,
+      user,
+    };
   }
 
   async validateUser(
