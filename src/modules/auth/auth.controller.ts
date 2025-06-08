@@ -40,7 +40,7 @@ import {
   LoginWithPhoneOtpDto,
   SendLoginOtpToPhoneDto,
 } from './dto/login-phone-otp.dto';
-import { LoginWithEmailDto } from './dto/login-email.dto';
+import { LoginWithEmailAndPhoneDto } from './dto/login-email.dto';
 
 @ApiTags('Authentication')
 @Controller('auth')
@@ -192,17 +192,19 @@ export class AuthController {
     };
   }
 
-  // --- Email + Password Login ---
-  @Post('login/email') // New endpoint
-  @ApiOperation({ summary: 'Login user with email and password' })
+  // --- Email + Password +phone Login ---
+  @Post('login/email')
+  @ApiOperation({
+    summary: 'Login user with email or phone number and password',
+  })
   @ApiResponse({
     status: 200,
     description: 'Login successful',
     type: BaseResponseDto<AuthUserResponseDto>,
   })
   @ApiResponse({ status: 401, description: 'Invalid credentials' })
-  async loginWithEmail(@Body() loginDto: LoginWithEmailDto) {
-    const data = await this.authService.loginWithEmail(loginDto);
+  async loginWithEmail(@Body() loginDto: LoginWithEmailAndPhoneDto) {
+    const data = await this.authService.loginWithEmailAndPhone(loginDto);
     return {
       data,
       message: 'Login successful',

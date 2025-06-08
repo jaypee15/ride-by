@@ -35,7 +35,7 @@ import { CompleteProfileDto } from './dto/complete-profile.dto';
 import { RoleNameEnum } from 'src/core/interfaces';
 import { SecretsService } from 'src/global/secrets/service';
 import * as jwt from 'jsonwebtoken';
-import { LoginWithEmailDto } from './dto/login-email.dto';
+import { LoginWithEmailAndPhoneDto } from './dto/login-email.dto';
 import {
   LoginWithPhoneOtpDto,
   SendLoginOtpToPhoneDto,
@@ -454,13 +454,25 @@ export class AuthService {
     return { ...user.toObject(), _id: user._id.toString() };
   }
 
-  async loginWithEmail(
-    params: LoginWithEmailDto,
+  async loginWithEmailAndPhone(
+    params: LoginWithEmailAndPhoneDto,
   ): Promise<{ token: any; user: IUser }> {
-    this.logger.log(`Attempting email login for: ${params.email}`);
-    const { email, password, portalType, rememberMe } = params;
+    this.logger.log(
+      `Attempting email or phone login for: ${params.email} or ${params.phoneNumber}`,
+    );
+    const { email, password, portalType, rememberMe, phoneNumber } = params;
 
-    const user = await this.validateUserByEmail(email, password, portalType);
+    let user: IUser;
+
+    if (email) {
+      user = await this.validateUserByEmail(email, password, portalType);
+    } else if (phoneNumber) {
+      user = await this.validateUser(phoneNumber, password, portalType);
+    } else {
+      ErrorHelper.BadRequestException(
+        'Please provide either an email or phone number to login.',
+      );
+    }
 
     if (
       user.status === UserStatus.PENDING_EMAIL_VERIFICATION ||
@@ -654,7 +666,7 @@ export class AuthService {
     phone: string,
     password: string,
     portalType?: string,
-  ): Promise<IDriver | IPassenger> {
+  ): Promise<IUser> {
     const phoneQuery = {
       phoneNumber: phone,
     };
