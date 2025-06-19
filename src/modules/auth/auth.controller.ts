@@ -31,7 +31,6 @@ import {
   ApiConsumes,
 } from '@nestjs/swagger';
 import { AuthUserResponseDto, BaseResponseDto } from './dto/auth-response.dto';
-import { SendPhoneOtpDto, VerifyPhoneOtpDto } from './dto/send-phone-otp.dto';
 import { SendEmailOtpDto } from './dto/send-email-otp.dto';
 import { VerifyEmailOtpDto } from './dto/verify-email-otp.dto';
 import { CompleteProfileDto } from './dto/complete-profile.dto';
@@ -51,109 +50,50 @@ export class AuthController {
     private secretSecret: SecretsService,
   ) {}
 
-  @Post('phone/send-otp')
-  @ApiOperation({ summary: 'Send OTP to phone number' })
-  @ApiResponse({
-    status: 200,
-    description: 'OTP sent successfully',
-    type: BaseResponseDto<{ sent: boolean }>,
-  })
-  @ApiResponse({ status: 400, description: 'Bad request - Invalid input' })
-  @ApiResponse({ status: 500, description: 'Internal server error' })
-  @ApiBody({
-    schema: {
-      properties: {
-        phoneNumber: {
-          type: 'string',
-          example: '+2348140822353',
-          description: 'Phone number in E.164 format',
-        },
-      },
-    },
-  })
-  @HttpCode(HttpStatus.OK)
-  async sendPhoneOtp(@Body() body: SendPhoneOtpDto) {
-    const data = await this.authService.sendPhoneVerificationOtp(body);
-    return {
-      data,
-      message: 'OTP sent succesfully',
-    };
-  }
-
-  @Post('phone/verify-otp')
-  @ApiOperation({ summary: 'Verify OTP for phone number' })
-  @ApiResponse({
-    status: 200,
-    description:
-      'Phone OTP verified successfully. Returns partial token for next steps.',
-    schema: { properties: { partialToken: { type: 'string' } } },
-  })
-  @ApiResponse({ status: 400, description: 'Bad request - Invalid input' })
-  @ApiResponse({ status: 500, description: 'Internal server error' })
-  @ApiBody({
-    schema: {
-      properties: {
-        phoneNumber: {
-          type: 'string',
-          example: '+2348140822353',
-          description: 'Phone number in E.164 format',
-        },
-        otp: {
-          type: 'string',
-          example: '123456',
-          description: '6-digit OTP code',
-        },
-      },
-    },
-  })
-  @HttpCode(HttpStatus.OK)
-  async verifyPhoneOtp(@Body() body: VerifyPhoneOtpDto) {
-    const data = await this.authService.verifyPhoneNumberOtp(body);
-    return {
-      data,
-      message: 'OTP verified successfully',
-    };
-  }
-
   @Post('email/send-otp')
-  @UseGuards(AuthGuard) // Requires the partial token from phone verification
-  @ApiBearerAuth()
-  @ApiOperation({ summary: 'Send OTP to the provided email address' })
+  @ApiOperation({
+    summary: 'Send OTP to the provided email address for signup/verification',
+  })
   @ApiResponse({ status: 200, description: 'Email OTP sent successfully.' })
   @ApiResponse({
-    status: 401,
-    description: 'Unauthorized (invalid/missing partial token).',
-  })
-  @ApiResponse({
     status: 409,
-    description: 'Email already verified for another account.',
+    description: 'Email already exists and is verified.',
   })
   @HttpCode(HttpStatus.OK)
   async sendEmailOtp(
-    @User() partialUser: { _id: string }, // Get userId from partial token
     @Body() body: SendEmailOtpDto,
   ): Promise<{ message: string }> {
-    const data = await this.authService.sendEmailVerificationOtp(
-      partialUser._id,
-      body,
-    );
+    const data = await this.authService.sendEmailVerificationOtp(body);
     return { message: data.message };
   }
 
   @Post('email/verify-otp')
-  @UseGuards(AuthGuard) // Requires partial token
-  @ApiBearerAuth()
-  @ApiOperation({ summary: 'Verify OTP received via email' })
-  @ApiResponse({ status: 200, description: 'Email verified successfully.' })
+  @ApiOperation({
+    summary: 'Verify OTP received via email',
+    description:
+      'On success, it returns a partial token to be used for completing the profile.',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Email verified successfully.',
+    schema: {
+      properties: {
+        message: { type: 'string' },
+        data: {
+          properties: {
+            partialToken: { type: 'string' },
+          },
+        },
+      },
+    },
+  })
   @ApiResponse({ status: 400, description: 'Invalid or expired OTP.' })
-  @ApiResponse({ status: 401, description: 'Unauthorized.' })
   @HttpCode(HttpStatus.OK)
   async verifyEmailOtp(
-    @User() partialUser: { _id: string },
     @Body() body: VerifyEmailOtpDto,
-  ): Promise<{ message: string }> {
-    const data = await this.authService.verifyEmailOtp(partialUser._id, body);
-    return { message: data.message };
+  ): Promise<{ message: string; data: { partialToken: string } }> {
+    const data = await this.authService.verifyEmailOtp(body);
+    return { message: 'Email verified successfully', data };
   }
 
   // --- New Profile Completion Endpoint ---
@@ -175,7 +115,7 @@ export class AuthController {
   @ApiResponse({ status: 401, description: 'Unauthorized.' })
   @ApiResponse({
     status: 403,
-    description: 'Forbidden - Phone or email not verified.',
+    description: 'Forbidden - Email not verified.',
   })
   async completeProfile(
     @User() partialUser: { _id: string },

@@ -28,7 +28,6 @@ import { IUser } from 'src/core/interfaces';
 import { LoginDto } from './dto/auth.dto';
 import { UserStatus } from 'src/core/enums/user.enum';
 import { TwilioService } from '../twilio/twilio.service';
-import { SendPhoneOtpDto, VerifyPhoneOtpDto } from './dto/send-phone-otp.dto';
 import { SendEmailOtpDto } from './dto/send-email-otp.dto';
 import { VerifyEmailOtpDto } from './dto/verify-email-otp.dto';
 import { CompleteProfileDto } from './dto/complete-profile.dto';
@@ -59,110 +58,93 @@ export class AuthService {
     private secretsService: SecretsService,
   ) {}
 
-  async sendPhoneVerificationOtp(
-    dto: SendPhoneOtpDto,
-  ): Promise<{ message: string }> {
-    const { phoneNumber } = dto;
+  // --- Email Verification ---
 
-    // 1. Check if phone number is already registered and verified (optional but recommended)
+  async sendEmailVerificationOtp(
+    dto: SendEmailOtpDto,
+  ): Promise<{ message: string }> {
+    const { email } = dto;
+    this.logger.log(`Requesting email verification OTP for ${email}`);
+
     const existingVerifiedUser = await this.userRepo.findOne({
-      phoneNumber,
-      phoneVerified: true,
-      status: { $ne: UserStatus.INACTIVE },
-    }); // Check active/pending etc.
+      email: email.toLowerCase(),
+      emailConfirm: true,
+    });
     if (existingVerifiedUser) {
       ErrorHelper.ConflictException(
-        'This phone number is already linked to a verified account.',
+        'This email is already linked to a verified account.',
       );
     }
 
-    // 2. Send verification via Twilio Verify
+    let user = await this.userRepo.findOne({ email: email.toLowerCase() });
+    if (!user) {
+      const defaultRole = await this.roleRepo.findOne({
+        name: RoleNameEnum.Passenger,
+      });
+      if (!defaultRole)
+        ErrorHelper.InternalServerErrorException('Default role not found');
+
+      user = await this.userRepo.create({
+        email: email.toLowerCase(),
+        emailConfirm: false,
+        status: UserStatus.PENDING_EMAIL_VERIFICATION,
+        roles: [defaultRole._id],
+      });
+      this.logger.log(`Created new user ${user._id} for email verification.`);
+    }
+
     try {
-      const sent = await this.twilioService.sendVerificationToken(
-        phoneNumber,
-        'sms',
+      const emailOtp = await this.userService.generateOtpCode({
+        ...user.toObject(),
+        _id: user._id.toString(),
+      });
+      await this.mailEvent.sendUserConfirmation(
+        { email, firstName: user.firstName || 'User' },
+        emailOtp,
       );
-      if (sent) {
-        return { message: 'Verification code sent successfully via SMS.' };
-      } else {
-        // Should not happen if sendVerificationToken throws on failure, but as fallback
-        ErrorHelper.InternalServerErrorException(
-          'Could not send verification code.',
-        );
-      }
+      this.logger.log(
+        `Sent email verification OTP to ${email} for user ${user._id}`,
+      );
+      return { message: 'Verification code sent to your email.' };
     } catch (error) {
-      // Error is already logged in TwilioService, rethrow specific message
+      this.logger.error(
+        `Failed to send email OTP for user ${user._id}: ${error.message}`,
+        error.stack,
+      );
       ErrorHelper.InternalServerErrorException(
-        error.message || 'Could not send verification code.',
+        'Could not send email verification code.',
       );
     }
   }
 
-  async verifyPhoneNumberOtp(
-    dto: VerifyPhoneOtpDto,
-  ): Promise<{ partialToken: string; message: string }> {
-    const { phoneNumber, otp } = dto;
-    let userId: string;
+  async verifyEmailOtp(
+    dto: VerifyEmailOtpDto,
+  ): Promise<{ partialToken: string }> {
+    const { email, otp } = dto;
+    this.logger.log(`Attempting to verify email ${email} with OTP`);
 
-    // 1. Check verification using Twilio Verify
-    const isApproved = await this.twilioService.checkVerificationToken(
-      phoneNumber,
+    const user = await this.userRepo.findOne({ email: email.toLowerCase() });
+    if (!user) ErrorHelper.NotFoundException('User not found.');
+
+    const isEmailOtpValid = await this.userService.verifyOtpCode(
+      { ...user.toObject(), _id: user._id.toString() },
       otp,
     );
-    if (!isApproved) {
-      ErrorHelper.BadRequestException('Invalid or expired verification code.');
+    if (!isEmailOtpValid) {
+      ErrorHelper.BadRequestException('Invalid or expired OTP.');
     }
 
-    // 2. Check/Create User
-    let user = await this.userRepo.findOne({ phoneNumber });
+    user.emailConfirm = true;
+    user.status = UserStatus.PENDING_PROFILE_COMPLETION;
+    await user.save();
 
-    if (user) {
-      // User exists
-      if (
-        user.phoneVerified &&
-        user.status !== UserStatus.PENDING_EMAIL_VERIFICATION
-      ) {
-        // Phone already verified and likely active/profile complete - maybe initiate login instead?
-        // For now, let's prevent proceeding with signup flow.
-        ErrorHelper.ConflictException(
-          'Phone number already linked to a verified account. Please log in.',
-        );
-      }
-      // User exists but phone wasn't verified, mark as verified
-      user.phoneVerified = true;
-      // Ensure status allows proceeding
-      if (user.status !== UserStatus.PENDING_EMAIL_VERIFICATION) {
-        user.status = UserStatus.PENDING_EMAIL_VERIFICATION;
-      }
-      await user.save();
-      userId = user._id.toString();
-      this.logger.log(`Updated existing user ${userId} - phone verified.`);
-    } else {
-      // No user exists, create one
-      // Determine default role (e.g., Passenger)
-      const defaultRole = await this.roleRepo.findOne({
-        name: RoleNameEnum.Passenger,
-      });
-      if (!defaultRole) throw new Error('Default role not found'); // Internal config error
+    this.logger.log(`Email ${email} verified for user ${user._id}.`);
 
-      user = await this.userRepo.create({
-        phoneNumber: phoneNumber,
-        phoneVerified: true,
-        status: UserStatus.PENDING_EMAIL_VERIFICATION,
-        roles: [defaultRole._id], // Assign default role
-        // Other fields (email, password, name) are null/undefined initially
-      });
-      userId = user._id.toString();
-      this.logger.log(`Created new user ${userId} after phone verification.`);
-    }
-
-    // 3. Generate Partial JWT
-    // This token proves phone is verified and identifies the user for next steps
     const partialPayload = {
-      _id: userId,
-      phone: phoneNumber, // Include phone for reference if needed
-      isPhoneVerified: true,
-      isPartialToken: true, // Flag to distinguish from full login token
+      _id: user._id.toString(),
+      email: user.email,
+      isEmailVerified: true,
+      isPartialToken: true,
     };
 
     const jwtString = jwt.sign(
@@ -174,100 +156,8 @@ export class AuthService {
     );
 
     return {
-      message: 'Phone number verified successfully.',
-      partialToken: jwtString, // Contains userId etc.
+      partialToken: jwtString,
     };
-  }
-
-  // --- Email Verification ---
-
-  async sendEmailVerificationOtp(
-    userId: string,
-    dto: SendEmailOtpDto,
-  ): Promise<{ message: string }> {
-    const { email } = dto;
-    this.logger.log(
-      `User ${userId} requesting email verification OTP for ${email}`,
-    );
-
-    // Optional: Check if email is already verified on *another* account
-    const emailExists = await this.userRepo.findOne({
-      email: email.toLowerCase(),
-      _id: { $ne: userId },
-      emailConfirm: true,
-    });
-    if (emailExists) {
-      ErrorHelper.ConflictException(
-        'This email address is already linked to another verified account.',
-      );
-    }
-
-    const user = await this.userRepo.findById(userId);
-    if (!user) ErrorHelper.NotFoundException('User not found.'); // Should not happen with valid partial JWT
-    if (!user.phoneVerified)
-      ErrorHelper.ForbiddenException('Phone number must be verified first.'); // Belt-and-suspenders check
-
-    // Generate and send email OTP using existing UserService logic
-    try {
-      const emailOtp = await this.userService.generateOtpCode({
-        _id: userId,
-      } as IUser); // Pass minimal user object
-      await this.mailEvent.sendUserConfirmation(
-        { email, firstName: user.firstName || 'User' },
-        emailOtp,
-      ); // Pass email and name
-      this.logger.log(
-        `Sent email verification OTP to ${email} for user ${userId}`,
-      );
-      return { message: 'Verification code sent to your email.' };
-    } catch (error) {
-      this.logger.error(
-        `Failed to send email OTP for user ${userId}: ${error.message}`,
-        error.stack,
-      );
-      ErrorHelper.InternalServerErrorException(
-        'Could not send email verification code.',
-      );
-    }
-  }
-
-  async verifyEmailOtp(
-    userId: string,
-    dto: VerifyEmailOtpDto,
-  ): Promise<{ message: string }> {
-    const { email, otp } = dto;
-    this.logger.log(
-      `User ${userId} attempting to verify email ${email} with OTP`,
-    );
-
-    const user = await this.userRepo.findById(userId);
-    if (!user) ErrorHelper.NotFoundException('User not found.');
-    if (!user.phoneVerified)
-      ErrorHelper.ForbiddenException('Phone number must be verified first.');
-
-    // Verify email OTP using UserService
-    const isEmailOtpValid = await this.userService.verifyOtpCode(
-      { _id: userId } as IUser,
-      otp,
-      'Invalid or expired email verification code.',
-    );
-    if (!isEmailOtpValid) {
-      // verifyOtpCode throws on failure, so this might be redundant
-      ErrorHelper.BadRequestException(
-        'Invalid or expired email verification code.',
-      );
-    }
-
-    // Update user document
-    user.email = email.toLowerCase();
-    user.emailConfirm = true;
-    if (user.status === UserStatus.PENDING_EMAIL_VERIFICATION) {
-      user.status = UserStatus.PENDING_PROFILE_COMPLETION; // Move to next status
-    }
-    await user.save();
-
-    this.logger.log(`Email ${email} verified successfully for user ${userId}.`);
-    return { message: 'Email verified successfully.' };
   }
 
   // --- Profile Completion ---
@@ -281,10 +171,10 @@ export class AuthService {
     const user = await this.userRepo.findById(userId).populate('roles');
     if (!user) ErrorHelper.NotFoundException('User not found.');
 
-    // Verify preconditions (phone and email must be verified)
-    if (!user.phoneVerified || !user.emailConfirm) {
+    // Verify preconditions (email must be verified)
+    if (!user.emailConfirm) {
       ErrorHelper.ForbiddenException(
-        'Phone and email must be verified before completing profile.',
+        'Email must be verified before completing profile.',
       );
     }
     if (user.status !== UserStatus.PENDING_PROFILE_COMPLETION) {
@@ -948,7 +838,7 @@ export class AuthService {
     user: IDriver | IPassenger,
     code: string,
   ) {
-    const errorMessage = 'OTP has expired’';
+    const errorMessage = 'OTP has expired';
 
     await this.userService.verifyOtpCode(user, code, errorMessage);
 
