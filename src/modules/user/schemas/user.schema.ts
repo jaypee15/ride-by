@@ -33,15 +33,6 @@ export class User {
   @Prop({ type: String, required: false, select: false }) // Required only for LOCAL strategy initially
   password?: string;
 
-  @Prop({
-    type: String,
-    unique: true,
-    sparse: true,
-    index: true,
-    required: true,
-  }) // Unique phone number, sparse allows multiple nulls
-  phoneNumber?: string;
-
   @Prop({ type: Boolean, default: false })
   phoneVerified: boolean;
 
@@ -116,7 +107,7 @@ export class User {
     type: [
       {
         name: { type: String, required: true },
-        phone: { type: String, required: true }, // Add validation for phone format if needed
+        phone: { type: String, required: true },
       },
     ],
     default: [],
