@@ -3,6 +3,8 @@ import { Document } from 'mongoose';
 import { RoleNameEnum } from 'src/core/interfaces';
 import { Action, ActionSchema } from './action.schema';
 
+export type RoleDocument = Role & Document;
+
 @Schema({
   timestamps: true,
 })

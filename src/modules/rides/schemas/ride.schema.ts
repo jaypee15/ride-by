@@ -76,7 +76,7 @@ export class Ride {
   @Prop({ type: [String], default: [] })
   preferences?: string[]; // e.g., "No Smoking", "Pets Allowed"
 
-  @Prop({ type: mongoose.Schema.Types.ObjectId, ref: 'Booking', default: [] })
+  @Prop({ type: [mongoose.Schema.Types.ObjectId], ref: 'Booking', default: [] })
   bookings: mongoose.Schema.Types.ObjectId[]; // Refs to Booking documents for this ride
 
   @Prop({ type: PointSchema, required: false, index: '2dsphere' }) // Add geospatial index if querying by location

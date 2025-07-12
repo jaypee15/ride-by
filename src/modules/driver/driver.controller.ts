@@ -26,6 +26,7 @@ import {
 } from '@nestjs/swagger';
 import { Vehicle } from './schemas/vehicle.schema'; // Import for response type
 import { VehicleDocumentType } from './enums/vehicle-document-type.enum';
+import { DriverDocumentType } from './enums/driver-document-type.enum';
 import { ErrorHelper } from 'src/core/helpers';
 
 @ApiTags('Driver')
@@ -145,6 +146,76 @@ export class DriverController {
     return {
       message: `${documentType} uploaded successfully.`,
       data: updatedVehicle.toObject() as Vehicle,
+    };
+  }
+
+  @Post('documents')
+  @UseInterceptors(FileInterceptor('documentFile'))
+  @ApiOperation({ summary: 'Upload a driver document for verification' })
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        documentFile: {
+          type: 'string',
+          format: 'binary',
+          description:
+            'The driver document file (e.g., driver license front/back).',
+        },
+        documentType: {
+          type: 'string',
+          enum: Object.values(DriverDocumentType),
+          description: 'The type of driver document being uploaded.',
+        },
+      },
+      required: ['documentFile', 'documentType'],
+    },
+  })
+  @ApiResponse({
+    status: 201,
+    description: 'Driver document uploaded successfully.',
+  })
+  @ApiResponse({
+    status: 400,
+    description: 'Bad Request - Missing file or invalid document type.',
+  })
+  @ApiResponse({ status: 401, description: 'Unauthorized.' })
+  @ApiResponse({
+    status: 403,
+    description: 'Forbidden - User is not a driver.',
+  })
+  async uploadDriverDocument(
+    @User() driver: IUser,
+    @UploadedFile() file: Express.Multer.File,
+    @Body(
+      'documentType',
+      new ParseEnumPipe(DriverDocumentType, {
+        exceptionFactory: () =>
+          ErrorHelper.BadRequestException('Invalid document type specified.'),
+      }),
+    )
+    documentType: DriverDocumentType,
+  ): Promise<{ message: string; data: any }> {
+    if (!file) {
+      ErrorHelper.BadRequestException('Document file is required.');
+    }
+    this.logger.log(
+      `Received request to upload ${documentType} from driver ${driver._id}`,
+    );
+    const updatedDriver = await this.driverService.uploadDriverDocument(
+      driver._id,
+      file,
+      documentType,
+    );
+    return {
+      message: `${documentType} uploaded successfully.`,
+      data: {
+        _id: updatedDriver._id,
+        driverVerificationStatus: updatedDriver.driverVerificationStatus,
+        driverLicenseFrontImageUrl: updatedDriver.driverLicenseFrontImageUrl,
+        driverLicenseBackImageUrl: updatedDriver.driverLicenseBackImageUrl,
+      },
     };
   }
 

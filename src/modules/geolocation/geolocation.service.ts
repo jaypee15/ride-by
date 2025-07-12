@@ -175,10 +175,14 @@ export class GeolocationService {
     const params: DirectionsRequest['params'] = {
       origin: origin,
       destination: destination,
-      waypoints: waypoints,
       key: this.secretsService.googleMaps.apiKey,
-      mode: TravelMode.driving, // Enum is correct here
+      mode: TravelMode.driving,
     };
+
+    // Only add waypoints if they exist and are not empty
+    if (waypoints && waypoints.length > 0) {
+      params.waypoints = waypoints;
+    }
 
     try {
       this.logger.log(
@@ -186,9 +190,9 @@ export class GeolocationService {
       );
       const response = await this.googleMapsClient.directions({ params });
 
-      if (response.data.status === 'OK' && response.data.routes.length > 0) {
+      if (response.data.status === 'OK' && response.data.routes?.length > 0) {
         const route = response.data.routes[0];
-        if (route.legs.length > 0) {
+        if (route.legs?.length > 0) {
           let totalDistance = 0;
           let totalDuration = 0;
           route.legs.forEach((leg) => {

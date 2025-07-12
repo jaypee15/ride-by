@@ -8,7 +8,10 @@ import { RegisterVehicleDto } from './dto/register-vehicle.dto';
 import { ErrorHelper } from 'src/core/helpers'; // Use ErrorHelper for consistency
 import { AwsS3Service } from '../storage/s3-bucket.service'; // Import S3 Service
 import { VehicleDocumentType } from './enums/vehicle-document-type.enum';
+import { DriverDocumentType } from './enums/driver-document-type.enum';
 import { VehicleVerificationStatus } from 'src/core/enums/vehicle.enum';
+import { DriverVerificationStatus } from 'src/core/enums/user.enum';
+import { Role, RoleDocument } from '../user/schemas/role.schema';
 
 @Injectable()
 export class DriverService {
@@ -17,6 +20,7 @@ export class DriverService {
   constructor(
     @InjectModel(Vehicle.name) private vehicleModel: Model<VehicleDocument>,
     @InjectModel(User.name) private userModel: Model<UserDocument>,
+    @InjectModel(Role.name) private rolesModel: Model<RoleDocument>,
     private readonly awsS3Service: AwsS3Service,
   ) {}
 
@@ -124,8 +128,11 @@ export class DriverService {
     let fileUrl: string;
     try {
       // Define a structured key/filename for S3
-      const s3FileName = `vehicle-documents/${driverId}/${vehicleId}/${documentType}-${Date.now()}-${file.originalname}`;
-      fileUrl = await this.awsS3Service.uploadAttachment(file, s3FileName);
+      // skip for now, use dummy url
+      // const s3FileName = `vehicle-documents/${driverId}/${vehicleId}/${documentType}-${Date.now()}-${file.originalname}`;
+      // fileUrl = await this.awsS3Service.uploadAttachment(file, s3FileName);
+      fileUrl =
+        'https://traveazi-io-nonprod-general-revamp.s3.eu-west-2.amazonaws.com/1726625876998-traveazi-logo.png';
       this.logger.log(`Document uploaded to S3: ${fileUrl}`);
     } catch (error) {
       this.logger.error(
@@ -166,7 +173,8 @@ export class DriverService {
         vehicle.vehicleVerificationStatus === VehicleVerificationStatus.REJECTED
       ) {
         // Optionally set to PENDING automatically on first upload or re-upload after rejection
-        // updateData.vehicleVerificationStatus = VehicleVerificationStatus.PENDING;
+        updateData.vehicleVerificationStatus =
+          VehicleVerificationStatus.PENDING;
         // More robust logic might check if ALL required docs are present before setting PENDING.
         // For now, just upload the URL. Verification status change can be manual via admin or a separate trigger.
       }
@@ -178,7 +186,7 @@ export class DriverService {
       );
 
       if (!updatedVehicle) {
-        // Should not happen if findById worked, but good practice
+        // Should not happen if findById worked
         ErrorHelper.NotFoundException(
           `Vehicle with ID ${vehicleId} disappeared during update.`,
         );
@@ -199,6 +207,108 @@ export class DriverService {
       );
     }
   }
+
+  async uploadDriverDocument(
+    driverId: string,
+    file: Express.Multer.File,
+    documentType: DriverDocumentType,
+  ): Promise<UserDocument> {
+    this.logger.log(
+      `Attempting to upload driver document type ${documentType} for driver ${driverId}`,
+    );
+
+    if (!file) {
+      ErrorHelper.BadRequestException('Document file is required.');
+    }
+
+    // 1. Find driver
+    const driver = await this.userModel.findById(driverId);
+    if (!driver) {
+      ErrorHelper.NotFoundException(`Driver with ID ${driverId} not found.`);
+    }
+
+    const driverRole = await this.rolesModel.findOne({
+      name: RoleNameEnum.Driver,
+    });
+
+    // 2. Check if user has driver role
+    const isDriverRole = driver.roles.some(
+      (role) => role.toString() === driverRole._id.toString(),
+    );
+    if (!isDriverRole) {
+      this.logger.warn(`User ${driverId} does not have DRIVER role.`);
+      ErrorHelper.ForbiddenException('User is not registered as a driver.');
+    }
+
+    // 3. Upload to S3 (using dummy URL for now)
+    let fileUrl: string;
+    try {
+      // skip for now, use dummy url
+      // const s3FileName = `driver-documents/${driverId}/${documentType}-${Date.now()}-${file.originalname}`;
+      // fileUrl = await this.awsS3Service.uploadAttachment(file, s3FileName);
+      fileUrl =
+        'https://traveazi-io-nonprod-general-revamp.s3.eu-west-2.amazonaws.com/1726625876998-traveazi-logo.png';
+      this.logger.log(`Driver document uploaded to S3: ${fileUrl}`);
+    } catch (error) {
+      this.logger.error(
+        `Failed to upload driver document to S3: ${error.message}`,
+        error.stack,
+      );
+      ErrorHelper.InternalServerErrorException('Failed to upload document.');
+    }
+
+    // 4. Determine which field to update
+    let updateField: string;
+    switch (documentType) {
+      case DriverDocumentType.DRIVER_LICENSE_FRONT:
+        updateField = 'driverLicenseFrontImageUrl';
+        break;
+      case DriverDocumentType.DRIVER_LICENSE_BACK:
+        updateField = 'driverLicenseBackImageUrl';
+        break;
+      default:
+        this.logger.error(`Invalid document type provided: ${documentType}`);
+        ErrorHelper.BadRequestException('Invalid document type specified.');
+    }
+
+    // 5. Update Driver Document in DB
+    try {
+      const updateData: Partial<User> = { [updateField]: fileUrl };
+      if (
+        driver.driverVerificationStatus ===
+          DriverVerificationStatus.NOT_SUBMITTED ||
+        driver.driverVerificationStatus === DriverVerificationStatus.REJECTED
+      ) {
+        updateData.driverVerificationStatus = DriverVerificationStatus.PENDING;
+      }
+
+      const updatedDriver = await this.userModel.findByIdAndUpdate(
+        driverId,
+        { $set: updateData },
+        { new: true },
+      );
+
+      if (!updatedDriver) {
+        ErrorHelper.NotFoundException(
+          `Driver with ID ${driverId} disappeared during update.`,
+        );
+      }
+
+      this.logger.log(
+        `Updated driver ${driverId} with document URL for type ${documentType}.`,
+      );
+      return updatedDriver;
+    } catch (error) {
+      this.logger.error(
+        `Failed to update driver ${driverId} in DB after S3 upload: ${error.message}`,
+        error.stack,
+      );
+      ErrorHelper.InternalServerErrorException(
+        'Failed to save document information.',
+      );
+    }
+  }
+
   async getDriverProfileAndStatus(
     driverId: string,
   ): Promise<Partial<UserDocument>> {

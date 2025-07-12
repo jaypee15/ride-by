@@ -23,7 +23,7 @@ export const admins: { data: any; role: RoleNameEnum }[] = [
     data: {
       email: 'admin@traveazi.com',
       firstName: 'Admin',
-      lastName: 'Xtern',
+      lastName: 'Traveazi',
       strategy: UserLoginStrategy.LOCAL,
       emailConfirm: true,
       roles: [],
@@ -34,7 +34,7 @@ export const admins: { data: any; role: RoleNameEnum }[] = [
     data: {
       email: 'support@traveazi.com',
       firstName: 'Support',
-      lastName: 'Xtern',
+      lastName: 'Traveazi',
       strategy: UserLoginStrategy.LOCAL,
       emailConfirm: true,
       roles: [],
