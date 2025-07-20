@@ -371,4 +371,30 @@ export class RidesService {
       );
     }
   }
+  async getAllRidesByDriver(driverId: string): Promise<RideDocument[]> {
+    this.logger.log(`Fetching all rides for driver: ${driverId}`);
+
+    const driver = await this.userModel.findById(driverId);
+    if (!driver) {
+      ErrorHelper.NotFoundException('Driver not found.');
+    }
+
+    const isDriverRole = driver.roles.some(
+      (role) => role.name === RoleNameEnum.Driver,
+    );
+    if (!isDriverRole) {
+      ErrorHelper.ForbiddenException('User is not a driver.');
+    }
+
+    const rides = await this.rideModel
+      .find({ driver: driverId })
+      .populate<{ vehicle: VehicleDocument }>({
+        path: 'vehicle',
+        select: 'make model year color plateNumber seatsAvailable',
+      })
+      .sort({ departureTime: -1 }) // Most recent rides first
+      .exec();
+
+    return rides;
+  }
 }
