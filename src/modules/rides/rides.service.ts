@@ -374,17 +374,17 @@ export class RidesService {
   async getAllRidesByDriver(driverId: string): Promise<RideDocument[]> {
     this.logger.log(`Fetching all rides for driver: ${driverId}`);
 
-    const driver = await this.userModel.findById(driverId);
+    const driver = await this.userModel.findById(driverId).populate('roles');
     if (!driver) {
       ErrorHelper.NotFoundException('Driver not found.');
     }
 
-    const isDriverRole = driver.roles.some(
-      (role) => role.name === RoleNameEnum.Driver,
-    );
-    if (!isDriverRole) {
-      ErrorHelper.ForbiddenException('User is not a driver.');
-    }
+    // const isDriverRole = driver.roles.some(
+    //   (role) => role.name === RoleNameEnum.Driver,
+    // );
+    // if (!isDriverRole) {
+    //   ErrorHelper.ForbiddenException('User is not a driver.');
+    // }
 
     const rides = await this.rideModel
       .find({ driver: driverId })
@@ -392,7 +392,7 @@ export class RidesService {
         path: 'vehicle',
         select: 'make model year color plateNumber seatsAvailable',
       })
-      .sort({ departureTime: -1 }) // Most recent rides first
+      .sort({ departureTime: -1 })
       .exec();
 
     return rides;
