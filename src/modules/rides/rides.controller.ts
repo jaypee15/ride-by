@@ -262,31 +262,50 @@ export class RidesController {
       data: result,
     };
   }
+  // @Get('')
+  // @UseGuards(AuthGuard) // Ensure only authenticated users can access
+  // @ApiOperation({
+  //   summary: 'Get all Rides by a driver',
+  // })
+  // @ApiResponse({
+  //   status: 200,
+  //   description: 'Driver rides retrieved successfully.',
+  // })
+  // @ApiResponse({ status: 401, description: 'Unauthorized.' })
+  // @ApiResponse({
+  //   status: 403,
+  //   description: 'Forbidden - User is not a driver.',
+  // })
+  // @ApiResponse({ status: 404, description: 'Not Found - Driver not found.' })
+  // async allRides(
+  //   @User() user: IUser, // Custom decorator to inject logged-in user
+  // ): Promise<{
+  //   message: string;
+  //   data: Ride[];
+  // }> {
+  //   const rides = await this.ridesService.getAllRidesByDriver(user._id);
+
+  //   return {
+  //     message: 'Driver rides fetched successfully.',
+  //     data: rides,
+  //   };
+  // }
   @Get('')
-  @UseGuards(AuthGuard) // Ensure only authenticated users can access
-  @ApiOperation({
-    summary: 'Get all Rides by a driver',
-  })
+  @UseGuards(AuthGuard)
+  @ApiOperation({ summary: 'Get all Rides (for all drivers)' })
   @ApiResponse({
     status: 200,
-    description: 'Driver rides retrieved successfully.',
+    description: 'All rides retrieved successfully.',
   })
   @ApiResponse({ status: 401, description: 'Unauthorized.' })
-  @ApiResponse({
-    status: 403,
-    description: 'Forbidden - User is not a driver.',
-  })
-  @ApiResponse({ status: 404, description: 'Not Found - Driver not found.' })
-  async allRides(
-    @User() user: IUser, // Custom decorator to inject logged-in user
-  ): Promise<{
+  async getAllRides(): Promise<{
     message: string;
     data: Ride[];
   }> {
-    const rides = await this.ridesService.getAllRidesByDriver(user._id);
+    const rides = await this.ridesService.getAllRides();
 
     return {
-      message: 'Driver rides fetched successfully.',
+      message: 'All rides fetched successfully.',
       data: rides,
     };
   }
