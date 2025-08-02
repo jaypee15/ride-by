@@ -397,4 +397,18 @@ export class RidesService {
 
     return rides;
   }
+  async getAllRides(): Promise<RideDocument[]> {
+    this.logger.log(`Fetching all rides`);
+
+    const rides = await this.rideModel
+      .find()
+      .populate<{ vehicle: VehicleDocument }>({
+        path: 'vehicle',
+        select: 'make model year color plateNumber seatsAvailable',
+      })
+      .sort({ departureTime: -1 })
+      .exec();
+
+    return rides;
+  }
 }
