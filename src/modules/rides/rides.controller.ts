@@ -75,6 +75,29 @@ export class RidesController {
     };
   }
 
+
+@Get('')
+@UseGuards(AuthGuard)
+@ApiOperation({ summary: 'Get all Rides (for all drivers)' })
+@ApiResponse({
+  status: 200,
+  description: 'All rides retrieved successfully.',
+})
+@ApiResponse({ status: 401, description: 'Unauthorized.' })
+async getAllRides(
+  @User() user: IUser, // This still authenticates user
+): Promise<{
+  message: string;
+  data: Ride[];
+}> {
+  const rides = await this.ridesService.getAllRides();
+
+  return {
+    message: 'All rides fetched successfully.',
+    data: rides,
+  };
+}
+
   @Get('/search')
   @UseGuards(AuthGuard) // Require login to search? Or make public? Assuming logged in for now.
   @ApiBearerAuth()
