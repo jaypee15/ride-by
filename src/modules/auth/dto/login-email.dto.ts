@@ -29,13 +29,14 @@ export class LoginWithEmailDto {
   @IsMatchPattern(PASSWORD_PATTERN) // Optional: for consistency
   password: string;
 
-  @ApiProperty({
-    description: 'Type of portal user is accessing',
+  @ApiPropertyOptional({
+    description:
+      'Type of portal user is accessing. If omitted, defaults to PASSENGER.',
     enum: PortalType,
   })
   @IsEnum(PortalType)
-  @IsNotEmpty()
-  portalType: PortalType;
+  @IsOptional()
+  portalType?: PortalType;
 
   @ApiPropertyOptional({
     description: 'Whether to keep user logged in',
@@ -77,8 +78,7 @@ export class LoginWithEmailAndPhoneDto {
     description: 'Type of portal user is accessing',
     enum: PortalType,
   })
-  @IsEnum(PortalType)
-  @IsNotEmpty()
+  @IsOptional()
   portalType: PortalType;
 
   @ApiPropertyOptional({

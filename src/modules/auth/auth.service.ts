@@ -350,14 +350,14 @@ export class AuthService {
     this.logger.log(
       `Attempting email or phone login for: ${params.email} or ${params.phoneNumber}`,
     );
-    const { email, password, portalType, rememberMe, phoneNumber } = params;
+    const { email, password, rememberMe, phoneNumber } = params;
 
     let user: IUser;
 
     if (email) {
-      user = await this.validateUserByEmail(email, password, portalType);
+      user = await this.validateUserByEmail(email, password);
     } else if (phoneNumber) {
-      user = await this.validateUser(phoneNumber, password, portalType);
+      user = await this.validateUser(phoneNumber, password);
     } else {
       ErrorHelper.BadRequestException(
         'Please provide either an email or phone number to login.',
@@ -400,7 +400,6 @@ export class AuthService {
   async validateUserByEmail(
     email: string,
     passwordPlain: string,
-    portalType: PortalType,
   ): Promise<IUser> {
     const lowercasedEmail = email.toLowerCase();
     const userDoc = await this.userRepo
@@ -428,12 +427,12 @@ export class AuthService {
       ErrorHelper.UnauthorizedException(INVALID_EMAIL_OR_PASSWORD);
     }
 
-    const roleNames = userDoc.roles.map((role: any) => role.name as string);
-    if (!roleNames.includes(portalType as string)) {
-      ErrorHelper.ForbiddenException(
-        'You do not have the required role to access this portal.',
-      );
-    }
+    // const roleNames = userDoc.roles.map((role: any) => role.name as string);
+    // if (!roleNames.includes(portalType as string)) {
+    //   ErrorHelper.ForbiddenException(
+    //     'You do not have the required role to access this portal.',
+    //   );
+    // }
     // Convert to IUser, ensuring _id is string
     return { ...userDoc.toObject(), _id: userDoc._id.toString() };
   }
@@ -552,11 +551,7 @@ export class AuthService {
     };
   }
 
-  async validateUser(
-    phone: string,
-    password: string,
-    portalType?: string,
-  ): Promise<IUser> {
+  async validateUser(phone: string, password: string): Promise<IUser> {
     const phoneQuery = {
       phoneNumber: phone,
     };
@@ -585,11 +580,11 @@ export class AuthService {
     const roleNames = user.roles.map((role) => role.name);
     console.log('roles', roleNames);
 
-    if (!roleNames.includes(portalType as any)) {
-      ErrorHelper.ForbiddenException(
-        'Forbidden: You does not have the required role to access this route.',
-      );
-    }
+    // if (!roleNames.includes(portalType as any)) {
+    //   ErrorHelper.ForbiddenException(
+    //     'Forbidden: You does not have the required role to access this route.',
+    //   );
+    // }
 
     return { ...user.toObject(), _id: user._id.toString() };
   }
