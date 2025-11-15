@@ -32,18 +32,14 @@ export class MailEvent {
     await this.mailController.sendMail(sendMailDto);
   }
 
-  async sendResetPassword(user, token: string, callbackURL?: string) {
-    const url = new URL(callbackURL);
-    url.searchParams.append('code', token);
-    this.logger.log('url', url);
-
+  async sendResetPassword(user, token: string) {
     const sendMailDto = {
       to: [user.email],
       subject: 'Reset Password - TraveEazi',
       type: MailType.RESET_PASSWORD,
       data: {
         firstName: user.firstName || 'User',
-        url,
+        code: token,
       },
       saveAsNotification: false,
     };

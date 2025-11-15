@@ -204,19 +204,16 @@ export class AuthController {
   @ApiOperation({ summary: 'Request password reset' })
   @ApiResponse({
     status: 200,
-    description: 'Password reset email sent',
+    description: 'Password reset code sent to email',
     type: BaseResponseDto<{ sent: boolean }>,
   })
   @ApiResponse({ status: 404, description: 'User not found' })
-  async forgotPassword(
-    @Body() body: ForgotPasswordDto,
-    @Body('callbackURL') query: string,
-  ): Promise<object> {
-    const data = await this.authService.forgotPassword(body.email, query);
+  async forgotPassword(@Body() body: ForgotPasswordDto): Promise<object> {
+    const data = await this.authService.forgotPassword(body.email);
 
     return {
       data,
-      message: 'Password reset link has been sent to your email',
+      message: 'Password reset code has been sent to your email',
     };
   }
 
@@ -275,7 +272,7 @@ export class AuthController {
 
   @UseGuards(AuthGuard)
   @HttpCode(HttpStatus.OK)
-  @Post('/logout')
+  @Get('/logout')
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Logout user' })
   @ApiResponse({

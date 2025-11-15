@@ -1,11 +1,11 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { MailerService } from '@nestjs-modules/mailer';
 import * as ejs from 'ejs';
 import * as fs from 'fs';
 import { SendMailDto } from './dto/mail.dto';
 import { Email } from './schema/email.schema';
 import { Model } from 'mongoose';
 import { InjectModel } from '@nestjs/mongoose';
+import { ResendService } from './resend.service';
 
 @Injectable()
 export class MailService {
@@ -34,7 +34,7 @@ export class MailService {
   constructor(
     @InjectModel(Email.name)
     private emailRepo: Model<Email>,
-    private mailerService: MailerService,
+    private resendService: ResendService,
   ) {}
 
   async sendUserConfirmation(data: SendMailDto) {
@@ -44,44 +44,27 @@ export class MailService {
       code: data.data['code'],
     });
 
-    return this.mailerService.sendMail({
+    await this.resendService.sendEmail({
       to: data.to,
-      from: this.from,
       subject: data.subject,
-      template: './confirmation',
-      context: {
-        name: data.data['firstName'],
-        email: data.data['email'],
-        code: data.data['code'],
-      },
-      headers: {
-        'X-Category': data.type,
-      },
       html: renderedEmail,
       text: renderedEmail,
+      headers: { 'X-Category': data.type },
     });
   }
 
   async sendResetPassword(data: SendMailDto) {
     const renderedEmail = ejs.render(this.resetpasswordTemplate, {
       name: data.data['firstName'],
-      url: data.data['url'],
+      code: data.data['code'],
     });
 
-    return this.mailerService.sendMail({
+    await this.resendService.sendEmail({
       to: data.to,
-      from: this.from,
       subject: data.subject,
-      template: './resetpassword',
       html: renderedEmail,
       text: renderedEmail,
-      context: {
-        name: data.data['firstName'],
-        url: data.data['url'],
-      },
-      headers: {
-        'X-Category': data.type,
-      },
+      headers: { 'X-Category': data.type },
     });
   }
 
@@ -92,21 +75,12 @@ export class MailService {
       password: data.data['password'],
     });
 
-    return this.mailerService.sendMail({
+    await this.resendService.sendEmail({
       to: data.to,
-      from: this.from,
       subject: data.subject,
-      template: './credentials',
-      context: {
-        name: data.data['firstName'],
-        email: data.data['email'],
-        password: data.data['password'],
-      },
-      headers: {
-        'X-Category': data.type,
-      },
       html: renderedEmail,
       text: renderedEmail,
+      headers: { 'X-Category': data.type },
     });
   }
 
@@ -117,21 +91,12 @@ export class MailService {
       body: data.data['body'],
     });
 
-    return this.mailerService.sendMail({
+    await this.resendService.sendEmail({
       to: data.to,
-      from: this.from,
       subject: data.subject,
-      template: './emailnotification',
-      context: {
-        name: data.data['firstName'],
-        email: data.data['email'],
-        body: data.data['body'],
-      },
-      headers: {
-        'X-Category': data.type,
-      },
       html: renderedEmail,
       text: renderedEmail,
+      headers: { 'X-Category': data.type },
     });
   }
 }

@@ -23,6 +23,14 @@ export class SecretsService extends ConfigService {
     };
   }
 
+  get resend() {
+    return {
+      RESEND_API_KEY: this.get<string>('RESEND_API_KEY', ''),
+      RESEND_FROM_EMAIL: this.get<string>('RESEND_FROM_EMAIL', ''),
+      RESEND_FROM_NAME: this.get<string>('RESEND_FROM_NAME', 'TravEazi Team'),
+    };
+  }
+
   get googleSecret() {
     return {
       GOOGLE_CLIENT_ID: this.get('GOOGLE_CLIENT_ID'),
@@ -72,6 +80,15 @@ export class SecretsService extends ConfigService {
       TWILIO_AUTH_TOKEN: this.get('TWILIO_AUTH_TOKEN'),
       TWILIO_PHONE_NUMBER: this.get('TWILIO_PHONE_NUMBER'),
       TWILIO_VERIFY_SERVICE_SID: this.get('TWILIO_VERIFY_SERVICE_SID'),
+    };
+  }
+
+  get passwordReset() {
+    return {
+      PASSWORD_RESET_CALLBACK_URL: this.get<string>(
+        'PASSWORD_RESET_CALLBACK_URL',
+        '',
+      ),
     };
   }
 

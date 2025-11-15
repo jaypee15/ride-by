@@ -615,14 +615,10 @@ export class AuthService {
     return user;
   }
 
-  async forgotPassword(email: string, callbackURL: string) {
+  async forgotPassword(email: string) {
     const emailQuery = {
       email: email.toLowerCase(),
     };
-
-    if (!callbackURL) {
-      ErrorHelper.BadRequestException('Please input a valid callbackURL');
-    }
 
     const user = await this.userRepo.findOne(emailQuery);
 
@@ -638,7 +634,7 @@ export class AuthService {
       },
     );
 
-    await this.mailEvent.sendResetPassword(user, confirmationCode, callbackURL);
+    await this.mailEvent.sendResetPassword(user, confirmationCode);
 
     return {
       success: true,

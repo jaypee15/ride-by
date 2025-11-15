@@ -1,17 +1,17 @@
 import { Processor, Process } from '@nestjs/bull';
 import { Job } from 'bull';
 import { Injectable, Logger } from '@nestjs/common';
-import { MailerService } from '@nestjs-modules/mailer';
 import * as ejs from 'ejs';
 import * as fs from 'fs';
 import * as path from 'path';
+import { ResendService } from '../resend.service';
 
 @Processor('emailQueue')
 @Injectable()
 export class EmailProcessor {
   private logger = new Logger(EmailProcessor.name);
 
-  constructor(private mailerService: MailerService) {}
+  constructor(private resendService: ResendService) {}
 
   private from = '"TravEazi Team" <notifications@travezi.com>';
 
@@ -45,29 +45,19 @@ export class EmailProcessor {
         let retries = 0;
         const sendEmail = async () => {
           try {
-            return await this.mailerService.sendMail({
-              to: recipient.email,
-              from: this.from,
+            const html = ejs.render(this.marketingEmailTemplate, {
               subject: data.subject,
-              context: {
-                name: recipient.firstName,
-                email: data.email,
-                body: data.body,
-              },
-              headers: {
-                'X-Category': data.type,
-              },
-              html: ejs.render(this.marketingEmailTemplate, {
-                subject: data.subject,
-                name: recipient.firstName,
-                body: data.body,
-              }),
-              text: ejs.render(this.marketingEmailTemplate, {
-                subject: data.subject,
-                name: recipient.firstName,
-                body: data.body,
-              }),
+              name: recipient.firstName,
+              body: data.body,
             });
+            await this.resendService.sendEmail({
+              to: recipient.email,
+              subject: data.subject,
+              html,
+              text: html,
+              headers: { 'X-Category': data.type },
+            });
+            return { success: true };
           } catch (error) {
             if (retries < maxRetries) {
               retries++;

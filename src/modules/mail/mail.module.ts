@@ -1,7 +1,4 @@
 import { Module } from '@nestjs/common';
-import { MailerModule } from '@nestjs-modules/mailer';
-import { EjsAdapter } from '@nestjs-modules/mailer/dist/adapters/ejs.adapter';
-import { join } from 'path';
 import { MailController } from './mail.controller';
 import { MailService } from './mail.service';
 import { SecretsModule } from 'src/global/secrets/module';
@@ -15,42 +12,12 @@ import { EmailProcessor } from './cron-job/email.processor';
 import { TokenSchema, Token } from '../user/schemas/token.schema';
 import { UserSchema, User } from '../user/schemas/user.schema';
 import { roleSchema, Role } from '../user/schemas/role.schema';
+import { ResendService } from './resend.service';
 
 @Module({
   imports: [
     SecretsModule,
     UserModule,
-    MailerModule.forRootAsync({
-      useFactory: ({ mailSecret }: SecretsService) => ({
-        transport: {
-          host: mailSecret.MAIL_HOST,
-          port: mailSecret.MAIL_PORT,
-          auth: {
-            user: mailSecret.MAIL_USERNAME,
-            pass: mailSecret.MAIL_PASSWORD,
-          },
-        },
-        pool: true, // Enable connection pooling
-        maxConnections: 5, // Limit number of connections
-        maxMessages: 100, // Limit number of messages per connection
-        tls: {
-          rejectUnauthorized: false,
-        },
-        defaults: {
-          from: '"No Reply" <hello@demomailtrap.com>',
-        },
-        preview: true,
-        template: {
-          dir: join(__dirname, 'templates'),
-          adapter: new EjsAdapter(),
-          options: {
-            strict: false,
-          },
-        },
-      }),
-      inject: [SecretsService],
-      imports: [SecretsModule],
-    }),
     // Register Bull queue for email processing
     BullModule.forRootAsync({
       useFactory: ({ userSessionRedis }: SecretsService) => ({
@@ -65,7 +32,7 @@ import { roleSchema, Role } from '../user/schemas/role.schema';
     }),
 
     BullModule.registerQueue({
-      name: 'emailQueue', // Name of the queue for email jobs
+      name: 'emailQueue',
     }),
     MongooseModule.forFeature([
       {
@@ -78,7 +45,13 @@ import { roleSchema, Role } from '../user/schemas/role.schema';
     ]),
   ],
   controllers: [MailController],
-  providers: [MailService, MailEvent, MailController, EmailProcessor],
+  providers: [
+    MailService,
+    MailEvent,
+    MailController,
+    EmailProcessor,
+    ResendService,
+  ],
   exports: [MailService, MailEvent, BullModule, MailController],
 })
 export class MailModule {}
