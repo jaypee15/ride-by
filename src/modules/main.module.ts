@@ -12,6 +12,7 @@ import { SecretsService } from '../global/secrets/service';
 import { AppModule } from './app.module';
 import { GlobalModule } from 'src/global/global.module';
 import { BookingModule } from './booking/booking.module';
+import { FavoritesModule } from './favorites/favorites.module';
 import { RatingModule } from './rating/rating.module';
 import { CommunicationModule } from './communication/communication.module';
 import { AdminModule } from './admin/admin.module';
@@ -31,6 +32,7 @@ import { SeedModule } from './seed/seed.module';
     GeolocationModule,
     AppModule,
     BookingModule,
+    FavoritesModule,
     RatingModule,
     CommunicationModule,
     AdminModule,
