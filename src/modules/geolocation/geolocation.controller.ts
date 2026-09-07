@@ -12,7 +12,7 @@ import {
   ApiBearerAuth,
   ApiQuery,
 } from '@nestjs/swagger';
-import { GeolocationService } from './geolocation.service';
+import { GeolocationService, PlaceSuggestion } from './geolocation.service';
 import { AuthGuard } from '../../core/guards/authenticate.guard';
 
 @ApiTags('Geolocation')
@@ -40,5 +40,21 @@ export class GeolocationController {
       );
     }
     return coords;
+  }
+
+  @Get('autocomplete')
+  @UseGuards(AuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Place autocomplete suggestions (Nigeria-biased)' })
+  @ApiQuery({ name: 'input', type: String, required: true, example: 'Ikeja' })
+  @ApiResponse({ status: 200, description: 'Suggestions returned (possibly empty).' })
+  @ApiResponse({ status: 400, description: 'Input missing.' })
+  async autocomplete(
+    @Query('input') input?: string,
+  ): Promise<PlaceSuggestion[]> {
+    if (!input?.trim()) {
+      throw new BadRequestException('Query parameter "input" is required.');
+    }
+    return this.geolocationService.autocomplete(input.trim());
   }
 }

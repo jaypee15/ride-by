@@ -1,12 +1,12 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, HttpException } from '@nestjs/common';
 import { GeolocationController } from './geolocation.controller';
 import { GeolocationService } from './geolocation.service';
 import { AuthGuard } from '../../core/guards/authenticate.guard';
 
 describe('GeolocationController', () => {
   let controller: GeolocationController;
-  const mockService = { geocode: jest.fn() };
+  const mockService = { geocode: jest.fn(), autocomplete: jest.fn() };
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
@@ -37,5 +37,36 @@ describe('GeolocationController', () => {
   it('throws 400 when the service resolves null', async () => {
     mockService.geocode.mockResolvedValue(null);
     await expect(controller.geocode('Nowhere XX')).rejects.toBeInstanceOf(BadRequestException);
+  });
+});
+
+describe('GeolocationController.autocomplete', () => {
+  let controller: GeolocationController;
+  const mockService = { autocomplete: jest.fn() };
+
+  beforeEach(async () => {
+    const module: TestingModule = await Test.createTestingModule({
+      controllers: [GeolocationController],
+      providers: [{ provide: GeolocationService, useValue: mockService }],
+    })
+      .overrideGuard(AuthGuard)
+      .useValue({ canActivate: () => true })
+      .compile();
+    controller = module.get<GeolocationController>(GeolocationController);
+    jest.clearAllMocks();
+  });
+
+  it('returns the service suggestions verbatim', async () => {
+    mockService.autocomplete.mockResolvedValue([{ description: 'Ikeja, Lagos', placeId: 'ChIJ1' }]);
+    await expect(controller.autocomplete('Ike')).resolves.toEqual([
+      { description: 'Ikeja, Lagos', placeId: 'ChIJ1' },
+    ]);
+    expect(mockService.autocomplete).toHaveBeenCalledWith('Ike');
+  });
+
+  it('throws 400 when input is missing', async () => {
+    const err = await controller.autocomplete('').catch((e) => e);
+    expect(err).toBeInstanceOf(HttpException);
+    expect((err as HttpException).getStatus()).toBe(400);
   });
 });

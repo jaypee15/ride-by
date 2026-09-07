@@ -34,6 +34,10 @@ export interface RouteInfo {
   distanceMeters: number;
   durationSeconds: number;
 }
+export interface PlaceSuggestion {
+  description: string;
+  placeId: string;
+}
 
 @Injectable()
 export class GeolocationService {
@@ -164,6 +168,42 @@ export class GeolocationService {
       );
     }
     return null;
+  }
+
+  async autocomplete(input: string): Promise<PlaceSuggestion[]> {
+    const { apiKey } = this.secretsService.googleMaps;
+    if (!apiKey) {
+      this.logger.error('Google Maps API Key not found. Autocomplete will not function.');
+      throw new InternalServerErrorException('Geolocation service is not configured properly.');
+    }
+    try {
+      const response = await fetch('https://places.googleapis.com/v1/places:autocomplete', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Goog-Api-Key': apiKey,
+          'X-Goog-FieldMask': 'suggestions.placePrediction.text,suggestions.placePrediction.placeId',
+        },
+        body: JSON.stringify({ input, includedRegionCodes: ['NG'], languageCode: 'en' }),
+      });
+      if (!response.ok) {
+        this.logger.warn(`Places autocomplete failed for "${input}". HTTP ${response.status}.`);
+        ErrorHelper.InternalServerErrorException('Places autocomplete request failed.');
+      }
+      const data = (await response.json()) as {
+        suggestions?: Array<{ placePrediction?: { placeId?: string; text?: { text?: string } } }>;
+      };
+      return (data.suggestions ?? []).flatMap((s) => {
+        const text = s.placePrediction?.text?.text;
+        const placeId = s.placePrediction?.placeId;
+        return text && placeId ? [{ description: text, placeId }] : [];
+      });
+    } catch (error) {
+      if (error instanceof InternalServerErrorException) throw error;
+      this.logger.error(`Error calling Places Autocomplete API for "${input}": ${(error as Error).message}`);
+      ErrorHelper.InternalServerErrorException('Failed to fetch place suggestions.');
+    }
+    return [];
   }
 
   async calculateRoute(
