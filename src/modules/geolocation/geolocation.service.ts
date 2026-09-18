@@ -34,6 +34,33 @@ export interface RouteInfo {
   distanceMeters: number;
   durationSeconds: number;
 }
+
+// TODO(DEMO): temporary built-in city coords so the demo works while the
+// Google server key is unauthorized (403). Remove once the key has the
+// Geocoding API enabled with billing + no app restrictions.
+const DEMO_CITY_COORDS: Array<{ match: string; lat: number; lng: number }> = [
+  { match: 'lagos', lat: 6.5244, lng: 3.3792 },
+  { match: 'abuja', lat: 9.0579, lng: 7.4951 },
+  { match: 'port harcourt', lat: 4.8156, lng: 7.0498 },
+  { match: 'ibadan', lat: 7.3775, lng: 3.947 },
+  { match: 'benin city', lat: 6.335, lng: 5.6037 },
+  { match: 'kano', lat: 12.0022, lng: 8.5919 },
+  { match: 'onitsha', lat: 6.1667, lng: 6.7833 },
+  { match: 'aba', lat: 5.1066, lng: 7.3667 },
+  { match: 'jos', lat: 9.9285, lng: 8.8921 },
+  { match: 'kaduna', lat: 10.5222, lng: 7.4383 },
+  { match: 'enugu', lat: 6.4584, lng: 7.5464 },
+  { match: 'ilorin', lat: 8.4966, lng: 4.5421 },
+];
+
+function demoGeocode(address: string): Coordinates | null {
+  const needle = address.toLowerCase().trim();
+  if (!needle) return null;
+  for (const city of DEMO_CITY_COORDS) {
+    if (needle.includes(city.match)) return { lat: city.lat, lng: city.lng };
+  }
+  return null;
+}
 export interface PlaceSuggestion {
   description: string;
   placeId: string;
@@ -98,6 +125,15 @@ export class GeolocationService {
         );
       }
     } catch (error) {
+      // TODO(DEMO): fall back to built-in city coords while Google rejects
+      // our key. Remove once the server key is authorized.
+      const demo = demoGeocode(address);
+      if (demo) {
+        this.logger.warn(
+          `DEMO FALLBACK: Google geocode failed for "${address}", using built-in coords ${JSON.stringify(demo)}.`,
+        );
+        return demo;
+      }
       if (
         error instanceof BadRequestException ||
         error instanceof InternalServerErrorException
