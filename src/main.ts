@@ -1,4 +1,5 @@
 import { NestFactory } from '@nestjs/core';
+import { NestExpressApplication } from '@nestjs/platform-express';
 import * as express from 'express';
 import { MainModule } from './modules/main.module';
 import { SecretsService } from './global/secrets/service';
@@ -11,7 +12,7 @@ import { RedisIoAdapter } from './core/adpater';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 
 async function bootstrap() {
-  const app = await NestFactory.create(MainModule, {
+  const app = await NestFactory.create<NestExpressApplication>(MainModule, {
     bufferLogs: true,
     cors: true,
   });
