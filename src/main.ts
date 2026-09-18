@@ -43,6 +43,11 @@ async function bootstrap() {
   MongooseModule.forRoot(MONGO_URI);
 
   app.setGlobalPrefix('api');
+
+  // Express 5 defaults to the 'simple' query parser, which leaves bracket
+  // notation (origin[lat]) as flat keys. The search endpoint binds nested
+  // query DTOs, so restore extended (qs) parsing.
+  app.set('query parser', 'extended');
   app.useWebSocketAdapter(new RedisIoAdapter(app));
 
   // Setup Swagger
