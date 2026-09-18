@@ -29,7 +29,7 @@ export class GeolocationController {
   @ApiResponse({ status: 400, description: 'Address missing or not found.' })
   async geocode(
     @Query('address') address?: string,
-  ): Promise<{ lat: number; lng: number }> {
+  ): Promise<{ message: string; data: { lat: number; lng: number } }> {
     if (!address?.trim()) {
       throw new BadRequestException('Query parameter "address" is required.');
     }
@@ -39,7 +39,7 @@ export class GeolocationController {
         `Could not find coordinates for the address: ${address.trim()}`,
       );
     }
-    return coords;
+    return { message: 'Coordinates resolved successfully.', data: coords };
   }
 
   @Get('autocomplete')
@@ -51,10 +51,11 @@ export class GeolocationController {
   @ApiResponse({ status: 400, description: 'Input missing.' })
   async autocomplete(
     @Query('input') input?: string,
-  ): Promise<PlaceSuggestion[]> {
+  ): Promise<{ message: string; data: PlaceSuggestion[] }> {
     if (!input?.trim()) {
       throw new BadRequestException('Query parameter "input" is required.');
     }
-    return this.geolocationService.autocomplete(input.trim());
+    const data = await this.geolocationService.autocomplete(input.trim());
+    return { message: 'Suggestions fetched successfully.', data };
   }
 }

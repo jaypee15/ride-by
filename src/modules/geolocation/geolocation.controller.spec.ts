@@ -23,8 +23,8 @@ describe('GeolocationController', () => {
   it('returns coords for a known address', async () => {
     mockService.geocode.mockResolvedValue({ lat: 6.5244, lng: 3.3792 });
     await expect(controller.geocode('Ikeja, Lagos')).resolves.toEqual({
-      lat: 6.5244,
-      lng: 3.3792,
+      message: 'Coordinates resolved successfully.',
+      data: { lat: 6.5244, lng: 3.3792 },
     });
     expect(mockService.geocode).toHaveBeenCalledWith('Ikeja, Lagos');
   });
@@ -58,9 +58,10 @@ describe('GeolocationController.autocomplete', () => {
 
   it('returns the service suggestions verbatim', async () => {
     mockService.autocomplete.mockResolvedValue([{ description: 'Ikeja, Lagos', placeId: 'ChIJ1' }]);
-    await expect(controller.autocomplete('Ike')).resolves.toEqual([
-      { description: 'Ikeja, Lagos', placeId: 'ChIJ1' },
-    ]);
+    await expect(controller.autocomplete('Ike')).resolves.toEqual({
+      message: 'Suggestions fetched successfully.',
+      data: [{ description: 'Ikeja, Lagos', placeId: 'ChIJ1' }],
+    });
     expect(mockService.autocomplete).toHaveBeenCalledWith('Ike');
   });
 
