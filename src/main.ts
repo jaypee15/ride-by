@@ -34,7 +34,11 @@ async function bootstrap() {
     },
   );
 
-  app.useGlobalPipes(new ValidationPipe());
+  // transform: true is load-bearing: DTOs rely on @Type(() => Number) to
+  // coerce query strings and on property initializers for defaults
+  // (e.g. maxDistance). Without it, numbers arrive as strings/undefined
+  // and Mongo rejects the geo query.
+  app.useGlobalPipes(new ValidationPipe({ transform: true }));
   app.useGlobalFilters(new HttpExceptionFilter());
   app.useGlobalInterceptors(
     new LoggerInterceptor(),
