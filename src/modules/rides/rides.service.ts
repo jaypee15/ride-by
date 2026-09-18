@@ -179,7 +179,6 @@ export class RidesService {
       maxDistance,
       limit,
       page,
-      order,
     } = dto;
     const skip = dto.skip; // Use getter from PaginationDto
 
@@ -214,6 +213,10 @@ export class RidesService {
     };
 
     // 3. Execute Query with Population and Pagination
+    // NOTE: no .sort() here — $nearSphere already returns nearest-first and
+    // Mongo rejects $near* combined with any other sort. The `order` query
+    // param is still accepted for API compatibility but does not reorder
+    // geo results.
     try {
       const query = this.rideModel
         .find(conditions)
@@ -228,14 +231,16 @@ export class RidesService {
           path: 'vehicle',
           select: 'make model year color features', // Only public fields
         })
-        .sort({ departureTime: order === 'ASC' ? 1 : -1 }) // Sort by departure time
         .skip(skip)
         .limit(limit);
 
-      const [results, totalCount] = await Promise.all([
+      // countDocuments() rejects $near* predicates, so count via a lean
+      // id-only find over the same conditions.
+      const [results, idDocs] = await Promise.all([
         query.exec(),
-        this.rideModel.countDocuments(conditions), // Get total count matching conditions
+        this.rideModel.find(conditions, { _id: 1 }).lean(),
       ]);
+      const totalCount = idDocs.length;
 
       // Optional: Further filter by destination distance if needed (less efficient than DB query)
       // const filteredResults = results.filter(ride => { ... check destination distance ... });
