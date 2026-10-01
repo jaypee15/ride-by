@@ -19,6 +19,7 @@ import {
 import { v4 as uuidv4 } from 'uuid'; // For generating unique tokens
 import { InjectRedis } from '@nestjs-modules/ioredis'; // Assuming Redis for storing tokens
 import Redis from 'ioredis';
+import { Booking } from '../booking/schemas/booking.schema';
 import { BookingStatus } from '../booking/enums/booking-status.enum';
 import { PopulatedRideWithBookings } from './interfaces/populated-ride.interface';
 
@@ -30,6 +31,7 @@ export class RidesService {
     @InjectModel(Ride.name) private rideModel: Model<RideDocument>,
     @InjectModel(Vehicle.name) private vehicleModel: Model<VehicleDocument>,
     @InjectModel(User.name) private userModel: Model<UserDocument>,
+    @InjectModel(Booking.name) private bookingModel: Model<Booking>,
     @InjectRedis() private readonly redisClient: Redis,
     private readonly geolocationService: GeolocationService,
   ) {}
@@ -303,10 +305,25 @@ export class RidesService {
         `Ride cannot be started (current status: ${ride.status}).`,
       );
     }
+
+    // A ride may only start once more than one confirmed passenger is on it.
+    // PENDING requests do not count: the driver has not accepted them yet, and
+    // REJECTED / CANCELLED / NO_SHOW bookings must never hold a ride open.
+    const confirmedPassengers = await this.bookingModel.countDocuments({
+      ride: ride._id,
+      status: BookingStatus.CONFIRMED,
+    });
+    if (confirmedPassengers <= 1) {
+      ErrorHelper.BadRequestException(
+        `This ride needs more than 1 confirmed passenger to start (currently ${confirmedPassengers}).`,
+      );
+    }
+
     // Optional: Check if departure time is reasonably close
 
     // 2. Update Status
     ride.status = RideStatus.IN_PROGRESS;
+    ride.startedAt = new Date();
     await ride.save();
 
     this.logger.log(
@@ -415,5 +432,147 @@ export class RidesService {
       .exec();
 
     return rides;
+  }
+
+  /**
+   * Close a ride once nobody is still travelling on it.
+   *
+   * A ride holds many bookings, so "the trip is over" is a question about the
+   * whole set, not one passenger. Only CONFIRMED bookings are considered live:
+   * PENDING requests were never accepted, and COMPLETED / REJECTED / NO_SHOW /
+   * CANCELLED_* have already left. The final CONFIRMED booking to be resolved
+   * is what tips the ride into COMPLETED.
+   *
+   * SCHEDULED is settled too, not just IN_PROGRESS. Nothing forces a driver to
+   * press Start before completing a booking, so a ride can reach this state
+   * with every booking already delivered and the driver never having started
+   * it. Leaving that ride in Upcoming forever would strand it there, and it
+   * would also leave its passengers unable to close their own trip. With no
+   * confirmed bookings left there is nobody riding, so COMPLETED is the honest
+   * resting state -- nothing was cancelled, everyone was delivered.
+   *
+   * Idempotent and safe to call from anywhere -- if the ride is already
+   * finished, or was cancelled, or other passengers are still riding, it simply
+   * reports false and changes nothing.
+   *
+   * @returns true if this call is what moved the ride to COMPLETED.
+   */
+  async finalizeRideIfNoLiveBookings(rideId: string): Promise<boolean> {
+    if (!mongoose.Types.ObjectId.isValid(rideId)) {
+      ErrorHelper.BadRequestException('Invalid Ride ID format.');
+    }
+
+    const ride = await this.rideModel.findById(rideId);
+    if (!ride) {
+      ErrorHelper.NotFoundException(`Ride with ID ${rideId} not found.`);
+    }
+
+    // Nothing to finalize once the ride has already reached a resting state.
+    if (
+      ride.status !== RideStatus.IN_PROGRESS &&
+      ride.status !== RideStatus.SCHEDULED
+    ) {
+      return false;
+    }
+
+    const liveBookings = await this.bookingModel.countDocuments({
+      ride: ride._id,
+      status: BookingStatus.CONFIRMED,
+    });
+    if (liveBookings > 0) {
+      return false;
+    }
+
+    ride.status = RideStatus.COMPLETED;
+    ride.completedAt = new Date();
+    await ride.save();
+
+    this.logger.log(
+      `Ride ${rideId} auto-completed: no confirmed passengers remain.`,
+    );
+    // TODO: Trigger Notification to driver + remaining passengers (Phase 6)
+    return true;
+  }
+
+  /**
+   * Passenger closes out their own trip, from the driver's point of view the
+   * trip is already over.
+   *
+   * The driver still owns the decision to call the delivery done -- this
+   * endpoint deliberately refuses to run before that has happened, so a
+   * passenger cannot end a ride that is still in progress just because they
+   * feel like it. What the passenger is really doing is acknowledging the
+   * finished trip, which is also what lets the ride itself be finalized.
+   *
+   * Scoped to the caller's own booking, never the ride wholesale: one passenger
+   * tapping "End Ride" must not appear to close the trip for everybody else in
+   * the car. The ride is only marked COMPLETED by
+   * finalizeRideIfNoLiveBookings, and only once every booking has resolved.
+   *
+   * Idempotent by design. The client's End Ride button and this call are both
+   * driven off "the driver confirmed delivery", so the booking is frequently
+   * already COMPLETED by the time this arrives; a retry after a dropped
+   * response must not look like an error.
+   */
+  async closeRideByPassenger(
+    passengerId: string,
+    rideId: string,
+  ): Promise<RideDocument> {
+    this.logger.log(
+      `Passenger ${passengerId} attempting to close ride ${rideId}.`,
+    );
+    if (!mongoose.Types.ObjectId.isValid(rideId)) {
+      ErrorHelper.BadRequestException('Invalid Ride ID format.');
+    }
+
+    const ride = await this.rideModel.findById(rideId);
+    if (!ride) {
+      ErrorHelper.NotFoundException(`Ride with ID ${rideId} not found.`);
+    }
+
+    // The caller's booking is what proves they were on this ride at all.
+    const booking = await this.bookingModel.findOne({
+      ride: ride._id,
+      passenger: passengerId,
+    });
+    if (!booking) {
+      ErrorHelper.ForbiddenException(
+        'You can only close a ride you have a booking on.',
+      );
+    }
+
+    // A cancelled ride is a dead end, not something to acknowledge.
+    if (ride.status === RideStatus.CANCELLED) {
+      ErrorHelper.ConflictException('This ride was cancelled.');
+    }
+
+    // The driver gate. COMPLETED on the booking is only ever set by the
+    // driver confirming delivery, so this is where "the trip is really over"
+    // is decided, and it is the only hard precondition. PENDING means the
+    // driver has not accepted yet; a cancelled or rejected booking means the
+    // passenger is not on this trip to close.
+    if (booking.status !== BookingStatus.COMPLETED) {
+      ErrorHelper.ConflictException(
+        `Your driver has not confirmed delivery yet (booking status: ${booking.status}).`,
+      );
+    }
+
+    // The ride may already be COMPLETED, e.g. a retry after a dropped response.
+    // That is success, not a conflict.
+    if (ride.status !== RideStatus.COMPLETED) {
+      const finalized = await this.finalizeRideIfNoLiveBookings(rideId);
+      // Re-read so the caller always gets the persisted state, including when
+      // finalization was a no-op because other passengers are still riding.
+      const updated = await this.rideModel.findById(rideId);
+      this.logger.log(
+        finalized
+          ? `Ride ${rideId} closed by passenger ${passengerId}.`
+          : `Passenger ${passengerId} acknowledged trip on ride ${rideId}; ` +
+            `ride stays ${updated?.status} while other passengers ride.`,
+      );
+      return updated as RideDocument;
+    }
+
+    return ride;
   }
 }

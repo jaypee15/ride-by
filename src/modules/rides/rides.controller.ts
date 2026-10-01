@@ -212,8 +212,52 @@ export class RidesController {
     };
   }
 
-  // Endpoint for GET /rides/:rideId/share-link (to be added)
-  // Public endpoint GET /trip/:shareToken (to be added in a separate controller/module)
+  @Patch(':rideId/close')
+  @UseGuards(AuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Close a finished trip (Passenger only)',
+    description:
+      'Acknowledges the end of the ride for the calling passenger. Requires ' +
+      'the driver to have already confirmed delivery. The ride itself only ' +
+      'becomes COMPLETED once no confirmed bookings remain, so this never ' +
+      'closes the trip on behalf of other passengers. Idempotent.',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Ride closed (or already closed).',
+    type: Ride,
+  })
+  @ApiResponse({
+    status: 400,
+    description: 'Bad Request - Invalid ride id.',
+  })
+  @ApiResponse({ status: 401, description: 'Unauthorized.' })
+  @ApiResponse({ status: 403, description: 'Forbidden - Not your booking.' })
+  @ApiResponse({ status: 404, description: 'Not Found - Ride not found.' })
+  @ApiResponse({
+    status: 409,
+    description: 'Conflict - Ride cancelled, or driver has not confirmed delivery.',
+  })
+  async closeRide(
+    @User() passenger: IUser,
+    @Param('rideId') rideId: string,
+  ): Promise<{ message: string; data: Ride }> {
+    if (!mongoose.Types.ObjectId.isValid(rideId)) {
+      ErrorHelper.BadRequestException('Invalid Ride ID format.');
+    }
+    this.logger.log(`Passenger ${passenger._id} closing ride ${rideId}`);
+    const closedRide = await this.ridesService.closeRideByPassenger(
+      passenger._id,
+      rideId,
+    );
+    return {
+      message: 'Ride closed successfully.',
+      data: closedRide.toObject() as Ride,
+    };
+  }
+
+  // Endpoint for GET /rides/:rideId/share-link (to be added)  // Public endpoint GET /trip/:shareToken (to be added in a separate controller/module)
   @Get(':rideId/share-link')
   @UseGuards(AuthGuard)
   @ApiBearerAuth()

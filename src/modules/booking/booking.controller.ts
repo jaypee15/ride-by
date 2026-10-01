@@ -331,4 +331,42 @@ export class BookingController {
       data: completedBooking.toObject() as Booking,
     };
   }
+
+  @Patch('/passenger/bookings/:bookingId/end')
+  @ApiOperation({
+    summary: 'End your own trip early (Passenger only)',
+    description:
+      'Marks the own booking of the passenger as completed. Does not end the ' +
+      'ride for other passengers, only the driver can close the ride itself.',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Booking marked as completed.',
+    type: Booking,
+  })
+  @ApiResponse({
+    status: 400,
+    description: 'Bad Request - Invalid booking id.',
+  })
+  @ApiResponse({ status: 401, description: 'Unauthorized.' })
+  @ApiResponse({ status: 403, description: 'Forbidden - Not your booking.' })
+  @ApiResponse({ status: 404, description: 'Not Found - Booking not found.' })
+  @ApiResponse({ status: 409, description: 'Conflict - Trip is not in progress.' })
+  async endBooking(
+    @User() passenger: IUser,
+    @Param('bookingId') bookingId: string,
+  ): Promise<{ message: string; data: Booking }> {
+    if (!mongoose.Types.ObjectId.isValid(bookingId)) {
+      ErrorHelper.BadRequestException('Invalid Booking ID format.');
+    }
+    this.logger.log(`Passenger ${passenger._id} ending booking ${bookingId}`);
+    const endedBooking = await this.bookingService.endBookingByPassenger(
+      passenger._id,
+      bookingId,
+    );
+    return {
+      message: 'Trip ended.',
+      data: endedBooking.toObject() as Booking,
+    };
+  }
 }

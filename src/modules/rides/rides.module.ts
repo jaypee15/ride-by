@@ -5,6 +5,7 @@ import { RidesController } from './rides.controller';
 import { Ride, RideSchema } from './schemas/ride.schema';
 import { Vehicle, VehicleSchema } from '../driver/schemas/vehicle.schema'; // Need VehicleModel
 import { User, UserSchema } from '../user/schemas/user.schema'; // Need UserModel
+import { Booking, BookingSchema } from '../booking/schemas/booking.schema'; // Needed to count passengers on start
 import { GeolocationModule } from '../geolocation/geolocation.module';
 
 @Module({
@@ -13,6 +14,7 @@ import { GeolocationModule } from '../geolocation/geolocation.module';
       { name: Ride.name, schema: RideSchema },
       { name: Vehicle.name, schema: VehicleSchema }, // Provide VehicleModel
       { name: User.name, schema: UserSchema }, // Provide UserModel
+      { name: Booking.name, schema: BookingSchema }, // Provide BookingModel
     ]),
     GeolocationModule,
   ],

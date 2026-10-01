@@ -73,6 +73,14 @@ export class Ride {
   })
   status: RideStatus;
 
+  // Lifecycle audit trail. Both are optional so existing documents stay valid:
+  // a ride created before this change simply has neither field set.
+  @Prop({ type: Date })
+  startedAt?: Date;
+
+  @Prop({ type: Date })
+  completedAt?: Date;
+
   @Prop({ type: [String], default: [] })
   preferences?: string[]; // e.g., "No Smoking", "Pets Allowed"
 

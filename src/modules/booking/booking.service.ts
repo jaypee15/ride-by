@@ -520,6 +520,15 @@ export class BookingService {
     }
     // Allow completion only if CONFIRMED (or potentially IN_PROGRESS if you add that status)
     if (booking.status !== BookingStatus.CONFIRMED) {
+      // A double tap, or a retry after the response was dropped, lands here
+      // with the booking already COMPLETED. That is the desired end state, so
+      // report success rather than an error the driver cannot act on.
+      if (booking.status === BookingStatus.COMPLETED) {
+        this.logger.log(
+          `Booking ${bookingId} is already COMPLETED; completing again is a no-op.`,
+        );
+        return booking;
+      }
       ErrorHelper.BadRequestException(
         `Booking must be confirmed to be marked as completed (current status: ${booking.status}).`,
       );
@@ -531,13 +540,123 @@ export class BookingService {
     booking.status = BookingStatus.COMPLETED;
     await booking.save();
 
+    // Confirming the last passenger is what actually ends the ride. Without
+    // this the ride sat at IN_PROGRESS forever, so it never reached the
+    // driver's Completed tab and passengers kept seeing a live trip.
+    await this.finalizeRideIfSettled(booking.ride);
+
     this.logger.log(
       `Booking ${bookingId} marked as COMPLETED by driver ${driverId}.`,
     );
 
     // TODO: Trigger Notification to Passenger (Phase 6)
-    // TODO: Check if all bookings for the ride are completed/cancelled, then update Ride status (maybe background job)
 
     return booking;
+  }
+
+  /**
+   * Passenger ends their own trip early.
+   *
+   * Deliberately scoped to the passenger's OWN booking rather than the whole
+   * ride: one passenger ending their trip must not strand everybody else in
+   * the car. The ride itself is only closed by the driver.
+   */
+  async endBookingByPassenger(
+    passengerId: string,
+    bookingId: string,
+  ): Promise<BookingDocument> {
+    this.logger.log(
+      `Passenger ${passengerId} attempting to end booking ${bookingId}.`,
+    );
+    if (!mongoose.Types.ObjectId.isValid(bookingId)) {
+      ErrorHelper.BadRequestException('Invalid Booking ID format.');
+    }
+
+    const booking = await this.bookingModel.findById(bookingId);
+    if (!booking) {
+      ErrorHelper.NotFoundException(`Booking with ID ${bookingId} not found.`);
+    }
+
+    // Booking.passenger is denormalised, so compare ids defensively.
+    const bookingPassengerId =
+      typeof booking.passenger === 'object' && booking.passenger
+        ? (booking.passenger as any)._id
+        : booking.passenger;
+    if (bookingPassengerId?.toString() !== passengerId.toString()) {
+      ErrorHelper.ForbiddenException('You can only end your own bookings.');
+    }
+
+    // Only a live trip can be ended. Once it is finished or already called off
+    // there is nothing to do, so this is a conflict rather than a silent no-op.
+    if (booking.status !== BookingStatus.CONFIRMED) {
+      // The driver confirms delivery first, which sets the booking to
+      // COMPLETED, and the passenger's End Ride button only unlocks after
+      // that. So the state this endpoint is normally reached in is already
+      // COMPLETED -- treating it as a conflict made the button permanently
+      // unusable, and any retry after a dropped response looked like a
+      // failure too. Reached twice, it is simply already done.
+      if (booking.status === BookingStatus.COMPLETED) {
+        this.logger.log(
+          `Booking ${bookingId} is already COMPLETED; passenger ${passengerId} close is a no-op.`,
+        );
+        return booking;
+      }
+      ErrorHelper.ConflictException(
+        `This trip cannot be ended while it is ${booking.status}.`,
+      );
+    }
+
+    booking.status = BookingStatus.COMPLETED;
+    await booking.save();
+
+    // The trip is over for this passenger, so give the ride a chance to close
+    // too. This is a no-op while anybody else is still riding, and while the
+    // driver has not started it.
+    await this.finalizeRideIfSettled(booking.ride);
+
+    this.logger.log(
+      `Booking ${bookingId} marked as COMPLETED by passenger ${passengerId}.`,
+    );
+
+    return booking;
+  }
+
+  /**
+   * Mark the ride COMPLETED once every booking on it has resolved.
+   *
+   * Only CONFIRMED bookings count as still travelling. Mirrors
+   * RidesService.finalizeRideIfNoLiveBookings, duplicated here rather than
+   * injected so that the two modules keep depending on raw Mongoose models
+   * instead of on each other's services -- RidesService already injects the
+   * Booking model, so a service-level call would close the dependency loop.
+   */
+  private async finalizeRideIfSettled(rideId: any): Promise<void> {
+    if (!rideId || !mongoose.Types.ObjectId.isValid(String(rideId))) {
+      return;
+    }
+
+    const ride = await this.rideModel.findById(rideId);
+    // SCHEDULED counts as unsettle-able: a driver can complete a booking
+    // without ever pressing Start, and such a ride has nobody riding it.
+    if (
+      !ride ||
+      (ride.status !== RideStatus.IN_PROGRESS &&
+        ride.status !== RideStatus.SCHEDULED)
+    ) {
+      return;
+    }
+
+    const liveBookings = await this.bookingModel.countDocuments({
+      ride: ride._id,
+      status: BookingStatus.CONFIRMED,
+    });
+    if (liveBookings > 0) {
+      return;
+    }
+
+    ride.status = RideStatus.COMPLETED;
+    ride.completedAt = new Date();
+    await ride.save();
+    this.logger.log(`Ride ${rideId} auto-completed by settle check.`);
   }
 }
