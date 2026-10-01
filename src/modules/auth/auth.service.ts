@@ -734,7 +734,7 @@ export class AuthService {
   }
 
   async getUserInfo(email: string): Promise<IUser> {
-    const user = await this.userRepo.findOne({ email });
+    const user = await this.userRepo.findOne({ email }).populate('roles');
 
     if (!user) {
       ErrorHelper.NotFoundException('No User Found.');
