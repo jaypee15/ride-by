@@ -306,16 +306,16 @@ export class RidesService {
       );
     }
 
-    // A ride may only start once more than one confirmed passenger is on it.
+    // A ride may only start once at least one confirmed passenger is on it.
     // PENDING requests do not count: the driver has not accepted them yet, and
     // REJECTED / CANCELLED / NO_SHOW bookings must never hold a ride open.
     const confirmedPassengers = await this.bookingModel.countDocuments({
       ride: ride._id,
       status: BookingStatus.CONFIRMED,
     });
-    if (confirmedPassengers <= 1) {
+    if (confirmedPassengers < 1) {
       ErrorHelper.BadRequestException(
-        `This ride needs more than 1 confirmed passenger to start (currently ${confirmedPassengers}).`,
+        `This ride needs at least 1 confirmed passenger to start (currently ${confirmedPassengers}).`,
       );
     }
 
